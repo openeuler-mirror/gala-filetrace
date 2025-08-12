@@ -16,7 +16,6 @@ CFLAGS = -Wno-error
 CFLAGS += -Wno-unknown-attributes
 CFLAGS += -Wno-deprecated-declarations
 CFLAGS += -g0 -fno-asynchronous-unwind-tables
-#CINCLUDE = -I/usr/src/kernels/5.10.0-136.32.0.108.iss22.aarch64
 CINCLUDE = -I/usr/src/kernels/$(shell uname -r)
 
 CLANG ?= clang

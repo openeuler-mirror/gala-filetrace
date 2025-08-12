@@ -3,7 +3,6 @@
 #include <unistd.h>
 #include <signal.h>
 #include <curl/curl.h> 
-
 #include "filetrace.skel.h" 
 #include "filetrace.h"
 
@@ -35,7 +34,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return -1;
     }
     const struct event *event = (struct event *)data;
-    std::cout << "Command: " << event->cmd << ", PID: " << event->pid << std::endl;
+    std::cout << "Command: " << event->cmd << ", PID: " << event->pid <<",UID:"<<event->uid << std::endl;
     return 0;
 }
 

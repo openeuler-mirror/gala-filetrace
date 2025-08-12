@@ -1,0 +1,17 @@
+{
+  "skip_processes_list": [
+    "systemd",
+    "kthreadd",
+    "rcu_sched",
+    "rcu_bh",
+    "migration",
+    "watchdog/0",
+    "ksoftirqd/0",
+    "kworker/0:0H",
+    "kworker/u8:0",
+    "kworker/u8:1",
+    "kworker/u8:2"
+  ],
+  "config_list":["/etc/hosts"],
+  "url": "http://localhost:8080/filetrace"
+}

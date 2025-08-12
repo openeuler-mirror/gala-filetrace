@@ -61,6 +61,7 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
 // args[3]: off_out (loff_t *) 
 // args[4]: len (size_t)
 // args[5]: flags (unsigned int)
+
 SEC("tracepoint/syscalls/sys_enter_copy_file_range")
 int copy_file_range(const struct trace_event_raw_sys_enter *ctx)    
 {
@@ -77,6 +78,11 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
 
     e->flag = 2;
 
+    u64 uid_gid = bpf_get_current_uid_gid();
+    u32 uid = (u32)uid_gid;        // low 32 bit is UID
+    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
+    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
+    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
 
     int fd = (__s32)ctx->args[2];
     t = (struct task_struct*)bpf_get_current_task();
@@ -166,6 +172,12 @@ int rename(const struct trace_event_raw_sys_enter *ctx)
 
     e->flag = 1;
 
+    u64 uid_gid = bpf_get_current_uid_gid();
+    u32 uid = (u32)uid_gid;        // low 32 bit is UID
+    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
+    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
+    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
+
     t = (struct task_struct*)bpf_get_current_task();
     //fill pid cmd ppid pcmd
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
@@ -175,17 +187,13 @@ int rename(const struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
     const char *filename_ptr = (const char *)ctx->args[1];
     bpf_probe_read_str(&e->filename, sizeof(e->filename), filename_ptr);
-    bpf_printk("Process calling sys_enter_rename newfilename:%s \\n", e->filename);
+    bpf_printk("Process calling sys_enter_rename newfilename:%s \n", e->filename);
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
 #endif
 
-// rename(const char *oldpath, const char *newpath)
-// args[0]: oldpath (const char *)
-// args[1]: newpath (const char *)
-SEC("tracepoint/syscalls/sys_enter_renameat")
-int renameat(const struct trace_event_raw_sys_enter *ctx)
+static __always_inline int handle_rename(const struct trace_event_raw_sys_enter *ctx)
 {
     struct task_struct* t;
     struct task_struct* p;
@@ -200,8 +208,13 @@ int renameat(const struct trace_event_raw_sys_enter *ctx)
 
     e->flag = 1;
 
+    u64 uid_gid = bpf_get_current_uid_gid();
+    u32 uid = (u32)uid_gid;
+    u32 gid = (u32)(uid_gid >> 32);
+    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
+    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
+
     t = (struct task_struct*)bpf_get_current_task();
-    //fill pid cmd ppid pcmd
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
@@ -210,15 +223,24 @@ int renameat(const struct trace_event_raw_sys_enter *ctx)
 
     const char *filename_ptr = (const char *)ctx->args[1];
     bpf_probe_read_str(&e->filename, sizeof(e->filename), filename_ptr);
-    bpf_printk("Process calling sys_enter_rename newfilename:%s \\n", e->filename);
+    bpf_printk("Process calling sys_enter_rename newfilename:%s\n", e->filename);
     bpf_ringbuf_submit(e, 0);
     return 0;
+}
+
+// rename(const char *oldpath, const char *newpath)
+// args[0]: oldpath (const char *)
+// args[1]: newpath (const char *)
+SEC("tracepoint/syscalls/sys_enter_renameat")
+int renameat(const struct trace_event_raw_sys_enter *ctx)
+{
+    return handle_rename(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_renameat2")
 int renameat2(const struct trace_event_raw_sys_enter *ctx)
 {
-    return renameat(ctx);
+    return handle_rename(ctx);
 }
 
 //for vim echo ...
@@ -231,7 +253,14 @@ int write(const struct trace_event_raw_sys_enter *ctx)
 {
     struct task_struct* t;
     struct task_struct* p;
-    
+    t = (struct task_struct*)bpf_get_current_task();
+    //skip kernel threads
+    unsigned int flags;
+    bpf_probe_read(&flags, sizeof(flags), &t->flags);
+    if (flags & PF_KTHREAD) 
+    {
+        return 0; 
+    }
     struct event *e;
     e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
     if (!e)
@@ -240,10 +269,17 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     }
     __builtin_memset(e, 0, sizeof(*e));
     e->flag = 0;
-
+    u64 uid_gid = bpf_get_current_uid_gid();
+    u32 uid = (u32)uid_gid;         // low 32 bit is UID
+    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
+    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
+    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
     int fd = (__s32)ctx->args[0];
+    if (fd == 0 || fd == 1 || fd == 2 ) {
+        bpf_ringbuf_discard(e, 0);
+        return 0; 
+    }
     //get file struct from task_struct
-    t = (struct task_struct*)bpf_get_current_task();
     struct files_struct *f = NULL;
     struct fdtable *fdt = NULL;
     struct file **fd_array = NULL;
@@ -254,7 +290,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     struct file *file_ptr = NULL;
     bpf_probe_read(&file_ptr, sizeof(file_ptr), &fd_array[fd]);
     file = file_ptr;
-    
+   
     //fill pid cmd ppid pcmd
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
@@ -269,6 +305,16 @@ int write(const struct trace_event_raw_sys_enter *ctx)
 
     umode_t mode = 0;
     bpf_probe_read(&mode, sizeof(mode), &inode->i_mode);
+    if ((mode & S_IFMT) != S_IFREG)
+    {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+    //skip kernel processes
+    /*if (e->pid == 0 || e->pid == 1 || e->pid == 2 || e->pid == 3) {
+        bpf_ringbuf_discard(e, 0);
+        return 0; 
+    }*/
 
     //get filename from struct file
     struct path path;
@@ -303,7 +349,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     bpf_printk("sys_enter_write detected: PID %d, file '%s'\n", e->pid, e->filename);
     bpf_ringbuf_submit(e, 0);
     return 0;
-}
+}   
 /*
 //writev(int fd, const struct iovec *iov, int iovcnt) for cache write to fd
 // args[0]: fd (int)
@@ -315,3 +361,44 @@ int writev(const struct trace_event_raw_sys_enter *ctx)
     return write(ctx);
 }
 */
+// execve(const char *pathname, char *const argv[], char *const envp[])
+// args[0]: pathname (const char *)
+SEC("tracepoint/syscalls/sys_enter_execve")
+int execve(const struct trace_event_raw_sys_enter *ctx){
+    struct pinfo_t p = {};
+    u64 tgid_pid;
+    u32 tgid, pid;
+    tgid_pid = bpf_get_current_pid_tgid();
+    tgid = tgid_pid >> 32;
+    pid = (u32)tgid_pid;
+
+    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+    struct task_struct *pp;
+    bpf_probe_read(&pp, sizeof(pp), &t->real_parent);
+    bpf_probe_read(&p.ppid, sizeof(p.ppid), &pp->tgid);
+    bpf_get_current_comm(&p.comm, sizeof(p.comm));
+    
+    const char *pathname_ptr = (const char *)ctx->args[0];
+    char *const *argv_ptr = (char *const *)ctx->args[1];
+    #pragma unroll
+    int i = 0;
+    char *arg_ptr;
+    char arg_buf[64]; 
+    for (i = 0; i < MAX_ARGS_COUNT; i++) {
+        bpf_probe_read_user(&arg_ptr, sizeof(arg_ptr), &argv_ptr[i]);
+    }
+
+    bpf_map_update_elem(&exec_map, &pid, &p, BPF_ANY);
+    return 0;
+
+}
+SEC("tracepoint/syscalls/sys_exit_execve")
+int exit(const struct trace_event_raw_sys_enter *ctx){
+    u64 tgid_pid;
+    u32 tgid, pid;
+    tgid_pid = bpf_get_current_pid_tgid();
+    tgid = tgid_pid >> 32;
+    pid = (u32)tgid_pid;
+    bpf_map_delete_elem(&exec_map, &pid);
+    return 0;
+}
