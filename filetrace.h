@@ -9,6 +9,7 @@
 #define MAX_TASK_COMM_LEN 32
 #define ARGSIZE 16
 #define MAX_ARGS 4
+#define MAX_ARGS_COUNT 20 
 
 #ifndef S_IFMT
 #define S_IFMT  00170000
@@ -21,8 +22,7 @@
 #ifndef S_ISREG
 #define S_ISREG(m)  (((m) & 00170000) == 0100000)
 #endif
-
-
+#define PF_KTHREAD 0x00200000
 struct event {
     unsigned int pid;
     unsigned int ppid;
