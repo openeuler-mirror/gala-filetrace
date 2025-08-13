@@ -1,10 +1,10 @@
 #ifndef FILETRACE_H
 #define FILETRACE_H
 
- 
+
 #define MAX_DEPTH 4
 #define MAX_DIRNAME_LEN 16
-#define MAX_FILENAME_LEN 32
+#define MAX_FILENAME_LEN 64
 #define MAX_CMD_LEN 32
 #define MAX_TASK_COMM_LEN 32
 #define ARGSIZE 16
@@ -23,6 +23,14 @@
 #define S_ISREG(m)  (((m) & 00170000) == 0100000)
 #endif
 #define PF_KTHREAD 0x00200000
+
+#define sys_enter_unlinkat_nr 0;
+#define sys_enter_copy_file_range_nr 1;
+#define sys_enter_rename_nr 2;
+#define sys_enter_renameat_nr 3;
+#define sys_enter_renameat2_nr 4;
+#define sys_enter_write_nr 5;
+#define AT_FDCWD -100
 struct event {
     unsigned int pid;
     unsigned int ppid;
@@ -44,12 +52,30 @@ struct event {
     unsigned int uid,gid;
 };
 
+//save parent process info
 struct pinfo_t {
-    unsigned int ppid;
-    char comm[MAX_CMD_LEN];
-    char arg1[ARGSIZE];
+    unsigned int pid;       // parent pid
+    char comm[MAX_CMD_LEN]; //pid command
+    char arg1[ARGSIZE];     // pid arguments ... 
     char arg2[ARGSIZE];
     char arg3[ARGSIZE];
     char arg4[ARGSIZE];
+};
+enum syscall_flag {
+    SYS_unlinkat = 0,
+    SYS_copy_file_range,
+    SYS_rename,
+    SYS_renameat,
+    SYS_renameat2,
+    SYS_write,
+    SYS_NR_MAX
+};
+static const char *nr_map[] = {
+    "sys_enter_unlinkat",        // SYS_unlinkat = 0
+    "sys_enter_copy_file_range", // SYS_copy_file_range = 1
+    "sys_enter_rename",          // SYS_rename = 2
+    "sys_enter_renameat",        // SYS_renameat = 3
+    "sys_enter_renameat2",       // SYS_renameat2 = 4
+    "sys_enter_write"            // SYS_write = 5
 };
 #endif // FILETRACE_H

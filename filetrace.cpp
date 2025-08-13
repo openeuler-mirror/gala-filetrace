@@ -1,15 +1,19 @@
 #include <iostream>
-#include <bpf/libbpf.h>
+#include <vector>
+#include <linux/bpf.h>
+
+#include <bpf/bpf.h>
 #include <unistd.h>
 #include <signal.h>
-#include <curl/curl.h> 
+
 #include "filetrace.skel.h" 
 #include "filetrace.h"
+#include "post.hpp"
 
 using namespace std;
 
 static struct filetrace_bpf *skel;
-static CURL *GLOBLE_CURL = NULL;
+PostData *Postdata_i = nullptr;
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
@@ -17,6 +21,7 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
     //vfprintf(stderr, format, args);
     return 0;
 }
+
 
 static void sig_handler(int sig)
 {
@@ -33,8 +38,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         std::cerr << "Received event with insufficient data size: " << data_sz << std::endl;
         return -1;
     }
-    const struct event *event = (struct event *)data;
-    std::cout << "Command: " << event->cmd << ", PID: " << event->pid <<",UID:"<<event->uid << std::endl;
+    const struct event *e = (struct event *)data;
+    std::string file_full_path;
+
+    
+    std::cout << "Command: " << e->cmd << ", PID: " << e->pid << ",filename: "
+              << (!file_full_path.empty() ? file_full_path : std::string(e->filename))
+              << ", func: " << nr_map[e->flag] << std::endl; 
+    Postdata_i->send(*e);
     return 0;
 }
 
@@ -56,20 +67,29 @@ int main()
         std::cerr << "Error: " << strerror(errno) << std::endl;
         return errno;
     }
-
+    //init PostData instance
+    Postdata_i = new PostData(skel);
+    if (!Postdata_i) 
+    {
+        std::cerr << "Failed to create PostData instance!" << std::endl;
+        filetrace_bpf__destroy(skel);
+        return -ENOMEM;
+    }
     // Attach the eBPF program to its hook
     err = filetrace_bpf__attach(skel);
     if (err) 
     {
         std::cerr << "Failed to attach eBPF program!" << std::endl;
-        goto cleanup;
+        filetrace_bpf__destroy(skel);
+        return err;
     }
     ringbuf = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
     if (!ringbuf) 
     {
         err = -errno;
         std::cerr << "Error: " << strerror(errno) << std::endl;
-        goto cleanup;
+        filetrace_bpf__destroy(skel);
+        return err;
     }
 
     std::cout << "eBPF program attached, press Ctrl+C to exit." << std::endl;
@@ -83,7 +103,7 @@ int main()
             break;
         }
     }
-cleanup:
+
     if (ringbuf)
     {
         ring_buffer__free(ringbuf);
