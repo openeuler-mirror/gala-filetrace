@@ -18,7 +18,9 @@ PostData *Postdata_i = nullptr;
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     //trace libbpf messages to stderr
-    //vfprintf(stderr, format, args);
+    #ifdef DEBUG
+    vfprintf(stderr, format, args);
+    #endif
     return 0;
 }
 
@@ -40,16 +42,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     }
     const struct event *e = (struct event *)data;
     std::string file_full_path;
-
-    
-    std::cout << "Command: " << e->cmd << ", PID: " << e->pid << ",filename: "
-              << (!file_full_path.empty() ? file_full_path : std::string(e->filename))
-              << ", func: " << nr_map[e->flag] << std::endl; 
     Postdata_i->send(*e);
     return 0;
 }
 
-int main() 
+int main(int argc, char **argv) 
 {
     int err;
     struct ring_buffer *ringbuf = NULL;

@@ -1,6 +1,7 @@
 #ifndef FILETRACE_H
 #define FILETRACE_H
 
+#include <linux/version.h>
 
 #define MAX_DEPTH 4
 #define MAX_DIRNAME_LEN 16

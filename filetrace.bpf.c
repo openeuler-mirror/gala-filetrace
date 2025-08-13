@@ -155,68 +155,10 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-//for sed command
-// rename(const char *oldpath, const char *newpath)
-// args[0]: oldpath (const char *)
-// args[1]: newpath (const char *)
-#ifdef __x86_64__
-SEC("tracepoint/syscalls/sys_enter_rename")
-int rename(const struct trace_event_raw_sys_enter *ctx)
+static __always_inline int handle_rename(const struct trace_event_raw_sys_enter *ctx, struct event *e)
 {
     struct task_struct* t;
     struct task_struct* p;
-
-    struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
-    {
-        return 0;
-    }
-    __builtin_memset(e, 0, sizeof(*e));
-
-    e->flag = SYS_rename;
-
-    u64 uid_gid = bpf_get_current_uid_gid();
-    u32 uid = (u32)uid_gid;         // low 32 bit is UID
-    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
-    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
-    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
-
-    t = (struct task_struct*)bpf_get_current_task();
-    //fill pid cmd ppid pcmd
-    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
-    bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
-    bpf_probe_read(&p, sizeof(p), &t->real_parent);
-    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
-    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
-    const char *filename_ptr = (const char *)ctx->args[1];
-    const char *oldfilename_ptr = (const char *)ctx->args[0];
-    bpf_probe_read_str(&e->filename, sizeof(e->filename), filename_ptr);
-    bpf_probe_read_str(&e->oldfilename, sizeof(e->oldfilename), oldfilename_ptr);
-    #ifdef DEBUG
-    bpf_printk("Process calling sys_enter_rename newfilename:%s \n", e->filename);
-    bpf_printk("Process calling sys_enter_rename oldfilename:%s \n", e->oldfilename);
-    #endif
-    bpf_ringbuf_submit(e, 0);
-    return 0;
-}
-#endif
-
-static __always_inline int handle_rename(const struct trace_event_raw_sys_enter *ctx)
-{
-    struct task_struct* t;
-    struct task_struct* p;
-
-    struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
-    {
-        return 0;
-    }
-    __builtin_memset(e, 0, sizeof(*e));
-
-    e->flag = SYS_renameat;
-
     u64 uid_gid = bpf_get_current_uid_gid();
     u32 uid = (u32)uid_gid;
     u32 gid = (u32)(uid_gid >> 32);
@@ -225,27 +167,58 @@ static __always_inline int handle_rename(const struct trace_event_raw_sys_enter 
 
     t = (struct task_struct*)bpf_get_current_task();
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
-    bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
+    //bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
+    bpf_get_current_comm(&e->cmd, sizeof(e->cmd));
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
     bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
 
     const char *filename_ptr = (const char *)ctx->args[1];
+    const char *oldfilename_ptr = (const char *)ctx->args[0];
     bpf_probe_read_str(&e->filename, sizeof(e->filename), filename_ptr);
+    bpf_probe_read_str(&e->oldfilename, sizeof(e->oldfilename), oldfilename_ptr);
+    bpf_printk("rename detected: handle_rename cmd=%s\n", e->cmd);
     #ifdef DEBUG
-    bpf_printk("Process calling sys_enter_rename newfilename:%s\n", e->filename);
+    bpf_printk("Process calling handle_rename newfilename:%s\n", e->filename);
+    bpf_printk("Process calling handle_rename oldfilename:%s\n", e->oldfilename);
     #endif
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
-
+//for sed command
+// rename(const char *oldpath, const char *newpath)
+// args[0]: oldpath (const char *)
+// args[1]: newpath (const char *)
+#ifdef __x86_64__
+SEC("tracepoint/syscalls/sys_enter_rename")
+int rename(const struct trace_event_raw_sys_enter *ctx)
+{
+    struct event *e;
+    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+    if (!e)
+    {
+        return 0;
+    }
+    __builtin_memset(e, 0, sizeof(*e));
+    e->flag = SYS_rename;
+    return handle_rename(ctx, e);
+}
+#endif
 // rename(const char *oldpath, const char *newpath)
 // args[0]: oldpath (const char *)
 // args[1]: newpath (const char *)
 SEC("tracepoint/syscalls/sys_enter_renameat")
 int renameat(const struct trace_event_raw_sys_enter *ctx)
 {
-    return handle_rename(ctx);
+    struct event *e;
+    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+    if (!e)
+    {
+        return 0;
+    }
+    __builtin_memset(e, 0, sizeof(*e));
+    e->flag = SYS_renameat;
+    return handle_rename(ctx, e);
 }
 //for move
 /*  move oldfile newfile  
@@ -341,14 +314,98 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
 
 }
 
-//for vim echo ...
-// write(int fd, const void *buf, size_t count)
-// args[0]: fd (int)
-// args[1]: buf (const void *)
-// args[2]: count (size_t)
+
+// execve(const char *pathname, char *const argv[], char *const envp[])
+// args[0]: pathname (const char *)
+SEC("tracepoint/syscalls/sys_enter_execve")
+int enter_execve(const struct trace_event_raw_sys_enter *ctx){
+    struct pinfo_t p = {};
+    unsigned int pid;
+    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+    bpf_probe_read(&pid, sizeof(pid), &t->pid);
+
+    struct task_struct *p_parent;
+    bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
+    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
+
+    
+    bpf_get_current_comm(&p.comm, sizeof(p.comm));
+    /*const char *pathname_ptr = (const char *)ctx->args[0];
+    char *const *argv_ptr = (char *const *)ctx->args[1];
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        if (i == 0) {
+            bpf_probe_read_user(&p.arg1, sizeof(p.arg1), &argv_ptr[i]);
+        } else if (i == 1) {
+            bpf_probe_read_user(&p.arg2, sizeof(p.arg2), &argv_ptr[i]);
+        } else if (i == 2) {
+            bpf_probe_read_user(&p.arg3, sizeof(p.arg3), &argv_ptr[i]);
+        } else if (i == 3) {
+            bpf_probe_read_user(&p.arg4, sizeof(p.arg4), &argv_ptr[i]);
+        }
+    }*/
+    #ifdef DEBUG
+    bpf_printk("sys_enter_execve detected: PID=%u, ppid=%u, comm=%s\n", pid, p.pid, p.comm);
+    #endif
+    bpf_map_update_elem(&exec_map, &pid, &p, BPF_ANY);
+    return 0;
+}
+/*struct trace_event_raw_sched_process_exec {
+    struct trace_entry ent;
+
+    pid_t pid;
+    char *filename;
+    char __data[0];
+};*/
+SEC("tracepoint/sched/sched_process_exec")
+int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
+{
+    return enter_execve((const struct trace_event_raw_sys_enter *)ctx);
+}
+
+//openEuler 2503 LTS
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+
 SEC("tracepoint/syscalls/sys_enter_write")
 int write(const struct trace_event_raw_sys_enter *ctx)
 {
+    struct event *e;
+    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+    if (!e)
+    {
+        return 0;
+    }
+    __builtin_memset(e, 0, sizeof(*e));
+    e->flag = SYS_write;
+    bpf_get_current_comm(&e->cmd, sizeof(e->cmd));
+    if(e->cmd[0] == 's' && e->cmd[1] == 's' && e->cmd[2] == 'h' && e->cmd[3] == 'd') {
+        bpf_ringbuf_discard(e, 0);
+        return 0; 
+    }
+    u64 uid_gid = bpf_get_current_uid_gid();
+    u32 uid = (u32)uid_gid;         // low 32 bit is UID
+    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
+    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
+    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
+    int fd = (__s32)ctx->args[0];
+    if (fd == 0 || fd == 1 || fd == 2 ) {
+        bpf_ringbuf_discard(e, 0);
+        return 0; 
+    }
+    bpf_printk("sys_enter_write detected: PID %d, cmd %s\n", bpf_get_current_pid_tgid() >> 32, e->cmd);
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+#else
+/*for vim echo ...
+write(int fd, const void *buf, size_t count)
+args[0]: fd (int)
+args[1]: buf (const void *)
+args[2]: count (size_t)*/
+SEC("tracepoint/syscalls/sys_enter_write")
+int write(const struct trace_event_raw_sys_enter *ctx)
+{
+    
     struct task_struct* t;
     struct task_struct* p;
     t = (struct task_struct*)bpf_get_current_task();
@@ -417,6 +474,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     }*/
 
     //get filename from struct file
+    //static long (*bpf_d_path)(struct path *path, char *buf, __u32 sz) ?
     struct path path;
     struct dentry* dentry;
     struct qstr pathname;
@@ -463,50 +521,4 @@ int writev(const struct trace_event_raw_sys_enter *ctx)
     return write(ctx);
 }
 */
-// execve(const char *pathname, char *const argv[], char *const envp[])
-// args[0]: pathname (const char *)
-SEC("tracepoint/syscalls/sys_enter_execve")
-int enter_execve(const struct trace_event_raw_sys_enter *ctx){
-    struct pinfo_t p = {};
-    unsigned int pid;
-    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-    bpf_probe_read(&pid, sizeof(pid), &t->pid);
-
-    struct task_struct *p_parent;
-    bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
-    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
-
-    
-    bpf_get_current_comm(&p.comm, sizeof(p.comm));
-    /*const char *pathname_ptr = (const char *)ctx->args[0];
-    char *const *argv_ptr = (char *const *)ctx->args[1];
-    #pragma unroll
-    for (int i = 0; i < 4; i++) {
-        if (i == 0) {
-            bpf_probe_read_user(&p.arg1, sizeof(p.arg1), &argv_ptr[i]);
-        } else if (i == 1) {
-            bpf_probe_read_user(&p.arg2, sizeof(p.arg2), &argv_ptr[i]);
-        } else if (i == 2) {
-            bpf_probe_read_user(&p.arg3, sizeof(p.arg3), &argv_ptr[i]);
-        } else if (i == 3) {
-            bpf_probe_read_user(&p.arg4, sizeof(p.arg4), &argv_ptr[i]);
-        }
-    }*/
-    #ifdef DEBUG
-    bpf_printk("sys_enter_execve detected: PID=%u, ppid=%u, comm=%s\n", pid, p.pid, p.comm);
-    #endif
-    bpf_map_update_elem(&exec_map, &pid, &p, BPF_ANY);
-    return 0;
-}
-/*struct trace_event_raw_sched_process_exec {
-    struct trace_entry ent;
-
-    pid_t pid;
-    char *filename;
-    char __data[0];
-};*/
-SEC("tracepoint/sched/sched_process_exec")
-int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
-{
-    return enter_execve((const struct trace_event_raw_sys_enter *)ctx);
-}
+#endif

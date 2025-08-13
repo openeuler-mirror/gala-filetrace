@@ -195,7 +195,7 @@ std::string PostData::convert_to_string(struct event &e)
     {
         json_data["file"] = get_full_path(&e);
     } else {
-        json_data["file"] = e.oldfilename;
+        json_data["file"] = e.filename;
     }
     json_data["user"] = username;
     json_data["group"] = groupname;
@@ -218,28 +218,33 @@ bool PostData::is_valid_event(struct event &e)
     std::string cmd = e.cmd;
     switch (e.flag) {
         case SYS_unlinkat:
+            fullpath = get_full_path(&e);
+            if(std::find(conf_list.begin(), conf_list.end(), fullpath) == conf_list.end()) {
+                return false; 
+            }
+            break;
         case SYS_copy_file_range:
         case SYS_rename:
         case SYS_renameat:
         case SYS_renameat2:
-            /*#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
-            if(cmd == "vim" ||e.oldfilename[0] != '\0') {
-                memcpy(e.filename, e.oldfilename, sizeof(e.filename));
+            if(cmd == "vim" && e.oldfilename[0] != '\0') {
+                if(std::find(conf_list.begin(), conf_list.end(), e.oldfilename) == conf_list.end()) {
+                    return false; 
+                }
+            } else {
+                if(std::find(conf_list.begin(), conf_list.end(), e.filename) == conf_list.end()) {
+                    return false; 
+                }
             }
-            #endif*/
-            if(std::find(conf_list.begin(), conf_list.end(), e.oldfilename) == conf_list.end()) {
-                return false; 
-            }
-            return true;
-            break;        
+            break;       
         case SYS_write:
             fullpath = get_full_path(&e);
+            if(std::find(conf_list.begin(), conf_list.end(), fullpath) == conf_list.end()) {
+                return false; 
+            }
             break;
         default:
             return false; 
-    }
-    if(std::find(conf_list.begin(), conf_list.end(), fullpath) == conf_list.end()) {
-        return false; 
     }
     return true; 
 }
