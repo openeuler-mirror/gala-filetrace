@@ -1,17 +1,19 @@
 {
+  "host_id": "1",
+  "domain_name": "zone1",
   "skip_processes_list": [
     "systemd",
     "kthreadd",
     "rcu_sched",
     "rcu_bh",
     "migration",
-    "watchdog/0",
-    "ksoftirqd/0",
-    "kworker/0:0H",
-    "kworker/u8:0",
-    "kworker/u8:1",
-    "kworker/u8:2"
+    "watchdog"
   ],
   "config_list":["/etc/hosts"],
-  "url": "http://localhost:8080/filetrace"
+  "publish": false,
+  "ragdoll_api": "http://localhost:8080/filetrace",
+  "node_name": "node1",
+  "target": "http://localhost:9090/metrics",
+  "server": "127.0.0.1",
+  "port": 8080
 }
