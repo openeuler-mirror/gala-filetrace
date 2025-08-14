@@ -311,8 +311,6 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
     return 0;
 
 }
-
-
 // execve(const char *pathname, char *const argv[], char *const envp[])
 // args[0]: pathname (const char *)
 SEC("tracepoint/syscalls/sys_enter_execve")
@@ -375,13 +373,40 @@ int trace_dup2(struct trace_event_raw_sys_enter *ctx)
 
 SEC("tracepoint/syscalls/sys_enter_write")
 int trace_write(struct trace_event_raw_sys_enter *ctx) {
-    char comm[16];
-    bpf_get_current_comm(&comm, sizeof(comm));
+    struct event *e;
+    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+    if (!e)
+    {
+        return 0;
+    }
+    __builtin_memset(e, 0, sizeof(*e));
+    e->flag = SYS_write;
+    u64 uid_gid = bpf_get_current_uid_gid();
+    u32 uid = (u32)uid_gid;         // low 32 bit is UID
+    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
+    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
+    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
+    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
+    bpf_probe_read(&p, sizeof(p), &t->real_parent);
+    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
+    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
+
+    int fd = (__s32)ctx->args[0];
+    if (fd == 0 || fd == 1 || fd == 2 ) {
+        bpf_ringbuf_discard(e, 0);
+        return 0; 
+    }
     int fd = ctx->args[0];
-    if(fd < 3 ){return 0;}
-    char fname[16];
-    bpf_fd2path(fname, sizeof(fname), fd);
-    bpf_printk("sys_enter_write: cmd [%s],filename [%s] \n", comm, fname);
+    if(fd < 3 ){
+        return 0;
+    }
+    bpf_fd2path(e->filename, sizeof(e->filename), fd);
+    bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), fname);
+    #ifdef DEBUG
+    bpf_printk("sys_enter_write: cmd [%s],filename [%s] \n", e->cmd, e->filename);
+    #endif
+    bpf_ringbuf_submit(e, 0);
     return 0;
 }
 #else

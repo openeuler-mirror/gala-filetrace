@@ -1,7 +1,6 @@
 REQUIRED_TOOLS := clang llvm bpftool
 REQUIRED_PKGS := libcurl-devel libelf-dev libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
 
-
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
     TARGET_ARCH := x86
@@ -24,8 +23,8 @@ endif
 
 CINCLUDE = -I./
 #CINCLUDE += -I/usr/src/kernels/$(shell uname -r)
-CINCLUDE += -I/usr/src/linux-6.6.0-72.6.0.56.oe2503.x86_64/include/uapi/
-CINCLUDE += -I/usr/src/kernels/6.6.0-72.6.0.56.oe2503.x86_64/include/
+#CINCLUDE += -I/usr/src/linux-6.6.0-72.6.0.56.oe2503.x86_64/include/uapi/
+#CINCLUDE += -I/usr/src/kernels/6.6.0-72.6.0.56.oe2503.x86_64/include/
 
 CLANG ?= clang
 CLANGXX ?= clang++

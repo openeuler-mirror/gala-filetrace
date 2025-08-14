@@ -6,13 +6,12 @@ PostData::PostData(filetrace_bpf *skel)
     std::cout << "Initializing PostData!" << std::endl;
     int ret = load_config(config_json);
     if (ret != 0) {
-        std::cerr << "Failed to load configuration from " << config_json << std::endl;
         throw std::runtime_error("Configuration load failed");
     }
     this->skel = skel;
     this->exec_map_fd = bpf_map__fd(skel->maps.exec_map);
     if (exec_map_fd < 0) {
-        throw std::runtime_error("ailed to get exec_map fd!");
+        throw std::runtime_error("Failed to get exec_map fd!");
     }
     std::thread server_thread(&PostData::start_http_server, this);
     server_thread.detach(); // Detach the thread to run the HTTP server in the background
