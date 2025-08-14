@@ -1,7 +1,6 @@
-#dependencies: libcurl-devel libelf-dev libbpf-devel zlib-devel clang llvm bpftool nlohmann-json-devel
-
 REQUIRED_TOOLS := clang llvm bpftool
-REQUIRED_PKGS := libcurl-devel libelf-dev libbpf-devel zlib-devel
+REQUIRED_PKGS := libcurl-devel libelf-dev libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
+
 
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -16,7 +15,15 @@ CFLAGS = -Wno-error
 CFLAGS += -Wno-unknown-attributes
 CFLAGS += -Wno-deprecated-declarations
 CFLAGS += -g0 -fno-asynchronous-unwind-tables
-CINCLUDE = -I/usr/src/kernels/$(shell uname -r)
+CFLAGS += -ferror-limit=5
+CFLAGSPLUS += -std=c++17
+ifeq ($(DEBUG),1)
+    CXXFLAGS += -DDEBUG
+    CFLAGS += -DDEBUG
+endif
+
+CINCLUDE = -I./
+#CINCLUDE += -I/usr/src/kernels/$(shell uname -r)
 
 CLANG ?= clang
 CLANGXX ?= clang++
@@ -26,7 +33,7 @@ OUTPUT_DIR ?= output
 BPF_OBJ := $(OUTPUT_DIR)/filetrace.bpf.o
 
 
-all: $(TARGETS) filetrace.skel.h filetrace.o filetrace
+all: $(TARGETS) filetrace.skel.h filetrace.o post.o filetrace
 
 .PHONY: clean
 
@@ -49,11 +56,15 @@ filetrace.skel.h: $(BPF_OBJ)
 #compile filetrace.cpp to filetrace.o
 filetrace.o: filetrace.cpp 
 	@echo "Compiling $< to $@ ..."
-	@$(CLANGXX) -c $(CFLAGS) $(CINCLUDE) -I./ -o $(OUTPUT_DIR)/$@   $<
+	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE)  -o $(OUTPUT_DIR)/$@ $<
 
-filetrace: $(OUTPUT_DIR)/filetrace.o
-	@echo "Linking filetrace.o to filetrace ..."
-	@$(CLANGXX) -o $@ $< -lelf -lz -lbpf -I./ $(CINCLUDE) $(CFLAGS)
-	
+post.o: post.cpp
+	@echo "Compiling post.cpp to post.o ..."
+	@$(CLANGXX)  -c $(CFLAGS) $(CFLAGSPLUS)  $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
+
+filetrace: $(OUTPUT_DIR)/filetrace.o $(OUTPUT_DIR)/post.o
+	@echo "Linking filetrace.o post.o to filetrace ..."
+	@$(CLANGXX) -lelf -lcurl -lbpf -lcpp-httplib $(CINCLUDE) $(CFLAGS)  $(CFLAGSPLUS) -o $@ $^
+
 $(OUTPUT_DIR):
 	@mkdir $(OUTPUT_DIR)
