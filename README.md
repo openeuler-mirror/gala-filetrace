@@ -1,37 +1,46 @@
-# gala-filetrace
+# 1.gala-filetrace
 
-#### 介绍
-Real-time monitoring component of configuration files based on eBPF
+gala-filetrace是A-OPS中一个组件，主要用于对openEuler系统中配置文件实时监控。
+支持监控以下命令和系统调用：
+命令：
+#### vim/vi,sed,echo,cp,move
+#### syscall write
 
-#### 软件架构
-软件架构说明
+# 2.编译和运行
 
-
-#### 安装教程
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
-
-#### 使用说明
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
-
-#### 参与贡献
-
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
+目前适配支持的openEuler版本:
+| 系统版本      | 架构         |  适配          |
+| :---         |    :----:   |          ---: |
+| openEuler 2203_SP3   | aarch64       |  OK   |
+| openEuler 2203_SP3   | x86           |  OK   |
+| openEuler 2403_SP1   | aarch64       |  OK   |
+| openEuler 2403_SP1   | x86           |  OK   |
+| openEuler 2503       | aarch64       |  OK   |
+| openEuler 2503       | x86           |  OK   |
+---
+### 2.1 依赖安装
+| 系统版本      | 依赖安装         |
+| :---         |    :----:   | 
+| openEuler 2203_SP3   | # yum install bpftrace libcurl-devel libbpf-devel cpp-httplib-devel zlib-devel nlohmann-json-devel bpftool clang llvm  cpp-httplib-devel   |
 
 
-#### 特技
+### 2.2 编译
+```bash
+# make
+#debug  add bpf_printk cat /sys/kernel/debug/tracing/trace_pipe
+#make DEBUG=1
+    
+```
+### 2.3 运行
+```bash
+# ./filetrace
+```
+## 2.4 配置说明
+配置说明:
+| 配置项        | 值         |  说明          |
+| :---         |    :----:   |          ---: |
+| host_id       | string          |     |
+| domain_name       | string           |     |
+| ragdoll_api       | string           |     |
+| publish       | bool         |     是否推送到ragdoll |
 
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
