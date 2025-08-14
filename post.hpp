@@ -11,6 +11,7 @@
 #include <utmpx.h> 
 #include <nlohmann/json.hpp>
 #include <httplib.h>
+#include <linux/version.h>
 
 extern "C" {
 #include <bpf/bpf.h>

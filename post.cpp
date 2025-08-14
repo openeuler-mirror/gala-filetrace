@@ -208,7 +208,7 @@ std::string PostData::convert_to_string(struct event &e)
 
 bool PostData::is_valid_event(struct event &e) 
 {
-    std::string fullpath = "";
+   std::string fullpath = "";
     if (e.pid == 0) {
         return false; 
     }

@@ -178,10 +178,8 @@ static __always_inline int handle_rename(const struct trace_event_raw_sys_enter 
     bpf_probe_read_str(&e->filename, sizeof(e->filename), filename_ptr);
     bpf_probe_read_str(&e->oldfilename, sizeof(e->oldfilename), oldfilename_ptr);
     bpf_printk("rename detected: handle_rename cmd=%s\n", e->cmd);
-    #ifdef DEBUG
     bpf_printk("Process calling handle_rename newfilename:%s\n", e->filename);
     bpf_printk("Process calling handle_rename oldfilename:%s\n", e->oldfilename);
-    #endif
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
@@ -318,36 +316,10 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
 // execve(const char *pathname, char *const argv[], char *const envp[])
 // args[0]: pathname (const char *)
 SEC("tracepoint/syscalls/sys_enter_execve")
-int enter_execve(const struct trace_event_raw_sys_enter *ctx){
-    struct pinfo_t p = {};
-    unsigned int pid;
-    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-    bpf_probe_read(&pid, sizeof(pid), &t->pid);
+int enter_execve(struct trace_event_raw_sys_enter *ctx)
+{
+    const char *filename = (const char *)ctx->args[0];
 
-    struct task_struct *p_parent;
-    bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
-    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
-
-    
-    bpf_get_current_comm(&p.comm, sizeof(p.comm));
-    /*const char *pathname_ptr = (const char *)ctx->args[0];
-    char *const *argv_ptr = (char *const *)ctx->args[1];
-    #pragma unroll
-    for (int i = 0; i < 4; i++) {
-        if (i == 0) {
-            bpf_probe_read_user(&p.arg1, sizeof(p.arg1), &argv_ptr[i]);
-        } else if (i == 1) {
-            bpf_probe_read_user(&p.arg2, sizeof(p.arg2), &argv_ptr[i]);
-        } else if (i == 2) {
-            bpf_probe_read_user(&p.arg3, sizeof(p.arg3), &argv_ptr[i]);
-        } else if (i == 3) {
-            bpf_probe_read_user(&p.arg4, sizeof(p.arg4), &argv_ptr[i]);
-        }
-    }*/
-    #ifdef DEBUG
-    bpf_printk("sys_enter_execve detected: PID=%u, ppid=%u, comm=%s\n", pid, p.pid, p.comm);
-    #endif
-    bpf_map_update_elem(&exec_map, &pid, &p, BPF_ANY);
     return 0;
 }
 /*struct trace_event_raw_sched_process_exec {
@@ -357,43 +329,59 @@ int enter_execve(const struct trace_event_raw_sys_enter *ctx){
     char *filename;
     char __data[0];
 };*/
-SEC("tracepoint/sched/sched_process_exec")
-int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
-{
-    return enter_execve((const struct trace_event_raw_sys_enter *)ctx);
-}
 
 //openEuler 2503 LTS
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+static __inline int bpf_strcmp(const char *s1, const char *s2)
+{
+    #pragma unroll
+    for (int i = 0; i < 64; i++) {
+        char c1 = s1[i];
+        char c2 = s2[i];
+        if (c1 != c2)
+            return 1;
+        if (c1 == '\0')
+            break;
+    }
+    return 0;
+}
+SEC("tracepoint/syscalls/sys_enter_dup2")
+int trace_dup2(struct trace_event_raw_sys_enter *ctx)
+{
+    char comm[16];
+    bpf_get_current_comm(&comm, sizeof(comm));
+    int oldfd = ctx->args[0];
+    int newfd = ctx->args[1];
+    if(oldfd != 3 || newfd != 1 ){
+       return 0;
+    }
+    struct task_struct *t = (struct task_struct*)bpf_get_current_task();
+    /*struct files_struct *files = t->files;
+    if(files == NULL){
+       bpf_printk("dup files_struct is null.\n");
+       return 0;
+    }*/
+    char fname[16];
+    bpf_fd2path(fname, sizeof(fname), oldfd);
+    if(!bpf_strcmp(fname, "/dev/null")){
+	    return 0 ;
+    }
+    if(fname[0]!='/'){
+	    return 0 ;
+    }
+    bpf_printk("dup2 comm = %s,filename=%s , oldfd=%d, newfd=%d\n",comm,fname, oldfd, newfd);
+    return 0;
+}
 
 SEC("tracepoint/syscalls/sys_enter_write")
-int write(const struct trace_event_raw_sys_enter *ctx)
-{
-    struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
-    {
-        return 0;
-    }
-    __builtin_memset(e, 0, sizeof(*e));
-    e->flag = SYS_write;
-    bpf_get_current_comm(&e->cmd, sizeof(e->cmd));
-    if(e->cmd[0] == 's' && e->cmd[1] == 's' && e->cmd[2] == 'h' && e->cmd[3] == 'd') {
-        bpf_ringbuf_discard(e, 0);
-        return 0; 
-    }
-    u64 uid_gid = bpf_get_current_uid_gid();
-    u32 uid = (u32)uid_gid;         // low 32 bit is UID
-    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
-    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
-    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
-    int fd = (__s32)ctx->args[0];
-    if (fd == 0 || fd == 1 || fd == 2 ) {
-        bpf_ringbuf_discard(e, 0);
-        return 0; 
-    }
-    bpf_printk("sys_enter_write detected: PID %d, cmd %s\n", bpf_get_current_pid_tgid() >> 32, e->cmd);
-    bpf_ringbuf_submit(e, 0);
+int trace_write(struct trace_event_raw_sys_enter *ctx) {
+    char comm[16];
+    bpf_get_current_comm(&comm, sizeof(comm));
+    int fd = ctx->args[0];
+    if(fd < 3 ){return 0;}
+    char fname[16];
+    bpf_fd2path(fname, sizeof(fname), fd);
+    bpf_printk("sys_enter_write: cmd [%s],filename [%s] \n", comm, fname);
     return 0;
 }
 #else
@@ -405,7 +393,6 @@ args[2]: count (size_t)*/
 SEC("tracepoint/syscalls/sys_enter_write")
 int write(const struct trace_event_raw_sys_enter *ctx)
 {
-    
     struct task_struct* t;
     struct task_struct* p;
     t = (struct task_struct*)bpf_get_current_task();
@@ -435,6 +422,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
         bpf_ringbuf_discard(e, 0);
         return 0; 
     }
+    
     //get file struct from task_struct
     struct files_struct *f = NULL;
     struct fdtable *fdt = NULL;
@@ -474,7 +462,6 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     }*/
 
     //get filename from struct file
-    //static long (*bpf_d_path)(struct path *path, char *buf, __u32 sz) ?
     struct path path;
     struct dentry* dentry;
     struct qstr pathname;
