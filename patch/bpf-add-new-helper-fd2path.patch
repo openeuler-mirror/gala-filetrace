@@ -1,0 +1,144 @@
+diff --git a/include/linux/bpf.h b/include/linux/bpf.h
+index 2c2c29b49845..d73314a7e674 100644
+--- a/include/linux/bpf.h
++++ b/include/linux/bpf.h
+@@ -1082,6 +1082,7 @@ extern const struct bpf_func_proto bpf_get_local_storage_proto;
+ extern const struct bpf_func_proto bpf_strtol_proto;
+ extern const struct bpf_func_proto bpf_strtoul_proto;
+ extern const struct bpf_func_proto bpf_tcp_sock_proto;
++extern const struct bpf_func_proto bpf_fd2path_proto;
+ 
+ /* Shared helpers among cBPF and eBPF. */
+ void bpf_user_rnd_init_once(void);
+diff --git a/include/uapi/linux/bpf.h b/include/uapi/linux/bpf.h
+index 4af8b0819a32..fdb37740951f 100644
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -2773,6 +2773,15 @@ union bpf_attr {
+  *
+  * 		This helper is similar to **bpf_perf_event_output**\ () but
+  * 		restricted to raw_tracepoint bpf programs.
++ *
++ * int bpf_fd2path(char *path, u32 size, int fd)
++ *	Description
++ *		Get **file** atrribute from the current task by *fd*, then call
++ *		**d_path** to get it's absolute path and copy it as string into
++ *		*path* of *size*. The **path** also support pseudo filesystems
++ *		(whether or not it can be mounted). The *size* must be strictly
++ *		positive. On success, the helper makes sure that the *path* is
++ *		NUL-terminated. On failure, it is filled with zeroes.
+  * 	Return
+  * 		0 on success, or a negative error in case of failure.
+  */
+@@ -2888,7 +2897,8 @@ union bpf_attr {
+ 	FN(sk_storage_delete),		\
+ 	FN(send_signal),		\
+ 	FN(tcp_gen_syncookie),		\
+-	FN(skb_output),
++	FN(skb_output),			\
++	FN(fd2path),
+ 
+ /* integer value in 'imm' field of BPF_CALL instruction selects which helper
+  * function eBPF program intends to call
+diff --git a/kernel/bpf/core.c b/kernel/bpf/core.c
+index 673f5d40a93e..6b44ed804280 100644
+--- a/kernel/bpf/core.c
++++ b/kernel/bpf/core.c
+@@ -2079,6 +2079,7 @@ const struct bpf_func_proto bpf_get_current_uid_gid_proto __weak;
+ const struct bpf_func_proto bpf_get_current_comm_proto __weak;
+ const struct bpf_func_proto bpf_get_current_cgroup_id_proto __weak;
+ const struct bpf_func_proto bpf_get_local_storage_proto __weak;
++const struct bpf_func_proto bpf_fd2path_proto __weak;
+ 
+ const struct bpf_func_proto * __weak bpf_get_trace_printk_proto(void)
+ {
+diff --git a/kernel/bpf/helpers.c b/kernel/bpf/helpers.c
+index 5e28718928ca..0832536c7ddb 100644
+--- a/kernel/bpf/helpers.c
++++ b/kernel/bpf/helpers.c
+@@ -487,3 +487,42 @@ const struct bpf_func_proto bpf_strtoul_proto = {
+ 	.arg4_type	= ARG_PTR_TO_LONG,
+ };
+ #endif
++
++BPF_CALL_3(bpf_fd2path, char *, dst, u32, size, int, fd)
++{
++	struct fd f;
++	int ret;
++	char *p;
++
++	ret = security_locked_down(LOCKDOWN_BPF_READ_KERNEL);
++	if (ret < 0)
++		goto out;
++
++	f = fdget_raw(fd);
++	if (!f.file)
++		goto out;
++
++	p = d_path(&f.file->f_path, dst, size);
++	if (IS_ERR_OR_NULL(p))
++		ret = PTR_ERR(p);
++	else {
++		ret = strlen(p);
++		memmove(dst, p, ret);
++		dst[ret] = 0;
++	}
++
++	if (unlikely(ret < 0))
++out:
++		memset(dst, '0', size);
++
++	return ret;
++}
++
++const struct bpf_func_proto bpf_fd2path_proto = {
++	.func       = bpf_fd2path,
++	.gpl_only   = true,
++	.ret_type   = RET_INTEGER,
++	.arg1_type  = ARG_PTR_TO_UNINIT_MEM,
++	.arg2_type  = ARG_CONST_SIZE,
++	.arg3_type  = ARG_ANYTHING,
++};
+diff --git a/kernel/trace/bpf_trace.c b/kernel/trace/bpf_trace.c
+index 52f7e9d8c29b..23cc3a955e59 100644
+--- a/kernel/trace/bpf_trace.c
++++ b/kernel/trace/bpf_trace.c
+@@ -735,6 +735,8 @@ tracing_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+ #endif
+ 	case BPF_FUNC_send_signal:
+ 		return &bpf_send_signal_proto;
++	case BPF_FUNC_fd2path:
++		return &bpf_fd2path_proto;
+ 	default:
+ 		return NULL;
+ 	}
+diff --git a/tools/include/uapi/linux/bpf.h b/tools/include/uapi/linux/bpf.h
+index 4af8b0819a32..fdb37740951f 100644
+--- a/tools/include/uapi/linux/bpf.h
++++ b/tools/include/uapi/linux/bpf.h
+@@ -2773,6 +2773,15 @@ union bpf_attr {
+  *
+  * 		This helper is similar to **bpf_perf_event_output**\ () but
+  * 		restricted to raw_tracepoint bpf programs.
++ *
++ * int bpf_fd2path(char *path, u32 size, int fd)
++ *	Description
++ *		Get **file** atrribute from the current task by *fd*, then call
++ *		**d_path** to get it's absolute path and copy it as string into
++ *		*path* of *size*. The **path** also support pseudo filesystems
++ *		(whether or not it can be mounted). The *size* must be strictly
++ *		positive. On success, the helper makes sure that the *path* is
++ *		NUL-terminated. On failure, it is filled with zeroes.
+  * 	Return
+  * 		0 on success, or a negative error in case of failure.
+  */
+@@ -2888,7 +2897,8 @@ union bpf_attr {
+ 	FN(sk_storage_delete),		\
+ 	FN(send_signal),		\
+ 	FN(tcp_gen_syncookie),		\
+-	FN(skb_output),
++	FN(skb_output),			\
++	FN(fd2path),
+ 
+ /* integer value in 'imm' field of BPF_CALL instruction selects which helper
+  * function eBPF program intends to call
