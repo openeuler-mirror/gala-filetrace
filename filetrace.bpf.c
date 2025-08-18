@@ -373,6 +373,8 @@ int trace_dup2(struct trace_event_raw_sys_enter *ctx)
 
 SEC("tracepoint/syscalls/sys_enter_write")
 int trace_write(struct trace_event_raw_sys_enter *ctx) {
+    struct task_struct* t;
+    struct task_struct* p;
     struct event *e;
     e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
     if (!e)
@@ -386,6 +388,8 @@ int trace_write(struct trace_event_raw_sys_enter *ctx) {
     u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
     bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
+
+    t = (struct task_struct*)bpf_get_current_task();
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
@@ -397,12 +401,10 @@ int trace_write(struct trace_event_raw_sys_enter *ctx) {
         bpf_ringbuf_discard(e, 0);
         return 0; 
     }
-    int fd = ctx->args[0];
     if(fd < 3 ){
         return 0;
     }
     bpf_fd2path(e->filename, sizeof(e->filename), fd);
-    bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), fname);
     #ifdef DEBUG
     bpf_printk("sys_enter_write: cmd [%s],filename [%s] \n", e->cmd, e->filename);
     #endif

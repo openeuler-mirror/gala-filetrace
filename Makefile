@@ -23,8 +23,6 @@ endif
 
 CINCLUDE = -I./
 #CINCLUDE += -I/usr/src/kernels/$(shell uname -r)
-#CINCLUDE += -I/usr/src/linux-6.6.0-72.6.0.56.oe2503.x86_64/include/uapi/
-#CINCLUDE += -I/usr/src/kernels/6.6.0-72.6.0.56.oe2503.x86_64/include/
 
 CLANG ?= clang
 CLANGXX ?= clang++

@@ -226,14 +226,8 @@ bool PostData::is_valid_event(struct event &e)
         case SYS_rename:
         case SYS_renameat:
         case SYS_renameat2:
-            if(cmd == "vim" && e.oldfilename[0] != '\0') {
-                if(std::find(conf_list.begin(), conf_list.end(), e.oldfilename) == conf_list.end()) {
-                    return false; 
-                }
-            } else {
-                if(std::find(conf_list.begin(), conf_list.end(), e.filename) == conf_list.end()) {
-                    return false; 
-                }
+            if(std::find(conf_list.begin(), conf_list.end(), e.filename) == conf_list.end()) {
+                return false; 
             }
             break;       
         case SYS_write:
