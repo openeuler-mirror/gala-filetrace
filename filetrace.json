@@ -12,8 +12,5 @@
   "config_list":["/etc/hosts"],
   "publish": false,
   "ragdoll_api": "http://localhost:8080/filetrace",
-  "node_name": "node1",
-  "target": "http://localhost:9090/metrics",
-  "server": "127.0.0.1",
-  "port": 8080
+  "node_name": "node1"
 }
