@@ -43,7 +43,8 @@ int PostData::load_config(const std::string& configFile)
         host_id = config_json_obj["host_id"].get<std::string>();
         domain_name = config_json_obj["domain_name"].get<std::string>();
         publish = config_json_obj.value("publish", false); 
-
+        server = config_json_obj.value("server", "0.0.0.0");
+        port = config_json_obj.value("port", 8080);
         std::cout << "Configuration loaded from " << configFile << std::endl;
         std::cout << "ragdoll_api: " << ragdoll_api <<  ";";
         std::cout << "skip_processes: ";
