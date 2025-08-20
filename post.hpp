@@ -34,6 +34,8 @@ class PostData {
         std::vector<std::string> skip_processes;
         std::string host_id;
         std::string domain_name;
+        std::string server; //provide set and config methods for ragdoll service
+        int port;
         bool publish = false; // default is false
         json config_json_obj;
         int http_connect_init();
