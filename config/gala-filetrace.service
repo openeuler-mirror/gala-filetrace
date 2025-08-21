@@ -1,0 +1,12 @@
+[Unit]
+Description=gala-filetrace service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/filetrace
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

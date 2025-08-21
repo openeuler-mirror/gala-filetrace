@@ -39,8 +39,16 @@ make
 install -d %{buildroot}/usr/bin
 install -m 755 filetrace %{buildroot}/usr/bin/filetrace
 
+install -d %{buildroot}/etc/gala-filetrace/gala-filetrace.json
+install -m 644 etc/gala-filetrace.json %{buildroot}/etc/gala-filetrace/gala-filetrace.json
+
+install -d %{buildroot}/usr/lib/systemd/system
+install -m 644 etc/gala-filetrace.service %{buildroot}/usr/lib/systemd/system/gala-filetrace.service
+
 %files
 /usr/bin/filetrace
+/etc/gala-filetrace/gala-filetrace.json
+/usr/lib/systemd/system/gala-filetrace.service
 
 %changelog
 * Fri Aug 15 2025 zhangdaolong <dlzhangak@isoftstone.con> - 1.0-1
