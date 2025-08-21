@@ -19,6 +19,16 @@ struct {
     __uint(max_entries, 1 << 24); // 16MB ring buffer
 } events SEC(".maps");
 
+static __inline int bpf_create_ringbuf(struct event *e)
+{
+    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+    if (!e) {
+        return -1; 
+    }
+    __builtin_memcpy(e, 0, sizeof(struct event));
+    return 0; 
+}
+
 //for rm command
 SEC("tracepoint/syscalls/sys_enter_unlinkat")
 int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
@@ -33,6 +43,9 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
         return 0;
     }
     __builtin_memset(e, 0, sizeof(*e));
+
+
+    
     e->flag = SYS_unlinkat;
 
     t = (struct task_struct*)bpf_get_current_task();

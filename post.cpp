@@ -26,7 +26,19 @@ int PostData::WriteCallback(void* contents, size_t size, size_t nmemb, void* use
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb; 
 }
-
+bool PostData::is_valid_ip(const std::string& ip) {
+    static const std::regex ip_regex(
+        R"(^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$)"
+    );
+    if (!std::regex_match(ip, ip_regex)) return false;
+    std::istringstream iss(ip);
+    std::string token;
+    while (std::getline(iss, token, '.')) {
+        int num = std::stoi(token);
+        if (num < 0 || num > 255) return false;
+    }
+    return true;
+}
 int PostData::load_config(const std::string& configFile)
 {
     std::ifstream file(configFile);
@@ -37,13 +49,31 @@ int PostData::load_config(const std::string& configFile)
     try {
         file >> config_json_obj;
         file.close();
+        conf_list = config_json_obj["config_list"].get<std::vector<std::string>>();
+        if (conf_list.empty()) 
+        {
+            std::cerr << "Configuration list is empty, please check your config file." << std::endl;
+            return -1; 
+        }
+        host_id = config_json_obj["host_id"].get<std::string>();
+        if (host_id.empty()) {
+            std::cerr << "Host ID is empty, please check your config file." << std::endl;
+            return -1; 
+        }
+        domain_name = config_json_obj["domain_name"].get<std::string>();
+        if (domain_name.empty()) {
+            std::cerr << "Domain name is empty, please check your config file." << std::endl;
+            return -1; 
+        }
         ragdoll_api = config_json_obj["ragdoll_api"].get<std::string>();
         skip_processes = config_json_obj["skip_processes_list"].get<std::vector<std::string>>();
-        conf_list = config_json_obj["config_list"].get<std::vector<std::string>>();
-        host_id = config_json_obj["host_id"].get<std::string>();
-        domain_name = config_json_obj["domain_name"].get<std::string>();
+
         publish = config_json_obj.value("publish", false); 
         server = config_json_obj.value("server", "0.0.0.0");
+        if (!is_valid_ip(server)) {
+            std::cerr << "Invalid server IP address: " << server << std::endl;
+            return -1; 
+        }
         port = config_json_obj.value("port", 8080);
         std::cout << "Configuration loaded from " << configFile << std::endl;
         std::cout << "ragdoll_api: " << ragdoll_api <<  ";";
@@ -142,7 +172,7 @@ void PostData::add_ptrace(json& j, const std::string cmd, int pid)
 void PostData::generate_proc_trace(unsigned int &pid, json &json_data) 
 {
     unsigned int proc_id = pid;
-    if (proc_id == 0 || proc_id == 1) {
+    if (proc_id  <= 1) {
         return; 
     }
     struct pinfo_t *pinfo = (struct pinfo_t *)malloc(sizeof(struct pinfo_t));
@@ -256,7 +286,9 @@ int  PostData::get_procinfo_by_pid_from_map(struct pinfo_t *pinfo , unsigned int
               << pinfo->arg4 << std::endl;
     return 0;
 }
-std::vector<std::string> PostData::split_stat_line(const std::string &line) {
+
+std::vector<std::string> PostData::split_stat_line(const std::string &line) 
+{
     std::vector<std::string> result;
     size_t start = 0, end = 0;
 

@@ -4,6 +4,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <regex>
 #include <curl/curl.h>
 #include <pwd.h>
 #include <grp.h>
@@ -57,6 +58,7 @@ class PostData {
         std::vector<std::string> split_stat_line(const std::string &line);
         void start_http_server();
         int update_config(const json &j);
+        bool is_valid_ip(const std::string& ip);
     private:
         filetrace_bpf *skel;
 };

@@ -13,12 +13,14 @@
 using namespace std;
 
 static struct filetrace_bpf *skel;
-PostData *Postdata_i = nullptr;
+PostData *postdata_i = nullptr;
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     //trace libbpf messages to stderr
-    //vfprintf(stderr, format, args);
+    #ifdef DEBUG
+    vfprintf(stderr, format, args);
+    #endif
     return 0;
 }
 
@@ -39,14 +41,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return -1;
     }
     const struct event *e = (struct event *)data;
-    std::string file_full_path;
-
     #ifdef DEBUG
+    std::string file_full_path;
     std::cout << "Command: " << e->cmd << ", PID: " << e->pid << ",filename: "
               << (!file_full_path.empty() ? file_full_path : std::string(e->filename))
               << ", func: " << nr_map[e->flag] << std::endl; 
     #endif
-    Postdata_i->send(*e);
+    postdata_i->send(*e);
     return 0;
 }
 
@@ -69,8 +70,8 @@ int main()
         return errno;
     }
     //init PostData instance
-    Postdata_i = new PostData(skel);
-    if (!Postdata_i) 
+    postdata_i = new PostData(skel);
+    if (!postdata_i) 
     {
         std::cerr << "Failed to create PostData instance!" << std::endl;
         filetrace_bpf__destroy(skel);
