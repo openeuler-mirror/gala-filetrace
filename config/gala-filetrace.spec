@@ -17,7 +17,6 @@ BuildRequires:  nlohmann-json-devel
 BuildRequires:  cpp-httplib-devel
 
 Requires:       libcurl
-Requires:       libelf
 Requires:       libbpf
 Requires:       zlib
 Requires:       nlohmann-json
@@ -40,15 +39,32 @@ install -d %{buildroot}/usr/bin
 install -m 755 filetrace %{buildroot}/usr/bin/filetrace
 
 install -d %{buildroot}/etc/gala-filetrace/gala-filetrace.json
-install -m 644 etc/gala-filetrace.json %{buildroot}/etc/gala-filetrace/gala-filetrace.json
+install -m 644 config/filetrace.json %{buildroot}/etc/gala-filetrace/gala-filetrace.json
 
 install -d %{buildroot}/usr/lib/systemd/system
-install -m 644 etc/gala-filetrace.service %{buildroot}/usr/lib/systemd/system/gala-filetrace.service
+install -m 644 config/gala-filetrace.service %{buildroot}/usr/lib/systemd/system/gala-filetrace.service
+
+%post
+# 安装后设置服务自启动并启动服务
+systemctl enable gala-filetrace.service >/dev/null 2>&1 || :
+systemctl restart gala-filetrace.service >/dev/null 2>&1 || :
+
+%preun
+# 卸载前关闭服务并禁用自启动
+if [ $1 -eq 0 ]; then
+    systemctl stop gala-filetrace.service >/dev/null 2>&1 || :
+    systemctl disable gala-filetrace.service >/dev/null 2>&1 || :
+fi
+rm -rf /etc/gala-filetrace/filetrace.json 2>&1
+rm -rf /usr/lib/systemd/system/gala-filetrace.service 2>&1
 
 %files
 /usr/bin/filetrace
 /etc/gala-filetrace/gala-filetrace.json
 /usr/lib/systemd/system/gala-filetrace.service
+
+%clean
+rm -rf %{buildroot}
 
 %changelog
 * Fri Aug 15 2025 zhangdaolong <dlzhangak@isoftstone.con> - 1.0-1
