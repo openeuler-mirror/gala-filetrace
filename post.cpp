@@ -233,6 +233,18 @@ std::string PostData::convert_to_string(struct event &e)
     json_data["loginip"] = get_loginip_by_username(username);
     return json_data.dump(); 
 }
+bool PostData::compare_config_file(const vector<string> &v, const std::string &config) 
+{
+    if (v.empty() || config.empty()) {
+        return false; 
+    }
+    for (const auto& item : v) {
+        if (item == config) {
+            return true;
+        }
+    }
+    return false;
+}
 
 bool PostData::is_valid_event(struct event &e) 
 {
@@ -247,7 +259,7 @@ bool PostData::is_valid_event(struct event &e)
     switch (e.flag) {
         case SYS_unlinkat:
             fullpath = get_full_path(&e);
-            if(std::find(conf_list.begin(), conf_list.end(), fullpath) == conf_list.end()) {
+            if(!compare_config_file(conf_list, fullpath)) {
                 return false; 
             }
             break;
@@ -255,13 +267,13 @@ bool PostData::is_valid_event(struct event &e)
         case SYS_rename:
         case SYS_renameat:
         case SYS_renameat2:
-            if(std::find(conf_list.begin(), conf_list.end(), e.filename) == conf_list.end()) {
+            if(!compare_config_file(conf_list, fullpath)) {
                 return false; 
             }
             break;       
         case SYS_write:
             fullpath = get_full_path(&e);
-            if(std::find(conf_list.begin(), conf_list.end(), fullpath) == conf_list.end()) {
+            if(!compare_config_file(conf_list, fullpath)) {
                 return false; 
             }
             break;

@@ -59,6 +59,7 @@ class PostData {
         void start_http_server();
         int update_config(const json &j);
         bool is_valid_ip(const std::string& ip);
+        bool compare_config_file(const vector<string> &v, const std::string &config); 
     private:
         filetrace_bpf *skel;
 };
