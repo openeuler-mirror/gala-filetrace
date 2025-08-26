@@ -1,7 +1,7 @@
 #include  "post.hpp"
 
 PostData::PostData(filetrace_bpf *skel)
-    : config_json("/etc/filetrace/filetrace.json")
+    : config_json("/etc/gala-filetrace/gala-filetrace.json")
 {
     std::cout << "Initializing PostData!" << std::endl;
     int ret = load_config(config_json);
@@ -54,6 +54,18 @@ int PostData::load_config(const std::string& configFile)
         {
             std::cerr << "Configuration list is empty, please check your config file." << std::endl;
             return -1; 
+        }
+        //check dir level
+        for (const auto& conf : conf_list) {
+            int level = get_dir_level(conf);
+            if (level < 0) {
+                std::cerr << "Invalid path in config: " << conf << std::endl;
+                return -1; 
+            }
+            if (level > MAX_DIR_LEVEL) {
+                std::cerr << "Path exceeds maximum directory level (" << MAX_DIR_LEVEL << "): " << conf << std::endl;
+                return -1; 
+            }
         }
         host_id = config_json_obj["host_id"].get<std::string>();
         if (host_id.empty()) {
@@ -468,4 +480,15 @@ void PostData::start_http_server()
         res.set_content(j.dump(2), "application/json");
     });
     svr.listen(this->server.c_str(), this->port);
+}
+int PostData::get_dir_level(const std::string &path) 
+{
+    if (path.empty() || path[0] != '/') {
+        return -1; 
+    }
+    std::string tmp_path = path;
+    if(tmp_path.back() == '/'){
+       tmp_path = tmp_path.substr(0, tmp_path.size() - 1);
+    }
+    return std::count(tmp_path.begin(), tmp_path.end(), '/'); 
 }

@@ -24,6 +24,7 @@ extern "C" {
 using namespace std;
 using json = nlohmann::json;
 
+const int MAX_DIR_LEVEL = 4;
 class PostData {
     public:
         PostData(filetrace_bpf *skel);
@@ -60,6 +61,7 @@ class PostData {
         int update_config(const json &j);
         bool is_valid_ip(const std::string& ip);
         bool compare_config_file(const vector<string> &v, const std::string &config); 
+        int get_dir_level(const std::string &path);
     private:
         filetrace_bpf *skel;
 };
