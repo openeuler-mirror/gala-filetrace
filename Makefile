@@ -67,3 +67,11 @@ filetrace: $(OUTPUT_DIR)/filetrace.o $(OUTPUT_DIR)/post.o
 
 $(OUTPUT_DIR):
 	@mkdir $(OUTPUT_DIR)
+
+install:
+	@install -d $(DESTDIR)/usr/bin
+	@install -m 755 filetrace $(DESTDIR)/usr/bin/filetrace
+	@install -d $(DESTDIR)/etc/gala-filetrace
+	@install -m 644 config/gala-filetrace.json $(DESTDIR)/etc/gala-filetrace/gala-filetrace.json
+	@install -d $(DESTDIR)/usr/lib/systemd/system
+	@install -m 644 config/gala-filetrace.service $(DESTDIR)/usr/lib/systemd/system/gala-filetrace.service
