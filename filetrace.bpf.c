@@ -329,20 +329,44 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_enter_execve")
 int enter_execve(struct trace_event_raw_sys_enter *ctx)
 {
-    const char *filename = (const char *)ctx->args[0];
+    struct pinfo_t p = {};
+    unsigned int pid;
+    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+    bpf_probe_read(&pid, sizeof(pid), &t->pid);
 
+    struct task_struct *p_parent;
+    bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
+    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
+
+    
+    bpf_get_current_comm(&p.comm, sizeof(p.comm));
+    /*const char *pathname_ptr = (const char *)ctx->args[0];
+    char *const *argv_ptr = (char *const *)ctx->args[1];
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        if (i == 0) {
+            bpf_probe_read_user(&p.arg1, sizeof(p.arg1), &argv_ptr[i]);
+        } else if (i == 1) {
+            bpf_probe_read_user(&p.arg2, sizeof(p.arg2), &argv_ptr[i]);
+        } else if (i == 2) {
+            bpf_probe_read_user(&p.arg3, sizeof(p.arg3), &argv_ptr[i]);
+        } else if (i == 3) {
+            bpf_probe_read_user(&p.arg4, sizeof(p.arg4), &argv_ptr[i]);
+        }
+    }*/
+    #ifdef DEBUG
+    bpf_printk("sys_enter_execve detected: PID=%u, ppid=%u, comm=%s\n", pid, p.pid, p.comm);
+    #endif
+    bpf_map_update_elem(&exec_map, &pid, &p, BPF_ANY);
     return 0;
+
 }
-/*struct trace_event_raw_sched_process_exec {
-    struct trace_entry ent;
+SEC("tracepoint/sched/sched_process_exec")
+int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
+{
+    return enter_execve((const struct trace_event_raw_sys_enter *)ctx);
+}
 
-    pid_t pid;
-    char *filename;
-    char __data[0];
-};*/
-
-//openEuler 2503 LTS
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 static __inline int bpf_strcmp(const char *s1, const char *s2)
 {
     #pragma unroll
@@ -356,6 +380,8 @@ static __inline int bpf_strcmp(const char *s1, const char *s2)
     }
     return 0;
 }
+//openEuler 2503 LTS
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 SEC("tracepoint/syscalls/sys_enter_dup2")
 int trace_dup2(struct trace_event_raw_sys_enter *ctx)
 {
@@ -380,7 +406,9 @@ int trace_dup2(struct trace_event_raw_sys_enter *ctx)
     if(fname[0]!='/'){
 	    return 0 ;
     }
+    #ifdef DEBUG
     bpf_printk("dup2 comm = %s,filename=%s , oldfd=%d, newfd=%d\n",comm,fname, oldfd, newfd);
+    #endif
     return 0;
 }
 
