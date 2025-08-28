@@ -1,7 +1,8 @@
 #include  "post.hpp"
 
 PostData::PostData(filetrace_bpf *skel)
-    : config_json("/etc/gala-filetrace/gala-filetrace.json")
+    :  config_json("/etc/gala-filetrace/gala-filetrace.json"),
+        publish(false)
 {
     std::cout << "Initializing PostData!" << std::endl;
     int ret = load_config(config_json);
@@ -13,8 +14,10 @@ PostData::PostData(filetrace_bpf *skel)
     if (exec_map_fd < 0) {
         throw std::runtime_error("Failed to get exec_map fd!");
     }
-    std::thread server_thread(&PostData::start_http_server, this);
-    server_thread.detach(); // Detach the thread to run the HTTP server in the background
+    if(publish) {
+        std::thread server_thread(&PostData::start_http_server, this);
+        server_thread.detach(); // Detach the thread to run the HTTP server in the background
+    }
 }
 
 PostData::~PostData() 
