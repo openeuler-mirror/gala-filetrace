@@ -479,7 +479,7 @@ void PostData::start_http_server()
     svr.Get("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
         json j;
         j["status"] = "ok";
-        j["conf_list"] = {"conf1", "conf2"};
+        j["conf_list"] = conf_list;
         res.set_content(j.dump(2), "application/json");
     });
     svr.listen(this->server.c_str(), this->port);
