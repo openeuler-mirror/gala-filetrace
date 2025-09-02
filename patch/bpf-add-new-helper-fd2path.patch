@@ -21,7 +21,7 @@ index 4af8b0819a32..fdb37740951f 100644
 + *
 + * int bpf_fd2path(char *path, u32 size, int fd)
 + *	Description
-+ *		Get **file** atrribute from the current task by *fd*, then call
++ *		Get **file** attribute from the current task by *fd*, then call
 + *		**d_path** to get it's absolute path and copy it as string into
 + *		*path* of *size*. The **path** also support pseudo filesystems
 + *		(whether or not it can be mounted). The *size* must be strictly
@@ -123,7 +123,7 @@ index 4af8b0819a32..fdb37740951f 100644
 + *
 + * int bpf_fd2path(char *path, u32 size, int fd)
 + *	Description
-+ *		Get **file** atrribute from the current task by *fd*, then call
++ *		Get **file** attribute from the current task by *fd*, then call
 + *		**d_path** to get it's absolute path and copy it as string into
 + *		*path* of *size*. The **path** also support pseudo filesystems
 + *		(whether or not it can be mounted). The *size* must be strictly
