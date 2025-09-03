@@ -43,9 +43,6 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
         return 0;
     }
     __builtin_memset(e, 0, sizeof(*e));
-
-
-    
     e->flag = SYS_unlinkat;
 
     t = (struct task_struct*)bpf_get_current_task();
@@ -180,7 +177,6 @@ static __always_inline int handle_rename(const struct trace_event_raw_sys_enter 
 
     t = (struct task_struct*)bpf_get_current_task();
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
-    //bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_get_current_comm(&e->cmd, sizeof(e->cmd));
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
@@ -338,22 +334,7 @@ int enter_execve(struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
     bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
 
-    
     bpf_get_current_comm(&p.comm, sizeof(p.comm));
-    /*const char *pathname_ptr = (const char *)ctx->args[0];
-    char *const *argv_ptr = (char *const *)ctx->args[1];
-    #pragma unroll
-    for (int i = 0; i < 4; i++) {
-        if (i == 0) {
-            bpf_probe_read_user(&p.arg1, sizeof(p.arg1), &argv_ptr[i]);
-        } else if (i == 1) {
-            bpf_probe_read_user(&p.arg2, sizeof(p.arg2), &argv_ptr[i]);
-        } else if (i == 2) {
-            bpf_probe_read_user(&p.arg3, sizeof(p.arg3), &argv_ptr[i]);
-        } else if (i == 3) {
-            bpf_probe_read_user(&p.arg4, sizeof(p.arg4), &argv_ptr[i]);
-        }
-    }*/
     #ifdef DEBUG
     bpf_printk("sys_enter_execve detected: PID=%u, ppid=%u, comm=%s\n", pid, p.pid, p.comm);
     #endif
@@ -523,11 +504,6 @@ int write(const struct trace_event_raw_sys_enter *ctx)
         bpf_ringbuf_discard(e, 0);
         return 0;
     }
-    //skip kernel processes
-    /*if (e->pid == 0 || e->pid == 1 || e->pid == 2 || e->pid == 3) {
-        bpf_ringbuf_discard(e, 0);
-        return 0; 
-    }*/
 
     //get filename from struct file
     struct path path;
@@ -564,16 +540,5 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     #endif
     bpf_ringbuf_submit(e, 0);
     return 0;
-}   
-/*
-//writev(int fd, const struct iovec *iov, int iovcnt) for cache write to fd
-// args[0]: fd (int)
-// args[1]: buf (const void *)
-// args[2]: iovcnt (struct iovec)
-SEC("tracepoint/syscalls/sys_enter_writev")
-int writev(const struct trace_event_raw_sys_enter *ctx)
-{
-    return write(ctx);
 }
-*/
 #endif
