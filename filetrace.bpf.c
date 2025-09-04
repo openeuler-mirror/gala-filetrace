@@ -95,7 +95,7 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
 
     u64 uid_gid = bpf_get_current_uid_gid();
     u32 uid = (u32)uid_gid;        // low 32 bit is UID
-    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
+    u32 gid = (u32)(uid_gid >> 32); // high 32 bit is GID
     bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
 
@@ -426,7 +426,7 @@ int trace_write(struct trace_event_raw_sys_enter *ctx) {
     e->flag = SYS_write;
     u64 uid_gid = bpf_get_current_uid_gid();
     u32 uid = (u32)uid_gid;         // low 32 bit is UID
-    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
+    u32 gid = (u32)(uid_gid >> 32); // high 32 bit is GID
     bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
 
@@ -482,7 +482,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
 
     u64 uid_gid = bpf_get_current_uid_gid();
     u32 uid = (u32)uid_gid;         // low 32 bit is UID
-    u32 gid = (u32)(uid_gid >> 32); // hight 32 bit is GID
+    u32 gid = (u32)(uid_gid >> 32); // high 32 bit is GID
     bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
     int fd = (__s32)ctx->args[0];
