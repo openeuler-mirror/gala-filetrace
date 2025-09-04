@@ -1,5 +1,5 @@
 REQUIRED_TOOLS := clang llvm bpftool
-REQUIRED_PKGS := libcurl-devel libelf-dev libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
+REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
 
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -75,3 +75,21 @@ install:
 	@install -m 644 config/gala-filetrace.json $(DESTDIR)/etc/gala-filetrace/gala-filetrace.json
 	@install -d $(DESTDIR)/usr/lib/systemd/system
 	@install -m 644 config/gala-filetrace.service $(DESTDIR)/usr/lib/systemd/system/gala-filetrace.service
+
+deps:
+	@for tool in $(REQUIRED_TOOLS); do \
+			if ! command -v $$tool >/dev/null 2>&1; then \
+					echo "Missing tool: $$tool. Installing..."; \
+					sudo yum install -y $$tool; \
+			else \
+					echo "Found tool: $$tool"; \
+			fi \
+	done
+	@for pkg in $(REQUIRED_PKGS); do \
+			if ! rpm -q $$pkg >/dev/null 2>&1; then \
+					echo "Missing package: $$pkg. Installing..."; \
+					sudo yum install -y $$pkg; \
+			else \
+					echo "Found package: $$pkg"; \
+			fi \
+	done
