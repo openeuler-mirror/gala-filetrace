@@ -69,6 +69,8 @@ enum syscall_flag {
     SYS_renameat,
     SYS_renameat2,
     SYS_write,
+    SYS_openat,
+    SYS_dup2,
     SYS_NR_MAX
 };
 static const char *nr_map[] = {
