@@ -28,6 +28,41 @@ static __inline int bpf_create_ringbuf(struct event *e)
     __builtin_memcpy(e, 0, sizeof(struct event));
     return 0; 
 }
+SEC("tracepoint/syscalls/sys_enter_openat")
+int enter_openat(const struct trace_event_raw_sys_enter *ctx)
+{
+    struct task_struct* t;
+    struct task_struct* p;
+
+    struct event *e;
+    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+    if (!e)
+    {
+        return 0;
+    }
+    __builtin_memset(e, 0, sizeof(*e));
+    e->flag = SYS_openat;
+
+    t = (struct task_struct*)bpf_get_current_task();
+    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
+    bpf_probe_read(&p, sizeof(p), &t->real_parent);
+    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
+    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
+
+    // For openat(int dfd, const char *pathname, int flags, mode_t mode)
+    // args[0]: dfd (int)
+    // args[1]: pathname (const char *)
+    // args[2]: flags (int)
+    // args[3]: mode (mode_t) - only when O_CREAT is specified in flags
+    const char *pathname_ptr = (const char *)ctx->args[1];
+    bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
+    #ifdef DEBUG
+    bpf_printk("openat detected: PID %d, file '%s'\n", e->pid, e->filename);
+    #endif
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
 
 //for rm command
 SEC("tracepoint/syscalls/sys_enter_unlinkat")
