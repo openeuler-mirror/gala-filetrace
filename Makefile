@@ -1,5 +1,6 @@
 REQUIRED_TOOLS := clang llvm bpftool
 REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
+REQUIRED_FILES := /usr/include/httplib.h
 
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -91,5 +92,13 @@ deps:
 					sudo yum install -y $$pkg; \
 			else \
 					echo "Found package: $$pkg"; \
+			fi \
+	done
+	@for path in $(REQUIRED_FILES); do \
+			if ! test -s $$path >/dev/null 2>&1; then \
+					echo "Missing file: $$path. Installing..."; \
+					sudo yum install -y $$path; \
+			else \
+					echo "Found file: $$path"; \
 			fi \
 	done
