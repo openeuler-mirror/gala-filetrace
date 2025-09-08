@@ -1,7 +1,7 @@
 #include  "post.hpp"
 
-PostData::PostData(filetrace_bpf *skel)
-    :  config_json("/etc/gala-filetrace/gala-filetrace.json"),
+PostData::PostData(filetrace_bpf *skel, const std::string& configFile)
+    :  config_json(configFile),
         publish(false)
 {
     std::cout << "Initializing PostData!" << std::endl;

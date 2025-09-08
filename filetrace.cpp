@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <linux/bpf.h>
+#include <getopt.h>
 
 #include <bpf/bpf.h>
 #include <unistd.h>
@@ -51,10 +52,23 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     return 0;
 }
 
-int main() 
+int main(int argc, char **argv)
 {
     int err;
     struct ring_buffer *ringbuf = NULL;
+    std::string config_file = "/etc/gala-filetrace/gala-filetrace.json"; 
+
+    int opt;
+    while ((opt = getopt(argc, argv, "c:")) != -1) {
+        switch (opt) {
+            case 'f':
+                config_file = optarg;
+                break;
+            default:
+                std::cerr << "Usage: " << argv[0] << " [-c <config_file>]" << std::endl;
+                return 1;
+        }
+    }
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
@@ -70,7 +84,7 @@ int main()
         return errno;
     }
     //init PostData instance
-    postdata_i = new PostData(skel);
+    postdata_i = new PostData(skel, config_file); 
     if (!postdata_i) 
     {
         std::cerr << "Failed to create PostData instance!" << std::endl;
