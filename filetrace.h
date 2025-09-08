@@ -79,6 +79,8 @@ static const char *nr_map[] = {
     "sys_enter_rename",          // SYS_rename = 2
     "sys_enter_renameat",        // SYS_renameat = 3
     "sys_enter_renameat2",       // SYS_renameat2 = 4
-    "sys_enter_write"            // SYS_write = 5
+    "sys_enter_write",           // SYS_write = 5
+    "sys_enter_openat",          // SYS_openat = 6
+    "sys_enter_dup2"             // SYS_dup2 = 7
 };
 #endif // FILETRACE_H
