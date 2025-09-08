@@ -27,7 +27,7 @@ using json = nlohmann::json;
 const int MAX_DIR_LEVEL = 4;
 class PostData {
     public:
-        PostData(filetrace_bpf *skel);
+        PostData(filetrace_bpf *skel, const std::string& configFile);
         ~PostData();
 
         std::string ragdoll_api;
