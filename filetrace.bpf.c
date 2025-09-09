@@ -380,7 +380,21 @@ int enter_execve(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/sched/sched_process_exec")
 int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
 {
-    return enter_execve((const struct trace_event_raw_sys_enter *)ctx);
+    struct pinfo_t p = {};
+    unsigned int pid;
+    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+    bpf_probe_read(&pid, sizeof(pid), &t->pid);
+
+    struct task_struct *p_parent;
+    bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
+    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
+
+    bpf_get_current_comm(&p.comm, sizeof(p.comm));
+    #ifdef DEBUG
+    bpf_printk("sched_process_exec detected: PID=%u, ppid=%u, comm=%s\n", pid, p.pid, p.comm);
+    #endif
+    bpf_map_update_elem(&exec_map, &pid, &p, BPF_ANY);
+    return 0;
 }
 
 static __inline int bpf_strcmp(const char *s1, const char *s2)
