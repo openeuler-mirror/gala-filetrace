@@ -25,12 +25,6 @@
 #endif
 #define PF_KTHREAD 0x00200000
 
-#define sys_enter_unlinkat_nr 0;
-#define sys_enter_copy_file_range_nr 1;
-#define sys_enter_rename_nr 2;
-#define sys_enter_renameat_nr 3;
-#define sys_enter_renameat2_nr 4;
-#define sys_enter_write_nr 5;
 #define AT_FDCWD -100
 struct event {
     unsigned int pid;
