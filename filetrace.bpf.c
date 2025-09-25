@@ -28,6 +28,7 @@ static __inline int bpf_create_ringbuf(struct event *e)
     __builtin_memcpy(e, 0, sizeof(struct event));
     return 0; 
 }
+
 SEC("tracepoint/syscalls/sys_enter_openat")
 int enter_openat(const struct trace_event_raw_sys_enter *ctx)
 {
@@ -35,12 +36,10 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     struct task_struct* p;
 
     struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
+    if(bpf_create_ringbuf(*e) == -1){
     {
         return 0;
     }
-    __builtin_memset(e, 0, sizeof(*e));
     e->flag = SYS_openat;
 
     t = (struct task_struct*)bpf_get_current_task();
@@ -72,12 +71,10 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     struct task_struct* p;
 
     struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
+    if(bpf_create_ringbuf(*e) == -1){
     {
         return 0;
     }
-    __builtin_memset(e, 0, sizeof(*e));
     e->flag = SYS_unlinkat;
 
     t = (struct task_struct*)bpf_get_current_task();
@@ -116,12 +113,10 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     struct task_struct* p;
 
     struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
+    if(bpf_create_ringbuf(*e) == -1){
     {
         return 0;
     }
-    __builtin_memset(e, 0, sizeof(*e));
 
     e->flag = SYS_copy_file_range;
 
@@ -227,6 +222,7 @@ static __always_inline int handle_rename(const struct trace_event_raw_sys_enter 
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
+
 //for sed command
 // rename(const char *oldpath, const char *newpath)
 // args[0]: oldpath (const char *)
@@ -236,13 +232,12 @@ SEC("tracepoint/syscalls/sys_enter_rename")
 int rename(const struct trace_event_raw_sys_enter *ctx)
 {
     struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
+    if(bpf_create_ringbuf(*e) == -1){
     {
         return 0;
     }
-    __builtin_memset(e, 0, sizeof(*e));
     e->flag = SYS_rename;
+
     return handle_rename(ctx, e);
 }
 #endif
@@ -253,13 +248,12 @@ SEC("tracepoint/syscalls/sys_enter_renameat")
 int renameat(const struct trace_event_raw_sys_enter *ctx)
 {
     struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
+    if(bpf_create_ringbuf(*e) == -1){
     {
         return 0;
     }
-    __builtin_memset(e, 0, sizeof(*e));
     e->flag = SYS_renameat;
+
     return handle_rename(ctx, e);
 }
 //for move
@@ -277,12 +271,11 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
     struct task_struct* t;
     struct task_struct* p;
     struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
+
+    if(bpf_create_ringbuf(*e) == -1){
     {
         return 0;
     }
-    __builtin_memset(e, 0, sizeof(*e));
 
     e->flag = SYS_renameat2;
 
@@ -447,12 +440,11 @@ int trace_write(struct trace_event_raw_sys_enter *ctx) {
     struct task_struct* t;
     struct task_struct* p;
     struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
+
+    if(bpf_create_ringbuf(*e) == -1){
     {
         return 0;
     }
-    __builtin_memset(e, 0, sizeof(*e));
     e->flag = SYS_write;
     u64 uid_gid = bpf_get_current_uid_gid();
     u32 uid = (u32)uid_gid;         // low 32 bit is UID
@@ -501,13 +493,12 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     {
         return 0; 
     }
+
     struct event *e;
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
-    if (!e)
+    if(bpf_create_ringbuf(*e) == -1){
     {
         return 0;
     }
-    __builtin_memset(e, 0, sizeof(*e));
     e->flag = SYS_write;
 
     u64 uid_gid = bpf_get_current_uid_gid();
