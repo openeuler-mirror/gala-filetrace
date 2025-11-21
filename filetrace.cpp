@@ -43,9 +43,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     }
     const struct event *e = (struct event *)data;
     #ifdef DEBUG
-    std::string file_full_path;
     std::cout << "Command: " << e->cmd << ", PID: " << e->pid << ",filename: "
-              << (!file_full_path.empty() ? file_full_path : std::string(e->filename))
+              << std::string(e->filename)
               << ", func: " << nr_map[e->flag] << std::endl; 
     #endif
     postdata_i->send(*e);
