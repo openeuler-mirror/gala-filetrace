@@ -25,7 +25,7 @@ static __inline int bpf_create_ringbuf(struct event *e)
     if (!e) {
         return -1; 
     }
-    __builtin_memcpy(e, 0, sizeof(struct event));
+    __builtin_memset(e, 0, sizeof(struct event));
     return 0; 
 }
 
