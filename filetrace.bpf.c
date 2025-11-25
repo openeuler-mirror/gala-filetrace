@@ -19,14 +19,14 @@ struct {
     __uint(max_entries, 1 << 24); // 16MB ring buffer
 } events SEC(".maps");
 
-static __inline int bpf_create_ringbuf(struct event *e)
+static __inline struct event* bpf_create_ringbuf(void)
 {
-    e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
     if (!e) {
-        return -1; 
+        return NULL;
     }
     __builtin_memset(e, 0, sizeof(struct event));
-    return 0; 
+    return e;
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat")
@@ -35,9 +35,8 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     struct task_struct* t;
     struct task_struct* p;
 
-    struct event *e;
-    if(bpf_create_ringbuf(*e) == -1){
-    {
+    struct event *e = bpf_create_ringbuf();
+    if(!e) {
         return 0;
     }
     e->flag = SYS_openat;
@@ -70,9 +69,8 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     struct task_struct* t;
     struct task_struct* p;
 
-    struct event *e;
-    if(bpf_create_ringbuf(*e) == -1){
-    {
+    struct event *e = bpf_create_ringbuf();
+    if(!e) {
         return 0;
     }
     e->flag = SYS_unlinkat;
@@ -112,9 +110,8 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     struct task_struct* t;
     struct task_struct* p;
 
-    struct event *e;
-    if(bpf_create_ringbuf(*e) == -1){
-    {
+    struct event *e = bpf_create_ringbuf();
+    if(!e) {
         return 0;
     }
 
@@ -231,9 +228,8 @@ static __always_inline int handle_rename(const struct trace_event_raw_sys_enter 
 SEC("tracepoint/syscalls/sys_enter_rename")
 int rename(const struct trace_event_raw_sys_enter *ctx)
 {
-    struct event *e;
-    if(bpf_create_ringbuf(*e) == -1){
-    {
+    struct event *e = bpf_create_ringbuf();
+    if(!e) {
         return 0;
     }
     e->flag = SYS_rename;
@@ -247,9 +243,8 @@ int rename(const struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_enter_renameat")
 int renameat(const struct trace_event_raw_sys_enter *ctx)
 {
-    struct event *e;
-    if(bpf_create_ringbuf(*e) == -1){
-    {
+    struct event *e = bpf_create_ringbuf();
+    if(!e) {
         return 0;
     }
     e->flag = SYS_renameat;
@@ -272,8 +267,8 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
     struct task_struct* p;
     struct event *e;
 
-    if(bpf_create_ringbuf(*e) == -1){
-    {
+    e = bpf_create_ringbuf();
+    if(!e) {
         return 0;
     }
 
@@ -441,8 +436,8 @@ int trace_write(struct trace_event_raw_sys_enter *ctx) {
     struct task_struct* p;
     struct event *e;
 
-    if(bpf_create_ringbuf(*e) == -1){
-    {
+    e = bpf_create_ringbuf();
+    if(!e) {
         return 0;
     }
     e->flag = SYS_write;
@@ -495,8 +490,8 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     }
 
     struct event *e;
-    if(bpf_create_ringbuf(*e) == -1){
-    {
+    e = bpf_create_ringbuf();
+    if(!e) {
         return 0;
     }
     e->flag = SYS_write;
