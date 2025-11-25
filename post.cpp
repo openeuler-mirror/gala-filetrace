@@ -5,9 +5,15 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile)
         publish(false)
 {
     std::cout << "Initializing PostData!" << std::endl;
+    if(configFile.empty()) {
+        throw std::runtime_error("Configuration file path is empty!");
+    }
     int ret = load_config(config_json);
     if (ret != 0) {
         throw std::runtime_error("Configuration load failed");
+    }
+    if(skel == nullptr) {
+        throw std::runtime_error("eBPF skeleton is null!");
     }
     this->skel = skel;
     this->exec_map_fd = bpf_map__fd(skel->maps.exec_map);
