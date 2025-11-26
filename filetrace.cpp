@@ -10,7 +10,7 @@
 #include "filetrace.skel.h" 
 #include "filetrace.h"
 #include "post.hpp"
-
+#include "exporter.hpp"
 using namespace std;
 
 static struct filetrace_bpf *skel;

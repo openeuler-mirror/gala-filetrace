@@ -37,6 +37,7 @@ class PostData {
         std::string host_id;
         std::string domain_name;
         std::string server; //provide set and config methods for ragdoll service
+        std::string exporter_address;
         int port;
         bool publish; // default is false
         json config_json_obj;
