@@ -96,6 +96,7 @@ int PostData::load_config(const std::string& configFile)
             return -1; 
         }
         port = config_json_obj.value("port", 8080);
+        exporter_address = config_json_obj.value("exporter_address", "0.0.0.0:8080");
         std::cout << "Configuration loaded from " << configFile << std::endl;
         std::cout << "ragdoll_api: " << ragdoll_api <<  ";";
         std::cout << "skip_processes: ";
