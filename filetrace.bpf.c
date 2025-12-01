@@ -300,8 +300,6 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
 
     unsigned int olddfd = (__u32)ctx->args[0];
     unsigned int newdfd = (__u32)ctx->args[2];
-    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
-    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
 
     if (newdfd == AT_FDCWD) {
         #pragma unroll
