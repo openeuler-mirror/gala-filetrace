@@ -3,6 +3,10 @@
 
 #include <linux/version.h>
 
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
 #define MAX_DEPTH 4
 #define MAX_DIRNAME_LEN 16
 #define MAX_FILENAME_LEN 64
