@@ -20,6 +20,7 @@ extern "C" {
 }
 #include "filetrace.skel.h" 
 #include "filetrace.h"
+#include "exporter.hpp"
 
 using namespace std;
 using json = nlohmann::json;
@@ -38,6 +39,7 @@ class PostData {
         std::string domain_name;
         std::string server; //provide set and config methods for ragdoll service
         std::string exporter_address;
+         PrometheusExporter *exporter_ptr;
         int port;
         bool publish; // default is false
         json config_json_obj;
@@ -63,6 +65,7 @@ class PostData {
         bool is_valid_ip(const std::string& ip);
         bool compare_config_file(const vector<string> &v, const std::string &config); 
         int get_dir_level(const std::string &path);
+        bool exporter_start();
     private:
         filetrace_bpf *skel;
 };

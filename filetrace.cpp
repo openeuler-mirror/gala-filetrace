@@ -10,12 +10,11 @@
 #include "filetrace.skel.h" 
 #include "filetrace.h"
 #include "post.hpp"
-#include "exporter.hpp"
+
 using namespace std;
 
 static struct filetrace_bpf *skel;
 PostData *postdata_i = nullptr;
-
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     //trace libbpf messages to stderr
@@ -108,7 +107,6 @@ int main(int argc, char **argv)
     }
 
     std::cout << "eBPF program attached, press Ctrl+C to exit." << std::endl;
-
     // Poll the ring buffer for events
     while (true) 
     {
