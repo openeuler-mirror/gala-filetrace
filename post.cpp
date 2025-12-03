@@ -20,6 +20,7 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile)
     if (exec_map_fd < 0) {
         throw std::runtime_error("Failed to get exec_map fd!");
     }
+    exporter_start();
     if(publish) {
         std::thread server_thread(&PostData::start_http_server, this);
         server_thread.detach(); // Detach the thread to run the HTTP server in the background
@@ -130,7 +131,7 @@ int PostData::send(struct event e)
         return 0; 
     }
     print_event(&e);
-
+    exporter_ptr->set_metrics(e);
     std::string data = convert_to_string(e);
     if (data.empty()) {
         std::cerr << "Failed to convert event to JSON string." << std::endl;
@@ -141,7 +142,7 @@ int PostData::send(struct event e)
         std::cout << "Data: " << data << std::endl;
         return 0; 
     }
-    std::cout << "Sending data: " << data << std::endl;
+    std::cout << "Sending data to Aops: " << data << std::endl;
     long http_code = 0;
     CURL *curl;
     CURLcode res;
@@ -501,4 +502,17 @@ int PostData::get_dir_level(const std::string &path)
        tmp_path = tmp_path.substr(0, tmp_path.size() - 1);
     }
     return std::count(tmp_path.begin(), tmp_path.end(), '/'); 
+}
+bool PostData::exporter_start() 
+{
+    if(exporter_address.empty()) {
+        throw std::runtime_error("Exporter address is empty!");
+    }
+    try {
+        exporter_ptr = new PrometheusExporter(exporter_address);
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to initialize Prometheus Exporter: " << e.what() << std::endl;
+        throw;
+    }
+    return true;
 }
