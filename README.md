@@ -109,10 +109,13 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 配置说明:
 | 配置项        | 值         |  说明          |
 | :---         |    :----:   |          ---: |
-| host_id       | string          |     |
-| domain_name       | string           |     |
-| ragdoll_api       | string           |     |
+| host_id       | string          | 主机UUID
+| domain_name       | string      | 主机所在域/数据中心    |
+| ragdoll_api       | string           |  ragdoll 地址   |
 | publish       | bool         |     是否推送到ragdoll |
+| exporter_address  |string   |  Prometheus Node Exporter监听地址 |
+|
+
 
 # 4.内核升级
 
