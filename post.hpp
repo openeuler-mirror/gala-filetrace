@@ -39,7 +39,7 @@ class PostData {
         std::string domain_name;
         std::string server; //provide set and config methods for ragdoll service
         std::string exporter_address;
-         PrometheusExporter *exporter_ptr;
+        PrometheusExporter *exporter_ptr;
         int port;
         bool publish; // default is false
         json config_json_obj;
