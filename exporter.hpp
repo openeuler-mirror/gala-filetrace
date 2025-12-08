@@ -17,22 +17,26 @@ using namespace std;
 class PrometheusExporter {
 public:
     PrometheusExporter(const std::string& address);
-    prometheus::Counter& addCounter(const std::string& name,
+    prometheus::Counter& add_counter(const std::string& name,
                                     const std::string& help,
                                     const std::map<std::string, std::string>& labels = {});
 
-    prometheus::Gauge& addGauge(const std::string& name,
+    prometheus::Gauge& add_gauge(const std::string& name,
                                 const std::string& help,
                                 const std::map<std::string, std::string>& labels = {});
 
-    prometheus::Histogram& addHistogram(const std::string& name,
+    prometheus::Histogram& add_histogram(const std::string& name,
                                         const std::string& help,
                                         const prometheus::Histogram::BucketBoundaries& buckets,
                                         const std::map<std::string, std::string>& labels = {});
 
-    void incCounter(prometheus::Counter& counter, double v = 1.0);
+    void inc_counter(prometheus::Counter& counter, double v = 1.0);
     std::shared_ptr<prometheus::Registry> registry_;
     void set_metrics(struct event& e);
+    prometheus::Counter* file_access_counter = nullptr;
+
 private:
     std::unique_ptr<prometheus::Exposer> exposer_;
+    std::map<std::string, prometheus::Counter*> op_counter_cache_;
+    std::map<std::string, prometheus::Gauge*> gauge_cache_;
 };

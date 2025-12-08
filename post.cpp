@@ -126,12 +126,12 @@ int PostData::load_config(const std::string& configFile)
 
 int PostData::send(struct event e) 
 {
+    exporter_ptr->set_metrics(e);
     if(!is_valid_event(e)) {
         std::cerr << "Skip event detected, skipping." << std::endl;
         return 0; 
     }
     print_event(&e);
-    exporter_ptr->set_metrics(e);
     std::string data = convert_to_string(e);
     if (data.empty()) {
         std::cerr << "Failed to convert event to JSON string." << std::endl;
@@ -514,5 +514,11 @@ bool PostData::exporter_start()
         std::cerr << "Failed to initialize Prometheus Exporter: " << e.what() << std::endl;
         throw;
     }
+    // store the counter returned by exporter for later use
+    exporter_ptr->file_access_counter = &exporter_ptr->add_counter(
+        "file_access_total",
+        "File access events",
+        {}
+    );
     return true;
 }
