@@ -126,11 +126,11 @@ int PostData::load_config(const std::string& configFile)
 
 int PostData::send(struct event e) 
 {
-    exporter_ptr->set_metrics(e);
     if(!is_valid_event(e)) {
         std::cerr << "Skip event detected, skipping." << std::endl;
         return 0; 
     }
+    exporter_ptr->set_metrics(e);
     print_event(&e);
     std::string data = convert_to_string(e);
     if (data.empty()) {
@@ -290,7 +290,7 @@ bool PostData::is_valid_event(struct event &e)
         case SYS_rename:
         case SYS_renameat:
         case SYS_renameat2:
-            if(!compare_config_file(conf_list, fullpath)) {
+            if(!compare_config_file(conf_list, e.filename)) {
                 return false; 
             }
             break;       

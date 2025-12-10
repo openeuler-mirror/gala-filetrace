@@ -57,45 +57,48 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
 
 void PrometheusExporter::set_metrics(struct event& e) 
 {
-    std::cout << "Setting metrics for event: " << e.cmd << std::endl;
+    std::string process_name = std::string(e.cmd);
+    if (process_name.empty()) {
+        process_name = "unknown";
+    }
     
-    // Get operation name as string
+    std::string filename = std::string(e.filename);
+    if (filename.empty()) {
+        filename = "unknown";
+    }
+    
+    std::cout << "Setting metrics for event: " << process_name << std::endl;
+    
     std::string operation = std::string(nr_map[e.flag]);
     
-    // Basic labels for all metrics
+    uint32_t safe_pid = e.pid;
+    uint64_t safe_inode = e.i_ino;
+    
     std::map<std::string, std::string> base_labels = {
         {"operation", operation},
         {"process", e.cmd},
     };
     
-    // 1. Increment file_access_counter if it exists (total count of file access events)
     if (file_access_counter != nullptr) {
         file_access_counter->Increment();
         std::cout << "Incremented file_access_counter" << std::endl;
     }
     
-    // 2. Create detailed labels for gauges/histograms
     std::map<std::string, std::string> detailed_labels = base_labels;
     detailed_labels.insert({"pid", std::to_string(e.pid)});
+    detailed_labels.insert({"ppid", std::to_string(e.ppid)});
     detailed_labels.insert({"uid", std::to_string(e.uid)});
     detailed_labels.insert({"gid", std::to_string(e.gid)});
-    detailed_labels.insert({"inode", std::to_string(e.i_ino)});
+    detailed_labels.insert({"inode", std::to_string(safe_inode)});
+    detailed_labels.insert({"file", filename});
+    detailed_labels.insert({"cmd", process_name});
     
-    std::string file = "";
-    if (e.flag != SYS_write) {
-        file = e.filename;
-    }
-    detailed_labels.insert({"file", file});
-    
-    // 3. Increment operation-specific counter (with caching to avoid re-registration)
     std::string op_counter_name = "file_access_" + operation + "_total";
     prometheus::Counter* op_counter = nullptr;
-    
-    // Check cache first
+
     if (op_counter_cache_.find(op_counter_name) != op_counter_cache_.end()) {
         op_counter = op_counter_cache_[op_counter_name];
     } else {
-        // Not in cache, create and cache it
         op_counter = &add_counter(
             op_counter_name,
             "Total " + operation + " operations",
@@ -106,8 +109,6 @@ void PrometheusExporter::set_metrics(struct event& e)
     
     op_counter->Increment();
     std::cout << "Incremented " << op_counter_name << std::endl;
-    
-    // 4. Record the inode being accessed as a gauge (with caching)
     std::string inode_gauge_key = "file_access_inode_current_" + std::to_string(e.i_ino);
     prometheus::Gauge* inode_gauge = nullptr;
     
@@ -125,7 +126,6 @@ void PrometheusExporter::set_metrics(struct event& e)
     inode_gauge->Set(static_cast<double>(e.i_ino));
     std::cout << "Updated inode gauge for inode " << e.i_ino << std::endl;
     
-    // 5. Record process ID as a gauge (with caching)
     std::string pid_gauge_key = "file_access_process_pid_" + std::to_string(e.pid);
     prometheus::Gauge* pid_gauge = nullptr;
     

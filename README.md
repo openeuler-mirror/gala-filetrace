@@ -131,6 +131,9 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 | exporter_address  |string   |  Prometheus Node Exporter监听地址 |
 |
 
+浏览器访问http://IP:9090/Metrics，可以查看监控指标。
+
+
 # 4.内核升级
 
 在内核6.6.0中，无法从task_struct中获取进程中fd列表了。所以只能通过在内核中增加接口来实现。
