@@ -42,7 +42,9 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     e->flag = SYS_openat;
 
     t = (struct task_struct*)bpf_get_current_task();
-    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    //bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    unsigned long pid_tgid = bpf_get_current_pid_tgid();
+    e->pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID）
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
@@ -56,7 +58,7 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     const char *pathname_ptr = (const char *)ctx->args[1];
     bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
     #ifdef DEBUG
-    bpf_printk("openat detected: PID %d, file '%s'\n", e->pid, e->filename);
+    bpf_printk("openat detected: PID %u, file '%s'\n", e->pid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
     return 0;
@@ -89,7 +91,7 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     const char *pathname_ptr = (const char *)ctx->args[1];
     bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
     #ifdef DEBUG
-    bpf_printk("unlinkat detected: PID %d, file '%s'\n", e->pid, e->filename);
+    bpf_printk("unlinkat detected: PID %u, file '%s'\n", e->pid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
     return 0;
@@ -186,7 +188,7 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     
     bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
     #ifdef DEBUG
-    bpf_printk("copy_file_range detected: PID %d, file '%s'\n", e->pid, e->filename);
+    bpf_printk("copy_file_range detected: PID %u, file '%s'\n", e->pid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
     return 0;
@@ -203,7 +205,9 @@ static __always_inline int handle_rename(const struct trace_event_raw_sys_enter 
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
 
     t = (struct task_struct*)bpf_get_current_task();
-    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    //bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    unsigned long pid_tgid = bpf_get_current_pid_tgid();
+    e->pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID）
     bpf_get_current_comm(&e->cmd, sizeof(e->cmd));
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
@@ -275,7 +279,9 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
     e->flag = SYS_renameat2;
 
     t = (struct task_struct*)bpf_get_current_task();
-    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    //bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    unsigned long pid_tgid = bpf_get_current_pid_tgid();
+    e->pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID）
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
@@ -349,8 +355,9 @@ int enter_execve(struct trace_event_raw_sys_enter *ctx)
     struct pinfo_t p = {};
     unsigned int pid;
     struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-    bpf_probe_read(&pid, sizeof(pid), &t->pid);
-
+    //bpf_probe_read(&pid, sizeof(pid), &t->pid);
+    unsigned long pid_tgid = bpf_get_current_pid_tgid();
+    pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID）
     struct task_struct *p_parent;
     bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
     bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
@@ -369,8 +376,9 @@ int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
     struct pinfo_t p = {};
     unsigned int pid;
     struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-    bpf_probe_read(&pid, sizeof(pid), &t->pid);
-
+    //bpf_probe_read(&pid, sizeof(pid), &t->pid);
+    unsigned long pid_tgid = bpf_get_current_pid_tgid();
+    pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID
     struct task_struct *p_parent;
     bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
     bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
@@ -446,7 +454,9 @@ int trace_write(struct trace_event_raw_sys_enter *ctx) {
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
 
     t = (struct task_struct*)bpf_get_current_task();
-    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    //bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    unsigned long pid_tgid = bpf_get_current_pid_tgid();
+    e->pid = pid_tgid >> 32;  // 获取 tgid（用户
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
@@ -518,7 +528,9 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     file = file_ptr;
    
     //fill pid cmd ppid pcmd
-    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    //bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    unsigned long pid_tgid = bpf_get_current_pid_tgid();
+    e->pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID）
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
@@ -569,7 +581,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
 
     bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
     #ifdef DEBUG
-    bpf_printk("sys_enter_write detected: PID %d, file '%s'\n", e->pid, e->filename);
+    bpf_printk("sys_enter_write detected: PID %u, file '%s'\n", e->pid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
     return 0;

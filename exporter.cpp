@@ -76,7 +76,7 @@ void PrometheusExporter::set_metrics(struct event& e)
     
     std::map<std::string, std::string> base_labels = {
         {"operation", operation},
-        {"process", e.cmd},
+        {"cmd", e.cmd},
     };
     
     if (file_access_counter != nullptr) {
@@ -92,39 +92,9 @@ void PrometheusExporter::set_metrics(struct event& e)
     detailed_labels.insert({"inode", std::to_string(safe_inode)});
     detailed_labels.insert({"file", filename});
     detailed_labels.insert({"cmd", process_name});
-    
-    std::string op_counter_name = "file_access_" + operation + "_total";
-    prometheus::Counter* op_counter = nullptr;
+    std::string time_now = std::to_string(std::time(nullptr));
+    detailed_labels.insert({"ts", time_now});
 
-    if (op_counter_cache_.find(op_counter_name) != op_counter_cache_.end()) {
-        op_counter = op_counter_cache_[op_counter_name];
-    } else {
-        op_counter = &add_counter(
-            op_counter_name,
-            "Total " + operation + " operations",
-            base_labels
-        );
-        op_counter_cache_[op_counter_name] = op_counter;
-    }
-    
-    op_counter->Increment();
-    std::cout << "Incremented " << op_counter_name << std::endl;
-    std::string inode_gauge_key = "file_access_inode_current_" + std::to_string(e.i_ino);
-    prometheus::Gauge* inode_gauge = nullptr;
-    
-    if (gauge_cache_.find(inode_gauge_key) != gauge_cache_.end()) {
-        inode_gauge = gauge_cache_[inode_gauge_key];
-    } else {
-        inode_gauge = &add_gauge(
-            "file_access_inode_current",
-            "Current inode being accessed",
-            detailed_labels
-        );
-        gauge_cache_[inode_gauge_key] = inode_gauge;
-    }
-    
-    inode_gauge->Set(static_cast<double>(e.i_ino));
-    std::cout << "Updated inode gauge for inode " << e.i_ino << std::endl;
     
     std::string pid_gauge_key = "file_access_process_pid_" + std::to_string(e.pid);
     prometheus::Gauge* pid_gauge = nullptr;
