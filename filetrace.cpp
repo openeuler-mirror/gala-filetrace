@@ -59,7 +59,7 @@ int main(int argc, char **argv)
     int opt;
     while ((opt = getopt(argc, argv, "c:")) != -1) {
         switch (opt) {
-            case 'f':
+            case 'c':
                 config_file = optarg;
                 break;
             default:
