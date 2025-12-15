@@ -1,4 +1,48 @@
 #include  "post.hpp"
+#include <cstring>
+
+// Replace invalid UTF-8 sequences with the Unicode replacement character (U+FFFD)
+static std::string sanitize_utf8(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    const unsigned char *data = reinterpret_cast<const unsigned char*>(s.data());
+    size_t i = 0, n = s.size();
+    while (i < n) {
+        unsigned char c = data[i];
+        if (c < 0x80) {
+            out.push_back(static_cast<char>(c));
+            ++i;
+        } else if ((c >> 5) == 0x6) {
+            if (i + 1 < n && (data[i+1] & 0xC0) == 0x80) {
+                out.append(reinterpret_cast<const char*>(&data[i]), 2);
+                i += 2;
+            } else {
+                out.append("\xEF\xBF\xBD");
+                ++i;
+            }
+        } else if ((c >> 4) == 0xE) {
+            if (i + 2 < n && (data[i+1] & 0xC0) == 0x80 && (data[i+2] & 0xC0) == 0x80) {
+                out.append(reinterpret_cast<const char*>(&data[i]), 3);
+                i += 3;
+            } else {
+                out.append("\xEF\xBF\xBD");
+                ++i;
+            }
+        } else if ((c >> 3) == 0x1E) {
+            if (i + 3 < n && (data[i+1] & 0xC0) == 0x80 && (data[i+2] & 0xC0) == 0x80 && (data[i+3] & 0xC0) == 0x80) {
+                out.append(reinterpret_cast<const char*>(&data[i]), 4);
+                i += 4;
+            } else {
+                out.append("\xEF\xBF\xBD");
+                ++i;
+            }
+        } else {
+            out.append("\xEF\xBF\xBD");
+            ++i;
+        }
+    }
+    return out;
+}
 
 PostData::PostData(filetrace_bpf *skel, const std::string& configFile)
     :  config_json(configFile),
@@ -203,6 +247,8 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
         std::cerr << "Failed to allocate memory for pinfo_t" << std::endl;
         return ; 
     }
+    // zero-init to avoid uninitialized garbage bytes (which can produce invalid UTF-8)
+    memset(pinfo, 0, sizeof(struct pinfo_t));
     while (true)
     {
         if (proc_id == 0) {
@@ -216,12 +262,14 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
                 break;
             }
         }
-        std::string pinfo_cmd = std::string(pinfo->comm) + " " + 
-                                std::string(pinfo->arg1) + " " +
-                                std::string(pinfo->arg2) + " " +
-                                std::string(pinfo->arg3) + " " +
-                                std::string(pinfo->arg4);
-        add_ptrace(json_data, std::move(pinfo_cmd), proc_id);
+    std::string pinfo_cmd = std::string(pinfo->comm) + " " + 
+                std::string(pinfo->arg1) + " " +
+                std::string(pinfo->arg2) + " " +
+                std::string(pinfo->arg3) + " " +
+                std::string(pinfo->arg4);
+    // sanitize invalid UTF-8 bytes 
+    pinfo_cmd = sanitize_utf8(pinfo_cmd);
+    add_ptrace(json_data, std::move(pinfo_cmd), proc_id);
         // get parent pid
         proc_id = pinfo->pid; 
     }
