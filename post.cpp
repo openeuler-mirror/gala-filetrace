@@ -451,21 +451,25 @@ std::string PostData::get_full_path(const struct event *event)
     std::cout << "dir: dir1: " << event->dir1 << ", dir2: " << event->dir2
               << ", dir3: " << event->dir3 << ", dir4: " << event->dir4
               << ", filename: " << event->filename << std::endl;
-    if (event->dir4[0]) {
+    if (event->dir4[0] == '/') {
         fullpath += std::string(event->dir4) + std::string(event->dir3) + "/" 
                     + std::string(event->dir2) + "/" + std::string(event->dir1) + "/" + std::string(event->filename);
+        std::cout << "The 4 level fullpath: " << fullpath << std::endl;
         return fullpath;
     }
-    if (event->dir3[0]) {
+    if (event->dir3[0] == '/') {
         fullpath += std::string(event->dir3) + std::string(event->dir2) + "/" + std::string(event->dir1)+ "/" + std::string(event->filename);
+        std::cout << "The 3 level fullpath: " << fullpath << std::endl;
         return fullpath;
     }
-    if (event->dir2[0]) {
+    if (event->dir2[0] == '/') {
         fullpath += std::string(event->dir2) + std::string(event->dir1)+ "/" + std::string(event->filename);
+        std::cout << "The 2 level fullpath: " << fullpath << std::endl;
         return fullpath;
     }
-    if (event->dir1[0]) {
+    if (event->dir1[0] == '/') {
         fullpath += std::string(event->dir1) + std::string(event->filename);
+        std::cout << "The 1 level fullpath: " << fullpath << std::endl;
         return fullpath;
     }
     return fullpath;
