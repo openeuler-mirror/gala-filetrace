@@ -319,6 +319,9 @@ bool PostData::compare_config_file(const vector<string> &v, const std::string &c
 
 bool PostData::is_valid_event(struct event &e) 
 {
+   if (e.filename[0] == '\0' || e.filename[0] == '.') {
+        return false;
+   }
    std::string fullpath = "";
     if (e.pid == 0) {
         return false; 
