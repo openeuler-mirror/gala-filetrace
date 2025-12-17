@@ -34,7 +34,7 @@ public:
     std::shared_ptr<prometheus::Registry> registry_;
     void set_metrics(struct event& e);
     prometheus::Counter* file_access_counter = nullptr;
-
+    std::string get_full_path(const struct event *event);
 private:
     std::unique_ptr<prometheus::Exposer> exposer_;
     std::map<std::string, prometheus::Counter*> op_counter_cache_;
