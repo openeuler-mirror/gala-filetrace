@@ -53,26 +53,48 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
     //return family.Add(labels);
         return family.Add(labels, buckets);
 }
-
+// dir:/dir4/dir3/dir2/dir1/filename
+std::string PrometheusExporter::get_full_path(const struct event *event) 
+{
+    std::string fullpath;
+    //top level dir is /
+    std::cout << "dir: dir1: " << event->dir1 << ", dir2: " << event->dir2
+              << ", dir3: " << event->dir3 << ", dir4: " << event->dir4
+              << ", filename: " << event->filename << std::endl;
+    if (event->dir4[0] == '/') {
+        fullpath += std::string(event->dir4) + std::string(event->dir3) + "/" 
+                    + std::string(event->dir2) + "/" + std::string(event->dir1) + "/" + std::string(event->filename);
+        std::cout << "The 4 level fullpath: " << fullpath << std::endl;
+        return fullpath;
+    }
+    if (event->dir3[0] == '/') {
+        fullpath += std::string(event->dir3) + std::string(event->dir2) + "/" + std::string(event->dir1)+ "/" + std::string(event->filename);
+        std::cout << "The 3 level fullpath: " << fullpath << std::endl;
+        return fullpath;
+    }
+    if (event->dir2[0] == '/') {
+        fullpath += std::string(event->dir2) + std::string(event->dir1)+ "/" + std::string(event->filename);
+        std::cout << "The 2 level fullpath: " << fullpath << std::endl;
+        return fullpath;
+    }
+    if (event->dir1[0] == '/') {
+        fullpath += std::string(event->dir1) + std::string(event->filename);
+        std::cout << "The 1 level fullpath: " << fullpath << std::endl;
+        return fullpath;
+    }
+    return fullpath;
+}
 
 void PrometheusExporter::set_metrics(struct event& e) 
 {
-    std::string process_name = std::string(e.cmd);
-    if (process_name.empty()) {
-        process_name = "unknown";
-    }
-    
     std::string filename = std::string(e.filename);
-    if (filename.empty()) {
-        filename = "unknown";
+    if(e.flag == SYS_write)
+    {
+        filename = get_full_path(&e);
+    } else {
+        filename = e.filename;
     }
-    
-    std::cout << "Setting metrics for event: " << process_name << std::endl;
-    
     std::string operation = std::string(nr_map[e.flag]);
-    
-    uint32_t safe_pid = e.pid;
-    uint64_t safe_inode = e.i_ino;
     
     std::map<std::string, std::string> base_labels = {
         {"operation", operation},
@@ -89,22 +111,21 @@ void PrometheusExporter::set_metrics(struct event& e)
     detailed_labels.insert({"ppid", std::to_string(e.ppid)});
     detailed_labels.insert({"uid", std::to_string(e.uid)});
     detailed_labels.insert({"gid", std::to_string(e.gid)});
-    detailed_labels.insert({"inode", std::to_string(safe_inode)});
+    detailed_labels.insert({"inode", std::to_string(e.i_ino)});
     detailed_labels.insert({"file", filename});
-    detailed_labels.insert({"cmd", process_name});
+    detailed_labels.insert({"cmd", e.cmd});
     std::string time_now = std::to_string(std::time(nullptr));
     detailed_labels.insert({"ts", time_now});
 
-    
-    std::string pid_gauge_key = "file_access_process_pid_" + std::to_string(e.pid);
+    std::string pid_gauge_key = "filetrace_info_record_" + std::to_string(e.pid);
     prometheus::Gauge* pid_gauge = nullptr;
     
     if (gauge_cache_.find(pid_gauge_key) != gauge_cache_.end()) {
         pid_gauge = gauge_cache_[pid_gauge_key];
     } else {
         pid_gauge = &add_gauge(
-            "file_access_process_pid",
-            "Process ID accessing files",
+            "filetrace_info_record",
+            "filetrace info",
             detailed_labels
         );
         gauge_cache_[pid_gauge_key] = pid_gauge;
