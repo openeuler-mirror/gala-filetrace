@@ -1,13 +1,18 @@
 #include "exporter.hpp"
 
+
 PrometheusExporter::PrometheusExporter(const std::string& address) 
 {
     if(address.empty()) {
         throw std::runtime_error("Address for Prometheus Exporter cannot be empty.");
     }
-    exposer_ = std::make_unique<prometheus::Exposer>(address);
-    registry_ = std::make_shared<prometheus::Registry>();
-    exposer_->RegisterCollectable(registry_);
+    exposer = std::make_unique<prometheus::Exposer>(address);
+    registry = std::make_shared<prometheus::Registry>();
+    exposer->RegisterCollectable(registry);
+    
+    // start thread to check cache timeout
+    std::thread(&PrometheusExporter::task_gauge_cache_timeout, this).detach();
+    std::cout << "PrometheusExporter initialized at: " << address << std::endl;
 }
 
 prometheus::Counter& PrometheusExporter::add_counter(
@@ -18,7 +23,7 @@ prometheus::Counter& PrometheusExporter::add_counter(
     auto& family = prometheus::BuildCounter()
                        .Name(name)
                        .Help(help)
-                       .Register(*registry_);
+                       .Register(*registry);
 
     return family.Add(labels);
 }
@@ -35,7 +40,7 @@ prometheus::Gauge& PrometheusExporter::add_gauge(
     auto& family = prometheus::BuildGauge()
                        .Name(name)
                        .Help(help)
-                       .Register(*registry_);
+                       .Register(*registry);
     return family.Add(labels);
 }
 
@@ -49,7 +54,7 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
                        .Name(name)
                        .Help(help)
                        //.Buckets(buckets)
-                       .Register(*registry_);
+                       .Register(*registry);
     //return family.Add(labels);
         return family.Add(labels, buckets);
 }
@@ -119,19 +124,67 @@ void PrometheusExporter::set_metrics(struct event& e)
 
     std::string pid_gauge_key = "filetrace_info_record_" + std::to_string(e.pid);
     prometheus::Gauge* pid_gauge = nullptr;
-    
-    if (gauge_cache_.find(pid_gauge_key) != gauge_cache_.end()) {
-        pid_gauge = gauge_cache_[pid_gauge_key];
-    } else {
-        pid_gauge = &add_gauge(
-            "filetrace_info_record",
-            "filetrace info",
-            detailed_labels
-        );
-        gauge_cache_[pid_gauge_key] = pid_gauge;
-    }
-    
-    pid_gauge->Set(static_cast<double>(e.pid));
-    std::cout << "Updated PID gauge for PID " << e.pid << std::endl;
+    // Protect cache access with mutex to avoid races with the cleanup thread
+    {
+        std::lock_guard<std::mutex> lock(gauge_cache_mutex);
+        auto it = gauge_cache.find(pid_gauge_key);
+        if (it != gauge_cache.end()) {
+            std::cout << "Reusing existing gauge for PID: " << pid_gauge_key << std::endl;
+            pid_gauge = it->second;
+        } else {
+            pid_gauge = &add_gauge(
+                "filetrace_info_record",
+                "filetrace info",
+                detailed_labels
+            );
+            gauge_cache[pid_gauge_key] = pid_gauge;
+        }
 
+        // Update the gauge and timestamp while holding the lock to ensure visibility
+        if (pid_gauge) {
+            pid_gauge->Set(static_cast<double>(e.pid));
+        }
+        gauge_cache_timestamps[pid_gauge_key] = time_now;
+    }
+    std::cout << "Updated PID gauge for PID " << e.pid << std::endl;
+}
+
+void PrometheusExporter::task_gauge_cache_timeout() {
+    while (true) {
+        //loop every 10 seconds
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        std::lock_guard<std::mutex> lock(gauge_cache_mutex);
+        for (auto it = gauge_cache_timestamps.begin(); it != gauge_cache_timestamps.end(); ) {
+            const std::string& key = it->first;
+            std::cout << "Checking gauge cache key: " << key << std::endl;
+            const std::string& timestamp_str = it->second;
+            std::time_t timestamp = std::stol(timestamp_str);
+            std::time_t now = std::time(nullptr);
+            if (now - timestamp > 30) { // 30 seconds timeout
+                auto gauge_it = gauge_cache.find(key);
+                if (gauge_it != gauge_cache.end()) {
+                    // set metric to 0 before removing from cache so external scrapers
+                    // see a cleared value (prometheus-cpp does not support unregistering
+                    // individual metrics easily).
+                    try {
+                        prometheus::Gauge* g = gauge_it->second;
+                        if (g) {
+                            g->Set(0.0);
+                        }
+                    } 
+                    catch (...) 
+                    {
+                        std::cerr << "Error setting gauge to 0 for key: " << key << std::endl;
+                    }
+                    gauge_cache.erase(key);
+                    std::cout << "Removed stale gauge from cache: " << key << std::endl;
+                }
+                it = gauge_cache_timestamps.erase(it);
+            }
+            else 
+            {
+                ++it;
+            }
+        }
+    }
 }

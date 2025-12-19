@@ -2,6 +2,8 @@
 #include <memory>
 #include <string>
 #include <map>
+#include <thread>
+#include <chrono>
 
 #include <prometheus/registry.h>
 #include <prometheus/exposer.h>
@@ -31,12 +33,18 @@ public:
                                         const std::map<std::string, std::string>& labels = {});
 
     void inc_counter(prometheus::Counter& counter, double v = 1.0);
-    std::shared_ptr<prometheus::Registry> registry_;
+    std::shared_ptr<prometheus::Registry> registry;
     void set_metrics(struct event& e);
     prometheus::Counter* file_access_counter = nullptr;
     std::string get_full_path(const struct event *event);
+    //add a thread check cache gauge timeout and remove it after some time
+    prometheus::Gauge* thread_check_cache_gauge = nullptr;
+    //loop to check cache timeout every minute
+    void task_gauge_cache_timeout();
 private:
-    std::unique_ptr<prometheus::Exposer> exposer_;
-    std::map<std::string, prometheus::Counter*> op_counter_cache_;
-    std::map<std::string, prometheus::Gauge*> gauge_cache_;
+    std::unique_ptr<prometheus::Exposer> exposer;
+    //std::map<std::string, prometheus::Counter*> op_counter_cache;
+    std::map<std::string, prometheus::Gauge*> gauge_cache;
+    std::map<std::string, std::string> gauge_cache_timestamps;
+    std::mutex gauge_cache_mutex;
 };

@@ -327,6 +327,7 @@ bool PostData::is_valid_event(struct event &e)
         return false; 
     }
     if (std::find(skip_processes.begin(), skip_processes.end(), e.cmd) != skip_processes.end()) {
+        std::cout << "Process " << e.cmd << " is in skip list." << std::endl;
         return false; 
     }
     std::string cmd = e.cmd;
