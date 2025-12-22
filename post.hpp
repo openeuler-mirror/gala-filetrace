@@ -30,7 +30,7 @@ class PostData {
     public:
         PostData(filetrace_bpf *skel, const std::string& configFile);
         ~PostData();
-
+        //config items
         std::string ragdoll_api;
         std::string config_json;
         std::vector<std::string> conf_list;
@@ -39,6 +39,9 @@ class PostData {
         std::string domain_name;
         std::string server; //provide set and config methods for ragdoll service
         std::string exporter_address;
+        std::string log_level;
+        std::string log_file;
+
         PrometheusExporter *exporter_ptr;
         int port;
         bool publish; // default is false
