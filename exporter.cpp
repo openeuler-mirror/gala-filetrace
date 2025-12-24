@@ -12,7 +12,7 @@ PrometheusExporter::PrometheusExporter(const std::string& address)
     
     // start thread to check cache timeout
     std::thread(&PrometheusExporter::task_gauge_cache_timeout, this).detach();
-    std::cout << "PrometheusExporter initialized at: " << address << std::endl;
+    Logger::info("PrometheusExporter initialized at: " + address);
 }
 
 prometheus::Counter& PrometheusExporter::add_counter(
@@ -56,35 +56,35 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
                        //.Buckets(buckets)
                        .Register(*registry);
     //return family.Add(labels);
-        return family.Add(labels, buckets);
+    return family.Add(labels, buckets);
 }
 // dir:/dir4/dir3/dir2/dir1/filename
 std::string PrometheusExporter::get_full_path(const struct event *event) 
 {
     std::string fullpath;
     //top level dir is /
-    std::cout << "dir: dir1: " << event->dir1 << ", dir2: " << event->dir2
-              << ", dir3: " << event->dir3 << ", dir4: " << event->dir4
-              << ", filename: " << event->filename << std::endl;
+    Logger::info("dir: dir1: " + std::string(event->dir1) + ", dir2: " + std::string(event->dir2)
+              + ", dir3: " + std::string(event->dir3) + ", dir4: " + std::string(event->dir4)
+              + ", filename: " + std::string(event->filename));
     if (event->dir4[0] == '/') {
         fullpath += std::string(event->dir4) + std::string(event->dir3) + "/" 
                     + std::string(event->dir2) + "/" + std::string(event->dir1) + "/" + std::string(event->filename);
-        std::cout << "The 4 level fullpath: " << fullpath << std::endl;
+        Logger::info("The 4 level fullpath: " + fullpath);
         return fullpath;
     }
     if (event->dir3[0] == '/') {
         fullpath += std::string(event->dir3) + std::string(event->dir2) + "/" + std::string(event->dir1)+ "/" + std::string(event->filename);
-        std::cout << "The 3 level fullpath: " << fullpath << std::endl;
+        Logger::info("The 3 level fullpath: " + fullpath);
         return fullpath;
     }
     if (event->dir2[0] == '/') {
         fullpath += std::string(event->dir2) + std::string(event->dir1)+ "/" + std::string(event->filename);
-        std::cout << "The 2 level fullpath: " << fullpath << std::endl;
+        Logger::info("The 2 level fullpath: " + fullpath);
         return fullpath;
     }
     if (event->dir1[0] == '/') {
         fullpath += std::string(event->dir1) + std::string(event->filename);
-        std::cout << "The 1 level fullpath: " << fullpath << std::endl;
+        Logger::info("The 1 level fullpath: " + fullpath);
         return fullpath;
     }
     return fullpath;
@@ -108,7 +108,7 @@ void PrometheusExporter::set_metrics(struct event& e)
     
     if (file_access_counter != nullptr) {
         file_access_counter->Increment();
-        std::cout << "Incremented file_access_counter" << std::endl;
+        Logger::info("Incremented file_access_counter");
     }
     
     std::map<std::string, std::string> detailed_labels = base_labels;
@@ -129,7 +129,7 @@ void PrometheusExporter::set_metrics(struct event& e)
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
         auto it = gauge_cache.find(pid_gauge_key);
         if (it != gauge_cache.end()) {
-            std::cout << "Reusing existing gauge for PID: " << pid_gauge_key << std::endl;
+            Logger::info("Reusing existing gauge for PID: " + pid_gauge_key);
             pid_gauge = it->second;
         } else {
             pid_gauge = &add_gauge(
@@ -146,10 +146,11 @@ void PrometheusExporter::set_metrics(struct event& e)
         }
         gauge_cache_timestamps[pid_gauge_key] = time_now;
     }
-    std::cout << "Updated PID gauge for PID " << e.pid << std::endl;
+    Logger::info("Updated PID gauge for PID " + std::to_string(e.pid));
 }
 
 void PrometheusExporter::task_gauge_cache_timeout() {
+    Logger::info("Starting gauge cache timeout task");
     while (true) {
         //loop every 10 seconds
         std::this_thread::sleep_for(std::chrono::seconds(10));
@@ -174,10 +175,10 @@ void PrometheusExporter::task_gauge_cache_timeout() {
                     } 
                     catch (...) 
                     {
-                        std::cerr << "Error setting gauge to 0 for key: " << key << std::endl;
+                        Logger::error("Error setting gauge to 0 for key: " + key);
                     }
                     gauge_cache.erase(key);
-                    std::cout << "Removed stale gauge from cache: " << key << std::endl;
+                    Logger::info("Removed stale gauge from cache: " + key);
                 }
                 it = gauge_cache_timestamps.erase(it);
             }
