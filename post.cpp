@@ -78,6 +78,7 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile)
         std::thread server_thread(&PostData::start_http_server, this);
         server_thread.detach(); // Detach the thread to run the HTTP server in the background
     }
+    Logger::info("PostData initialized successfully");
 }
 
 PostData::~PostData() 
@@ -105,10 +106,11 @@ bool PostData::is_valid_ip(const std::string& ip) {
 }
 int PostData::load_config(const std::string& configFile)
 {
+    Logger::info("Loading configuration from " + configFile);
     std::ifstream file(configFile);
     if (!file.is_open()) {
-        std::cerr << "Could not open config file: " << configFile << std::endl;
-        return -1; 
+        Logger::error("Could not open config file: " + configFile);
+        return -1;
     }
     try {
         file >> config_json_obj;
@@ -116,33 +118,33 @@ int PostData::load_config(const std::string& configFile)
         conf_list = config_json_obj["config_list"].get<std::vector<std::string>>();
         if (conf_list.empty()) 
         {
-            std::cerr << "Configuration list is empty, please check your config file." << std::endl;
+            Logger::error("Configuration list is empty, please check your config file.");
             return -1; 
         }
         //log level
         log_level = config_json_obj.value("log_level", std::string("info"));
         log_file = config_json_obj.value("log_file", std::string("/var/log/filetrace.log"));
-        std::cout << "Log level set to: " << log_level << ", log file: " << log_file << std::endl;
+        Logger::info("Log level set to: " + log_level + ", log file: " + log_file);
         //check dir level
         for (const auto& conf : conf_list) {
             int level = get_dir_level(conf);
             if (level < 0) {
-                std::cerr << "Invalid path in config: " << conf << std::endl;
+                Logger::error("Invalid path in config: " + conf);
                 return -1; 
             }
             if (level > MAX_DIR_LEVEL) {
-                std::cerr << "Path exceeds maximum directory level (" << MAX_DIR_LEVEL << "): " << conf << std::endl;
+                Logger::error("Path exceeds maximum directory level (" + std::to_string(MAX_DIR_LEVEL) + "): " + conf);
                 return -1; 
             }
         }
         host_id = config_json_obj["host_id"].get<std::string>();
         if (host_id.empty()) {
-            std::cerr << "Host ID is empty, please check your config file." << std::endl;
+            Logger::error("Host ID is empty, please check your config file.");
             return -1; 
         }
         domain_name = config_json_obj["domain_name"].get<std::string>();
         if (domain_name.empty()) {
-            std::cerr << "Domain name is empty, please check your config file." << std::endl;
+            Logger::error("Domain name is empty, please check your config file.");
             return -1; 
         }
         ragdoll_api = config_json_obj["ragdoll_api"].get<std::string>();
@@ -151,33 +153,31 @@ int PostData::load_config(const std::string& configFile)
         publish = config_json_obj.value("publish", false); 
         server = config_json_obj.value("server", "0.0.0.0");
         if (!is_valid_ip(server)) {
-            std::cerr << "Invalid server IP address: " << server << std::endl;
+            Logger::error("Invalid server IP address: " + server);
             return -1; 
         }
         port = config_json_obj.value("port", 8080);
         exporter_address = config_json_obj.value("exporter_address", "0.0.0.0:8080");
-        std::cout << "Configuration loaded from " << configFile << std::endl;
-        std::cout << "ragdoll_api: " << ragdoll_api <<  ";";
-        std::cout << "skip_processes: ";
+        Logger::info("Configuration loaded from " + configFile);
+        Logger::info("ragdoll_api: " + ragdoll_api);
+        Logger::info("skip_processes: ");
         for (const auto& process : skip_processes) {
-            std::cout << process << " ";
+            Logger::info(process);
         }
-        std::cout <<  ";";
-        std::cout << "conf_list: ";
+        Logger::info("conf_list: ");
         for (const auto& conf : conf_list) {
-            std::cout << conf << " ";
+            Logger::info(conf);
         }
-        std::cout <<  ";";
-        std::cout << "host_id: " << host_id <<  ";";
-        std::cout << "domain_name: " << domain_name <<  ";";
-        std::cout << "publish: " << (publish ? "true" : "false") << std::endl;
+        Logger::info("host_id: " + host_id);
+        Logger::info("domain_name: " + domain_name);
+        Logger::info("publish: " + std::string(publish ? "true" : "false"));
         return 0;
     } catch (json::parse_error& e) {
-        std::cerr << "JSON parse error: " << e.what() << std::endl;
+        Logger::error("JSON parse error: " + std::string(e.what()));
     } catch (json::type_error& e) {
-        std::cerr << "JSON type error: " << e.what() << std::endl;
+        Logger::error("JSON type error: " + std::string(e.what()));
     } catch (std::exception& e) {
-        std::cerr << "General error: " << e.what() << std::endl;
+        Logger::error("General error: " + std::string(e.what()));
     }
     return -1; 
 }
@@ -185,22 +185,22 @@ int PostData::load_config(const std::string& configFile)
 int PostData::send(struct event e) 
 {
     if(!is_valid_event(e)) {
-        std::cerr << "Skip event detected, skipping." << std::endl;
+        Logger::error("Skip event detected, skipping.");
         return 0; 
     }
     exporter_ptr->set_metrics(e);
     print_event(&e);
     std::string data = convert_to_string(e);
     if (data.empty()) {
-        std::cerr << "Failed to convert event to JSON string." << std::endl;
+        Logger::error("Failed to convert event to JSON string.");
         return 1; 
     }
     if(publish == false) {
-        std::cout << "Publishing is disabled, not sending data." << std::endl;
-        std::cout << "Data: " << data << std::endl;
+        Logger::info("Publishing is disabled, not sending data.");
+        Logger::info("Data: " + data);
         return 0; 
     }
-    std::cout << "Sending data to Aops: " << data << std::endl;
+    Logger::info("Sending data to Aops: " + data);
     long http_code = 0;
     CURL *curl;
     CURLcode res;
@@ -209,7 +209,7 @@ int PostData::send(struct event e)
     std::string content_type = "Content-Type: application/json"; 
     curl = curl_easy_init(); 
     if (!curl) {
-        std::cerr << "Failed to initialize CURL." << std::endl;
+        Logger::error("Failed to initialize CURL.");
         return 1; 
     }
     headers = curl_slist_append(headers, content_type.c_str());
@@ -220,11 +220,11 @@ int PostData::send(struct event e)
     //curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, data.length());
     res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
-        std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
+        Logger::error("curl_easy_perform() failed: " + std::string(curl_easy_strerror(res)));
     } else {
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        std::cout << "HTTP POST successful, HTTP Status Code:" << http_code  << std::endl;
-        //std::cout << "Response: " << readBuffer << std::endl;
+        Logger::info("HTTP POST successful, HTTP Status Code: " + std::to_string(http_code));
+        //Logger::info("Response: " + readBuffer);
     }
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
@@ -244,6 +244,16 @@ void PostData::print_event(const struct event *event)
               << ", Directory3: " << event->dir3 
               << ", Directory4: " << event->dir4 
               << std::endl;
+    Logger::info("Event Details: PID: " + std::to_string(event->pid) + 
+                 ", PPID: " + std::to_string(event->ppid) + 
+                 ", Command: " + std::string(event->cmd) + 
+                 ", Syscall: " + std::string(nr_map[event->flag]) + 
+                 ", Filename: " + std::string(event->filename) + 
+                 ", Old Filename: " + std::string(event->oldfilename) + 
+                 ", Directory1: " + std::string(event->dir1) + 
+                 ", Directory2: " + std::string(event->dir2) + 
+                 ", Directory3: " + std::string(event->dir3) + 
+                 ", Directory4: " + std::string(event->dir4));
 }
 void PostData::add_ptrace(json& j, const std::string cmd, int pid) 
 {
@@ -258,8 +268,8 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
     }
     struct pinfo_t *pinfo = (struct pinfo_t *)malloc(sizeof(struct pinfo_t));
     if (!pinfo) {
-        std::cerr << "Failed to allocate memory for pinfo_t" << std::endl;
-        return ; 
+        Logger::error("Failed to allocate memory for pinfo_t");
+        return; 
     }
     // zero-init to avoid uninitialized garbage bytes (which can produce invalid UTF-8)
     memset(pinfo, 0, sizeof(struct pinfo_t));
@@ -268,7 +278,7 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
         if (proc_id == 0) {
             break; 
         }
-        std::cout << "Generating proc trace for PID: " << proc_id << std::endl;
+        Logger::info("Generating proc trace for PID: " + std::to_string(proc_id));
         int ret = get_procinfo_by_pid_from_map(pinfo, proc_id);
         if (ret) {
             ret = get_procinfo_by_pid_from_system(pinfo, proc_id);
@@ -341,7 +351,7 @@ bool PostData::is_valid_event(struct event &e)
         return false; 
     }
     if (std::find(skip_processes.begin(), skip_processes.end(), e.cmd) != skip_processes.end()) {
-        std::cout << "Process " << e.cmd << " is in skip list." << std::endl;
+        Logger::info("Process " + std::string(e.cmd) + " is in skip list.");
         return false; 
     }
     std::string cmd = e.cmd;
@@ -376,15 +386,15 @@ int  PostData::get_procinfo_by_pid_from_map(struct pinfo_t *pinfo , unsigned int
 {
     int ret = bpf_map_lookup_elem(exec_map_fd, &pid, pinfo);
     if (ret != 0) {
-        std::cerr << "Failed to lookup pinfo for PID " << pid << ", ret:" << ret << std::endl;
+        Logger::error("Failed to lookup pinfo for PID " + std::to_string(pid) + ", ret:" + std::to_string(ret));
         return -1; 
     }
-    std::cout << "Found pinfo in map for PID " << pid << ": " 
-              << pinfo->comm << ", args: " 
-              << pinfo->arg1 << " " 
-              << pinfo->arg2 << " "
-              << pinfo->arg3 << " "
-              << pinfo->arg4 << std::endl;
+    Logger::info("Found pinfo in map for PID " + std::to_string(pid) + ": " 
+                 + std::string(pinfo->comm) + ", args: " 
+                 + std::string(pinfo->arg1) + " " 
+                 + std::string(pinfo->arg2) + " "
+                 + std::string(pinfo->arg3) + " "
+                 + std::string(pinfo->arg4));
     return 0;
 }
 
@@ -417,14 +427,12 @@ std::vector<std::string> PostData::split_stat_line(const std::string &line)
 
 int  PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned int &pid)
 {
-
     char proc_path[1024];
     //get ppid and comm from /proc/<pid>/stat
-
     snprintf(proc_path, sizeof(proc_path), "/proc/%u/stat", pid);
     std::ifstream stat_file(proc_path);
     if (!stat_file.is_open()) {
-        std::cerr << "Failed to open stat file: " << proc_path << std::endl;
+        Logger::error("Failed to open stat file: " + std::string(proc_path));
         return -1;
     }
     std::string line;
@@ -433,7 +441,7 @@ int  PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned i
 
     auto fields = split_stat_line(line);
     if (fields.size() < 5) {
-        std::cerr << proc_path << "content invlad." << std::endl;
+        Logger::error(std::string(proc_path) + " content invalid.");
         return -1;
     }
     // pid, comm, ppid
@@ -466,28 +474,28 @@ std::string PostData::get_full_path(const struct event *event)
 {
     std::string fullpath;
     //top level dir is /
-    std::cout << "dir: dir1: " << event->dir1 << ", dir2: " << event->dir2
-              << ", dir3: " << event->dir3 << ", dir4: " << event->dir4
-              << ", filename: " << event->filename << std::endl;
+    Logger::info("dir: dir1: " + std::string(event->dir1) + ", dir2: " + std::string(event->dir2)
+              + ", dir3: " + std::string(event->dir3) + ", dir4: " + std::string(event->dir4)
+              + ", filename: " + std::string(event->filename));
     if (event->dir4[0] == '/') {
         fullpath += std::string(event->dir4) + std::string(event->dir3) + "/" 
                     + std::string(event->dir2) + "/" + std::string(event->dir1) + "/" + std::string(event->filename);
-        std::cout << "The 4 level fullpath: " << fullpath << std::endl;
+        Logger::info("The 4 level fullpath: " + fullpath);
         return fullpath;
     }
     if (event->dir3[0] == '/') {
         fullpath += std::string(event->dir3) + std::string(event->dir2) + "/" + std::string(event->dir1)+ "/" + std::string(event->filename);
-        std::cout << "The 3 level fullpath: " << fullpath << std::endl;
+        Logger::info("The 3 level fullpath: " + fullpath);
         return fullpath;
     }
     if (event->dir2[0] == '/') {
         fullpath += std::string(event->dir2) + std::string(event->dir1)+ "/" + std::string(event->filename);
-        std::cout << "The 2 level fullpath: " << fullpath << std::endl;
+        Logger::info("The 2 level fullpath: " + fullpath);
         return fullpath;
     }
     if (event->dir1[0] == '/') {
         fullpath += std::string(event->dir1) + std::string(event->filename);
-        std::cout << "The 1 level fullpath: " << fullpath << std::endl;
+        Logger::info("The 1 level fullpath: " + fullpath);
         return fullpath;
     }
     return fullpath;
@@ -522,19 +530,19 @@ int PostData::update_config(const json &j)
         } else if (action == "remove") {
             conf_list.erase(std::remove(conf_list.begin(), conf_list.end(), conf), conf_list.end());
         } else {
-            std::cerr << "Unknown action: " << action << std::endl;
+            Logger::error("Unknown action: " + action);
             return -1; 
         }
     }
     //write to file
     std::ofstream file(config_json);
     if (!file.is_open()) {
-        std::cerr << "Could not open config file for writing: " << config_json << std::endl;
+        Logger::error("Could not open config file for writing: " + config_json);
         return -1;
     }
     file << j.dump(4);
     file.close();
-    std::cout << "Configuration updated successfully." << std::endl;
+    Logger::info("Configuration updated successfully.");
     return 0; 
 }
 void PostData::start_http_server() 
@@ -581,7 +589,7 @@ bool PostData::exporter_start()
     try {
         exporter_ptr = new PrometheusExporter(exporter_address);
     } catch (const std::exception& e) {
-        std::cerr << "Failed to initialize Prometheus Exporter: " << e.what() << std::endl;
+        Logger::error("Failed to initialize Prometheus Exporter: " + std::string(e.what()));
         throw;
     }
     // store the counter returned by exporter for later use

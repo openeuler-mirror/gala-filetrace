@@ -11,7 +11,7 @@
 #include <prometheus/gauge.h>
 #include <prometheus/histogram.h>
 #include <prometheus/summary.h>
-
+#include "logger.hpp"
 #include "filetrace.h"
 
 using namespace std;
