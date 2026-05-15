@@ -1,4 +1,5 @@
 #include  "post.hpp"
+#include "logger.hpp"
 #include <cstring>
 
 // Replace invalid UTF-8 sequences with the Unicode replacement character (U+FFFD)
@@ -56,6 +57,14 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile)
     if (ret != 0) {
         throw std::runtime_error("Configuration load failed");
     }
+    // initialize logger from config (optional keys: log_level, log_file)
+    try 
+    {
+        Logger::init(log_file, log_level);
+        Logger::info("Logger initialized, level=" + log_level + ", file=" + log_file);
+    } catch (const std::exception &e) {
+        std::cerr << "Failed to initialize logger: " << e.what() << std::endl;
+    }
     if(skel == nullptr) {
         throw std::runtime_error("eBPF skeleton is null!");
     }
@@ -73,6 +82,7 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile)
 
 PostData::~PostData() 
 {
+    Logger::info("PostData destroyed");
     return;
 }
 
@@ -109,6 +119,10 @@ int PostData::load_config(const std::string& configFile)
             std::cerr << "Configuration list is empty, please check your config file." << std::endl;
             return -1; 
         }
+        //log level
+        log_level = config_json_obj.value("log_level", std::string("info"));
+        log_file = config_json_obj.value("log_file", std::string("/var/log/filetrace.log"));
+        std::cout << "Log level set to: " << log_level << ", log file: " << log_file << std::endl;
         //check dir level
         for (const auto& conf : conf_list) {
             int level = get_dir_level(conf);

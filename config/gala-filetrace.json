@@ -1,4 +1,6 @@
 {
+  "log_level": "info",
+  "log_file": "/var/log/filetrace.log",
   "host_id": "1",
   "domain_name": "zone1",
   "skip_processes_list": [

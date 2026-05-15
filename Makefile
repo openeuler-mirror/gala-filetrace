@@ -41,7 +41,7 @@ OUTPUT_DIR ?= output
 BPF_OBJ := $(OUTPUT_DIR)/filetrace.bpf.o
 
 
-all: $(TARGETS) filetrace.skel.h filetrace.o exporter.o post.o filetrace
+all: $(TARGETS) filetrace.skel.h filetrace.o exporter.o post.o logger.o filetrace
 
 .PHONY: clean
 
@@ -67,6 +67,10 @@ filetrace.o: filetrace.cpp
 	@echo "Compiling $< to $@ ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE)  -o $(OUTPUT_DIR)/$@ $<
 
+logger.o: logger.cpp
+	@echo "Compiling logger.cpp to logger.o ..."
+	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
+
 exporter.o: exporter.cpp
 	@echo "Compiling exporter.cpp to exporter.o ..."
 	@$(CLANGXX)  -c $(CFLAGS) $(CFLAGSPLUS)  $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
@@ -75,7 +79,7 @@ post.o: post.cpp $(OUTPUT_DIR)/exporter.o
 	@echo "Compiling post.cpp to post.o ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS)  $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
 
-filetrace: $(OUTPUT_DIR)/filetrace.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/post.o
+filetrace: $(OUTPUT_DIR)/filetrace.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/logger.o
 	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
 	@$(CLANGXX)  $(PROM_LIBS) $(LDFLAGS) $(CINCLUDE) $(CFLAGS)  $(CFLAGSPLUS) -o $@ $^
 
