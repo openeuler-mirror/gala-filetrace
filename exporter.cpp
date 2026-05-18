@@ -3,6 +3,7 @@
 
 PrometheusExporter::PrometheusExporter(const std::string& address) 
 {
+    Logger::info("Initializing PrometheusExporter with address: " + address);
     if(address.empty()) {
         throw std::runtime_error("Address for Prometheus Exporter cannot be empty.");
     }
@@ -20,6 +21,7 @@ prometheus::Counter& PrometheusExporter::add_counter(
         const std::string& help,
         const std::map<std::string, std::string>& labels)
 {
+    Logger::info("Adding counter: " + name + " with help: " + help);
     auto& family = prometheus::BuildCounter()
                        .Name(name)
                        .Help(help)
@@ -37,6 +39,7 @@ prometheus::Gauge& PrometheusExporter::add_gauge(
         const std::string& help,
         const std::map<std::string, std::string>& labels)
 {
+    Logger::info("Adding gauge: " + name + " with help: " + help);
     auto& family = prometheus::BuildGauge()
                        .Name(name)
                        .Help(help)
@@ -50,6 +53,7 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
         const prometheus::Histogram::BucketBoundaries& buckets,
         const std::map<std::string, std::string>& labels)
 {
+    Logger::info("Adding histogram: " + name + " with help: " + help);
     auto& family = prometheus::BuildHistogram()
                        .Name(name)
                        .Help(help)
@@ -61,6 +65,7 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
 // dir:/dir4/dir3/dir2/dir1/filename
 std::string PrometheusExporter::get_full_path(const struct event *event) 
 {
+    Logger::info("Constructing full path for event with filename: " + std::string(event->filename));
     std::string fullpath;
     //top level dir is /
     Logger::info("dir: dir1: " + std::string(event->dir1) + ", dir2: " + std::string(event->dir2)
@@ -92,6 +97,7 @@ std::string PrometheusExporter::get_full_path(const struct event *event)
 
 void PrometheusExporter::set_metrics(struct event& e) 
 {
+    Logger::info("Setting metrics for event with filename: " + std::string(e.filename) + " and operation: " + std::string(nr_map[e.flag]));
     std::string filename = std::string(e.filename);
     if(e.flag == SYS_write)
     {
@@ -150,7 +156,7 @@ void PrometheusExporter::set_metrics(struct event& e)
 }
 
 void PrometheusExporter::task_gauge_cache_timeout() {
-    Logger::info("Starting gauge cache timeout task");
+    Logger::info("Starting gauge cache timeout task.");
     while (true) {
         //loop every 10 seconds
         std::this_thread::sleep_for(std::chrono::seconds(10));

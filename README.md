@@ -114,6 +114,7 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 ```bash
 # filetrace
 ```
+主要包括：iPad mini 、罗技键盘、吹风机，以及台式机配件。
 
 * 通过 systemd 服务启动
 
@@ -185,7 +186,7 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 ## 1.dmesg中出现以下日志
 
 ```text
- permission error while running as root; try raising 'ulimit -l'? current value: 64.0 KiB.
+permission error while running as root; try raising 'ulimit -l'? current value: 64.0 KiB.
  ```
 
 解决方法：
