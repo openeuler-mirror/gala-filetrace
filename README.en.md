@@ -41,7 +41,7 @@ For the added helper_func interface fd2path, refer to: 4. Kernel Upgrade.
 ### 3.2.1 RPM Build
 
 ```bash
-# wget -O ~/rpmbuild/SOURCES/master.zip https://atomgit.com/openEuler/gala-filetrace/repository/archive/master.zip
+# wget -O ~/rpmbuild/SOURCES/master.zip https://raw.atomgit.com/openeuler/gala-filetrace/archive/refs/heads/master.zip
 # git clone https://atomgit.com/openeuler/gala-filetrace.git
 # rpmbuild -ba config/gala-filetrace.spec
 ```
