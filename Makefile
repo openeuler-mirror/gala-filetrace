@@ -29,7 +29,8 @@ EXTRA_LIBDIRS := $(shell [ -d /usr/local/lib64 ] && echo -L/usr/local/lib64 || e
 #EXTRA_LIBDIRS += $(shell [ -d /usr/local/lib ] && echo -L/usr/local/lib || echo )
 LDFLAGS += $(EXTRA_LIBDIRS)
 
-CINCLUDE = -I./
+CINCLUDE = -I./include
+CINCLUDE += -I./
 CINCLUDE += -I/usr/local/include/
 #CINCLUDE += -I/usr/src/kernels/$(shell uname -r)
 
