@@ -45,9 +45,11 @@ static std::string sanitize_utf8(const std::string &s) {
     return out;
 }
 
-PostData::PostData(filetrace_bpf *skel, const std::string& configFile)
+PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verbose, const std::string& monitor_file_path)
     :  config_json(configFile),
-        publish(false)
+        publish(false),
+        verbose(verbose),
+        monitor_file_path(monitor_file_path)
 {
     std::cout << "Initializing PostData!" << std::endl;
     if(configFile.empty()) {
@@ -330,6 +332,13 @@ std::string PostData::convert_to_string(struct event &e)
 }
 bool PostData::compare_config_file(const vector<string> &v, const std::string &config) 
 {
+    if (verbose) {
+        Logger::info("Comparing config file: " + config + " with " + monitor_file_path);
+	if (monitor_file_path == config) {
+	    return true;
+	} 
+    }
+
     if (v.empty() || config.empty()) {
         return false; 
     }
