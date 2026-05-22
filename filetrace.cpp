@@ -40,12 +40,17 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         std::cerr << "Received event with insufficient data size: " << data_sz << std::endl;
         return -1;
     }
-    const struct event *e = (struct event *)data;
+    struct event *e = (struct event *)data;
     #ifdef DEBUG
     std::cout << "Command: " << e->cmd << ", PID: " << e->pid << ",filename: "
               << std::string(e->filename)
               << ", func: " << nr_map[e->flag] << std::endl; 
     #endif
+    
+    if (postdata_i->verbose && postdata_i->is_valid_event(*e)) {
+        postdata_i->print_event(e);
+        return 0;
+    }
     postdata_i->send(*e);
     return 0;
 }
@@ -54,16 +59,25 @@ int main(int argc, char **argv)
 {
     int err;
     struct ring_buffer *ringbuf = NULL;
-    std::string config_file = "/etc/gala-filetrace/gala-filetrace.json"; 
-
+    std::string config_file = "/etc/gala-filetrace/gala-filetrace.json";
+    std::string file_path;
+    bool verbose = false;
     int opt;
-    while ((opt = getopt(argc, argv, "c:")) != -1) {
+    while ((opt = getopt(argc, argv, "c:f:")) != -1) {
         switch (opt) {
             case 'c':
                 config_file = optarg;
                 break;
+            case 'f':
+                file_path = optarg;
+                if (file_path.length() > 0 && file_path[0] != '/') {
+                    std::cerr << "Error: File path must be absolute." << std::endl;
+                    return 1;
+                }
+                verbose = true; // enable verbose mode if file path is provided
+                break;
             default:
-                std::cerr << "Usage: " << argv[0] << " [-c <config_file>]" << std::endl;
+                std::cerr << "Usage: " << argv[0] << " [-c <config_file>] [-f <file_path>]" << std::endl;
                 return 1;
         }
     }
@@ -82,7 +96,7 @@ int main(int argc, char **argv)
         return errno;
     }
     //init PostData instance
-    postdata_i = new PostData(skel, config_file); 
+    postdata_i = new PostData(skel, config_file, verbose, file_path); 
     if (!postdata_i) 
     {
         std::cerr << "Failed to create PostData instance!" << std::endl;

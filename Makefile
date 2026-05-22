@@ -49,7 +49,7 @@ all: $(TARGETS) filetrace.skel.h filetrace.o exporter.o post.o logger.o filetrac
 clean:
 	@echo "Cleaning up ..."
 	@rm -rf $(OUTPUT_DIR) filetrace filetrace.o filetrace.skel.h
-
+ 
 $(TARGETS): %.o: %.c | $(OUTPUT_DIR)
 	@echo "Compiling $< to $@ ..."
 	@bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h

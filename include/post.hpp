@@ -28,7 +28,7 @@ using json = nlohmann::json;
 const int MAX_DIR_LEVEL = 4;
 class PostData {
     public:
-        PostData(filetrace_bpf *skel, const std::string& configFile);
+        PostData(filetrace_bpf *skel, const std::string& configFile, bool verbose = false, const std::string& monitorFilePath = "");
         ~PostData();
         //config items
         std::string ragdoll_api;
@@ -41,6 +41,8 @@ class PostData {
         std::string exporter_address;
         std::string log_level;
         std::string log_file;
+        bool verbose;
+        std::string monitor_file_path;
 
         PrometheusExporter *exporter_ptr;
         int port;
