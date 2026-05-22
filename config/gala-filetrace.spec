@@ -1,10 +1,10 @@
 Name:           gala-filetrace
 Version:        1.0
-Release:        2%{?dist}
+Release:        1%{?dist}
 Summary:        Real-time file trace tool for openEuler
 
 License:        MIT
-Source0:        https://raw.atomgit.com/openeuler/gala-filetrace/archive/refs/heads/master.zip
+Source0:        https://gitee.com/zhangdaolong/gala-filetrace/repository/archive/master.zip
 
 BuildRequires:  clang
 BuildRequires:  llvm
@@ -67,8 +67,5 @@ rm -rf /usr/lib/systemd/system/gala-filetrace.service 2>&1
 rm -rf %{buildroot}
 
 %changelog
-* Fri May 22 2026 yang-zongw <zwyangah@isoftstone.com> - 1.0-2
-- Switch Source0 to official openEuler repository on AtomGit
-
-* Fri Aug 15 2025 zhangdaolong <dlzhangak@isoftstone.com> - 1.0-1
+* Fri Aug 15 2025 zhangdaolong <dlzhangak@isoftstone.con> - 1.0-1
 - Initial package
