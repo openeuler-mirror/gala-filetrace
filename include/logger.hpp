@@ -8,7 +8,10 @@ public:
     enum Level { INFO = 0, WARN = 1, ERROR = 2, DEBUG = 3 };
 
     // Initialize logger: filepath (default /var/log/filetrace.log), level string (info,warn,error)
-    static void init(const std::string &filepath = "/var/log/filetrace.log", const std::string &level = "info");
+    // max_size: maximum log file size in bytes (default 100MB), 0 means unlimited
+    static void init(const std::string &filepath = "/var/log/filetrace.log", 
+                     const std::string &level = "info", 
+                     size_t max_size = 100 * 1024 * 1024);
 
     static void info(const std::string &msg);
     static void warn(const std::string &msg);
