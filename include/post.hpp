@@ -73,5 +73,6 @@ class PostData {
         bool exporter_start();
     private:
         filetrace_bpf *skel;
+        size_t log_size; // Maximum log file size in bytes
 };
 #endif

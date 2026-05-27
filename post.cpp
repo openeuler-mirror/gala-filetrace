@@ -59,10 +59,10 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verb
     if (ret != 0) {
         throw std::runtime_error("Configuration load failed");
     }
-    // initialize logger from config (optional keys: log_level, log_file)
+    // initialize logger from config (optional keys: log_level, log_file, log_size)
     try 
     {
-        Logger::init(log_file, log_level);
+        Logger::init(log_file, log_level, log_size);
         Logger::info("Logger initialized, level=" + log_level + ", file=" + log_file);
     } catch (const std::exception &e) {
         std::cerr << "Failed to initialize logger: " << e.what() << std::endl;
@@ -126,7 +126,13 @@ int PostData::load_config(const std::string& configFile)
         //log level
         log_level = config_json_obj.value("log_level", std::string("info"));
         log_file = config_json_obj.value("log_file", std::string("/var/log/filetrace.log"));
-        Logger::info("Log level set to: " + log_level + ", log file: " + log_file);
+        
+        // Parse log_size (in MB, default 100 MB)
+        int log_size_mb = config_json_obj.value("log_size", 100);
+        log_size = (size_t)log_size_mb * 1024 * 1024;  // Convert MB to bytes
+        
+        Logger::info("Log level set to: " + log_level + ", log file: " + log_file + 
+                     ", log size limit: " + std::to_string(log_size_mb) + " MB");
         //check dir level
         for (const auto& conf : conf_list) {
             int level = get_dir_level(conf);
