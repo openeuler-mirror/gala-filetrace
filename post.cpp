@@ -262,6 +262,26 @@ void PostData::print_event(const struct event *event)
                  ", Directory2: " + std::string(event->dir2) + 
                  ", Directory3: " + std::string(event->dir3) + 
                  ", Directory4: " + std::string(event->dir4));
+
+    // Build JSON representation of the printed fields and store as last_event
+    try {
+        json j;
+        j["pid"] = event->pid;
+        j["ppid"] = event->ppid;
+        j["cmd"] = std::string(event->cmd);
+        j["flag"] = event->flag;
+        j["syscall"] = std::string(nr_map[event->flag]);
+        j["filename"] = std::string(event->filename);
+        j["oldfilename"] = std::string(event->oldfilename);
+        j["dir1"] = std::string(event->dir1);
+        j["dir2"] = std::string(event->dir2);
+        j["dir3"] = std::string(event->dir3);
+        j["dir4"] = std::string(event->dir4);
+        std::lock_guard<std::mutex> lk(last_event_mutex);
+        last_event = std::move(j);
+    } catch (const std::exception &ex) {
+        Logger::error(std::string("Failed to build last_event JSON: ") + ex.what());
+    }
 }
 void PostData::add_ptrace(json& j, const std::string cmd, int pid) 
 {
@@ -582,6 +602,19 @@ void PostData::start_http_server()
         j["status"] = "ok";
         j["conf_list"] = conf_list;
         res.set_content(j.dump(2), "application/json");
+    });
+    // New endpoint: return last printed event as JSON
+    svr.Get("/v1/monitor_file_status", [this](const httplib::Request& req, httplib::Response& res) {
+        std::lock_guard<std::mutex> lk(last_event_mutex);
+        if (last_event.is_null()) {
+            json r;
+            r["status"] = "no_event";
+            res.status = 204;
+            res.set_content(r.dump(2), "application/json");
+            return;
+        }
+        res.status = 200;
+        res.set_content(last_event.dump(2), "application/json");
     });
     svr.listen(this->server.c_str(), this->port);
 }
