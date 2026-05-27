@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <httplib.h>
 #include <linux/version.h>
+#include <mutex>
 
 extern "C" {
 #include <bpf/bpf.h>
@@ -64,6 +65,9 @@ class PostData {
         std::string get_full_path(const struct event *event);
         std::string get_loginip_by_username(const std::string &username);
         void print_event(const struct event *event);
+        // JSON representation of the last printed event (protected by mutex)
+        json last_event;
+        std::mutex last_event_mutex;
         std::vector<std::string> split_stat_line(const std::string &line);
         void start_http_server();
         int update_config(const json &j);
