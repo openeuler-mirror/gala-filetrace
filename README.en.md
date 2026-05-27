@@ -132,3 +132,17 @@ Default installation to /lib/modules/
 ```
 
 Install vmlinuz, System.map, config, etc. to /boot/
+
+# 5.QA
+
+## 1.The following log appears in dmesg
+
+```text 
+permission error while running as root; try raising 'ulimit -l'? current value: 64.0 KiB.
+ ```
+
+Solution：
+
+```bash 
+# ulimit -l 819200  
+```

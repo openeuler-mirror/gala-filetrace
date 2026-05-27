@@ -67,5 +67,5 @@ rm -rf /usr/lib/systemd/system/gala-filetrace.service 2>&1
 rm -rf %{buildroot}
 
 %changelog
-* Fri Aug 15 2025 zhangdaolong <dlzhangak@isoftstone.con> - 1.0-1
+* Fri Aug 15 2025 zhangdaolong <dlzhangak@isoftstone.com> - 1.0-1
 - Initial package
