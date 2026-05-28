@@ -14,6 +14,7 @@
 #include <httplib.h>
 #include <linux/version.h>
 #include <mutex>
+#include <queue>
 
 extern "C" {
 #include <bpf/bpf.h>
@@ -27,6 +28,7 @@ using namespace std;
 using json = nlohmann::json;
 
 const int MAX_DIR_LEVEL = 4;
+const int MAX_EVENT_QUEUE_SIZE = 1000;  // Maximum number of events to store in queue
 class PostData {
     public:
         PostData(filetrace_bpf *skel, const std::string& configFile, bool verbose = false, const std::string& monitorFilePath = "");
@@ -65,9 +67,10 @@ class PostData {
         std::string get_full_path(const struct event *event);
         std::string get_loginip_by_username(const std::string &username);
         void print_event(const struct event *event);
-        // JSON representation of the last printed event (protected by mutex)
-        json last_event;
-        std::mutex last_event_mutex;
+        void cache_event(const struct event *event);
+        // Queue for storing events (FIFO) - protected by mutex
+        std::queue<json> event_queue;
+        std::mutex event_queue_mutex;
         std::vector<std::string> split_stat_line(const std::string &line);
         void start_http_server();
         int update_config(const json &j);
@@ -75,6 +78,7 @@ class PostData {
         bool compare_config_file(const vector<string> &v, const std::string &config); 
         int get_dir_level(const std::string &path);
         bool exporter_start();
+        json get_event_from_queue();
     private:
         filetrace_bpf *skel;
         size_t log_size; // Maximum log file size in bytes

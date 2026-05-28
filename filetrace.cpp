@@ -52,6 +52,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return 0;
     }
     postdata_i->send(*e);
+    postdata_i->cache_event(e); 
     return 0;
 }
 

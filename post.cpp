@@ -262,8 +262,10 @@ void PostData::print_event(const struct event *event)
                  ", Directory2: " + std::string(event->dir2) + 
                  ", Directory3: " + std::string(event->dir3) + 
                  ", Directory4: " + std::string(event->dir4));
-
-    // Build JSON representation of the printed fields and store as last_event
+}
+void PostData::cache_event(const struct event *event)
+{
+    // Build JSON representation of the printed fields and store in event queue (FIFO)
     try {
         json j;
         j["pid"] = event->pid;
@@ -277,10 +279,16 @@ void PostData::print_event(const struct event *event)
         j["dir2"] = std::string(event->dir2);
         j["dir3"] = std::string(event->dir3);
         j["dir4"] = std::string(event->dir4);
-        std::lock_guard<std::mutex> lk(last_event_mutex);
-        last_event = std::move(j);
+        {
+            std::lock_guard<std::mutex> lk(event_queue_mutex);
+            // Keep queue size under MAX_EVENT_QUEUE_SIZE
+            if (event_queue.size() >= MAX_EVENT_QUEUE_SIZE) {
+                event_queue.pop();  // Remove oldest event (FIFO)
+            }
+            event_queue.push(std::move(j));  // Add new event to queue
+        }
     } catch (const std::exception &ex) {
-        Logger::error(std::string("Failed to build last_event JSON: ") + ex.what());
+        Logger::error(std::string("Failed to build event queue JSON: ") + ex.what());
     }
 }
 void PostData::add_ptrace(json& j, const std::string cmd, int pid) 
@@ -603,10 +611,10 @@ void PostData::start_http_server()
         j["conf_list"] = conf_list;
         res.set_content(j.dump(2), "application/json");
     });
-    // New endpoint: return last printed event as JSON
-    svr.Get("/v1/monitor_file_status", [this](const httplib::Request& req, httplib::Response& res) {
-        std::lock_guard<std::mutex> lk(last_event_mutex);
-        if (last_event.is_null()) {
+    // New endpoint: return one events from evnet queue 
+    svr.Get("/monitor_file_status", [this](const httplib::Request& req, httplib::Response& res) {
+        json event_j = get_event_from_queue();
+        if (event_j.is_null()) {
             json r;
             r["status"] = "no_event";
             res.status = 204;
@@ -614,7 +622,7 @@ void PostData::start_http_server()
             return;
         }
         res.status = 200;
-        res.set_content(last_event.dump(2), "application/json");
+        res.set_content(event_j.dump(2), "application/json");
     });
     svr.listen(this->server.c_str(), this->port);
 }
@@ -628,6 +636,16 @@ int PostData::get_dir_level(const std::string &path)
        tmp_path = tmp_path.substr(0, tmp_path.size() - 1);
     }
     return std::count(tmp_path.begin(), tmp_path.end(), '/'); 
+}
+json PostData::get_event_from_queue()
+{
+    std::lock_guard<std::mutex> lk(event_queue_mutex);
+    if (event_queue.empty()) {
+        return json(); 
+    }
+    json event = event_queue.front();
+    event_queue.pop();  
+    return event;
 }
 bool PostData::exporter_start() 
 {
