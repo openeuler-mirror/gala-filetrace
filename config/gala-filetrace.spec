@@ -4,7 +4,7 @@ Release:        1%{?dist}
 Summary:        Real-time file trace tool for openEuler
 
 License:        MIT
-Source0:        https://gitee.com/zhangdaolong/gala-filetrace/repository/archive/master.zip
+Source0:        https://raw.atomgit.com/openeuler/gala-filetrace/archive/refs/heads/master.zip
 
 BuildRequires:  clang
 BuildRequires:  llvm
