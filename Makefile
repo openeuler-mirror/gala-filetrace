@@ -56,7 +56,7 @@ $(TARGETS): %.o: %.c | $(OUTPUT_DIR)
 	@#$(CLANG) -S $(CFLAGS) -D__TARGET_ARCH_$(TARGET_ARCH) -g -O2 -emit-llvm -c $<
 	@#$(LLC) -march=bpf -filetype=obj -o $(OUTPUT_DIR)/$@ ${@:.o=.ll}
 	@#rm ${@:.o=.ll}
-	@$(CLANG) -target bpf -D__TARGET_ARCH_$(TARGET_ARCH) $(CFLAGS) -g -O2 -c $< -o $(OUTPUT_DIR)/$@
+	@$(CLANG) -target bpf -D__TARGET_ARCH_$(TARGET_ARCH) $(CFLAGS) $(CINCLUDE) -g -O2 -c $< -o $(OUTPUT_DIR)/$@
 
 # create skeleton include file
 filetrace.skel.h: $(BPF_OBJ)
