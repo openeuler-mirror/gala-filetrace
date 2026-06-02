@@ -45,6 +45,7 @@ class PostData {
         std::string log_level;
         std::string log_file;
         bool verbose;
+        bool cache_data;
         std::string monitor_file_path;
 
         PrometheusExporter *exporter_ptr;

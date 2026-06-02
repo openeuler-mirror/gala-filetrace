@@ -37,7 +37,7 @@ static void sig_handler(int sig)
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     if (data_sz < sizeof(struct event)) {
-        std::cerr << "Received event with insufficient data size: " << data_sz << std::endl;
+        std::cerr << "Received event with insufficient data size: [" << data_sz << "] skip." << std::endl;
         return -1;
     }
     struct event *e = (struct event *)data;
