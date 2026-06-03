@@ -159,6 +159,7 @@ int PostData::load_config(const std::string& configFile)
         skip_processes = config_json_obj["skip_processes_list"].get<std::vector<std::string>>();
 
         publish = config_json_obj.value("publish", false); 
+        cache_data = config_json_obj.value("cache_data", false);
         server = config_json_obj.value("server", "0.0.0.0");
         if (!is_valid_ip(server)) {
             Logger::error("Invalid server IP address: " + server);
@@ -266,6 +267,10 @@ void PostData::print_event(const struct event *event)
 void PostData::cache_event(const struct event *event)
 {
     // Build JSON representation of the printed fields and store in event queue (FIFO)
+    if(!cache_data) {
+        Logger::info("API server is disabled, not caching event.");
+        return;
+    }
     try {
         json j;
         j["pid"] = event->pid;
@@ -605,12 +610,15 @@ void PostData::start_http_server()
         res.status = 200;
         res.set_content("Configuration updated successfully", "text/plain");
     });
-    svr.Get("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
-        json j;
-        j["status"] = "ok";
-        j["conf_list"] = conf_list;
-        res.set_content(j.dump(2), "application/json");
-    });
+    if (cache_data) {
+        Logger::info("API server is disabled, not starting HTTP server.");
+        svr.Get("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
+            json j;
+            j["status"] = "ok";
+            j["conf_list"] = conf_list;
+            res.set_content(j.dump(2), "application/json");
+        });
+    }
     // New endpoint: return one events from evnet queue 
     svr.Get("/monitor_file_status", [this](const httplib::Request& req, httplib::Response& res) {
         json event_j = get_event_from_queue();

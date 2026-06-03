@@ -114,7 +114,6 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 ```bash
 # filetrace
 ```
-主要包括：iPad mini 、罗技键盘、吹风机，以及台式机配件。
 
 * 通过 systemd 服务启动
 

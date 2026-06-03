@@ -18,5 +18,6 @@
   "node_name": "node1",
   "server": "0.0.0.0",
   "port": 8080,
-  "exporter_address": "0.0.0.0:9090"
+  "exporter_address": "0.0.0.0:9090",
+  "cache_data": false
 }
