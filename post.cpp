@@ -610,28 +610,29 @@ void PostData::start_http_server()
         res.status = 200;
         res.set_content("Configuration updated successfully", "text/plain");
     });
-    if (cache_data) {
-        Logger::info("API server is disabled, not starting HTTP server.");
-        svr.Get("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
-            json j;
-            j["status"] = "ok";
-            j["conf_list"] = conf_list;
-            res.set_content(j.dump(2), "application/json");
+    svr.Get("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
+        json j;
+        j["status"] = "ok";
+        j["conf_list"] = conf_list;
+        res.set_content(j.dump(2), "application/json");
+    });
+    // New endpoint: return one events from evnet queue 
+    if(cache_data) {
+        Logger::info("API monitor file status is enabled, caching events for API access.");
+        svr.Get("/monitor_file_status", [this](const httplib::Request& req, httplib::Response& res) {
+            json event_j = get_event_from_queue();
+            if (event_j.is_null()) {
+                json r;
+                r["status"] = "no_event";
+                res.status = 204;
+                res.set_content(r.dump(2), "application/json");
+                return;
+            }
+            res.status = 200;
+            res.set_content(event_j.dump(2), "application/json");
         });
     }
-    // New endpoint: return one events from evnet queue 
-    svr.Get("/monitor_file_status", [this](const httplib::Request& req, httplib::Response& res) {
-        json event_j = get_event_from_queue();
-        if (event_j.is_null()) {
-            json r;
-            r["status"] = "no_event";
-            res.status = 204;
-            res.set_content(r.dump(2), "application/json");
-            return;
-        }
-        res.status = 200;
-        res.set_content(event_j.dump(2), "application/json");
-    });
+    Logger::info("Starting HTTP server at " + server + ":" + std::to_string(port));
     svr.listen(this->server.c_str(), this->port);
 }
 int PostData::get_dir_level(const std::string &path) 
