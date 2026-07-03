@@ -2,6 +2,7 @@
 #include "logger.hpp"
 #include <cstring>
 
+
 // Replace invalid UTF-8 sequences with the Unicode replacement character (U+FFFD)
 static std::string sanitize_utf8(const std::string &s) {
     std::string out;
@@ -381,6 +382,8 @@ bool PostData::compare_config_file(const vector<string> &v, const std::string &c
     if (v.empty() || config.empty()) {
         return false; 
     }
+
+    std::lock_guard<std::mutex> lk(config_mutex);
     for (const auto& item : v) {
         if (item == config) {
             return true;
@@ -473,10 +476,14 @@ std::vector<std::string> PostData::split_stat_line(const std::string &line)
     return result;
 }
 
-int  PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned int &pid)
+int PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned int &pid)
 {
     char proc_path[1024];
     //get ppid and comm from /proc/<pid>/stat
+    if(pid == 0 || pid > PID_MAX_LIMIT) {
+        Logger::error("Invalid PID: " + std::to_string(pid));
+        return -1; 
+    }
     snprintf(proc_path, sizeof(proc_path), "/proc/%u/stat", pid);
     std::ifstream stat_file(proc_path);
     if (!stat_file.is_open()) {
@@ -570,6 +577,8 @@ std::string PostData::get_loginip_by_username(const std::string& username)
 }
 int PostData::update_config(const json &j) 
 {
+    Logger::info("Updating configuration with JSON: " + j.dump());
+    std::lock_guard<std::mutex> lk(config_mutex);
     if (j.contains("conf")) {
         std::string conf = j["conf"];
         std::string action = j["action"];
@@ -595,6 +604,7 @@ int PostData::update_config(const json &j)
 }
 void PostData::start_http_server() 
 {
+    Logger::info("Starting HTTP Server.");
     httplib::Server svr;
     svr.Post("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
         auto j = json::parse(req.body);
@@ -613,6 +623,7 @@ void PostData::start_http_server()
     svr.Get("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
         json j;
         j["status"] = "ok";
+        std::lock_guard<std::mutex> lk(config_mutex);
         j["conf_list"] = conf_list;
         res.set_content(j.dump(2), "application/json");
     });

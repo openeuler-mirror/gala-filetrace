@@ -116,4 +116,3 @@ void Logger::debug(const std::string &msg) { log(DEBUG, msg); }
 void Logger::info(const std::string &msg) { log(INFO, msg); }
 void Logger::warn(const std::string &msg) { log(WARN, msg); }
 void Logger::error(const std::string &msg) { log(ERROR, msg); }
-
