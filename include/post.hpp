@@ -29,6 +29,7 @@ using json = nlohmann::json;
 
 const int MAX_DIR_LEVEL = 4;
 const int MAX_EVENT_QUEUE_SIZE = 1000;  // Maximum number of events to store in queue
+static constexpr unsigned int PID_MAX_LIMIT = 4194304;
 class PostData {
     public:
         PostData(filetrace_bpf *skel, const std::string& configFile, bool verbose = false, const std::string& monitorFilePath = "");
@@ -72,6 +73,7 @@ class PostData {
         // Queue for storing events (FIFO) - protected by mutex
         std::queue<json> event_queue;
         std::mutex event_queue_mutex;
+        std::mutex config_mutex; // Mutex for protecting configuration data
         std::vector<std::string> split_stat_line(const std::string &line);
         void start_http_server();
         int update_config(const json &j);
@@ -82,6 +84,6 @@ class PostData {
         json get_event_from_queue();
     private:
         filetrace_bpf *skel;
-        size_t log_size; // Maximum log file size in bytes
+        size_t log_size; 
 };
 #endif
