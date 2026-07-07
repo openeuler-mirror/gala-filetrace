@@ -631,16 +631,35 @@ void PostData::start_http_server()
     if(cache_data) {
         Logger::info("API monitor file status is enabled, caching events for API access.");
         svr.Get("/monitor_file_status", [this](const httplib::Request& req, httplib::Response& res) {
-            json event_j = get_event_from_queue();
-            if (event_j.is_null()) {
+            int count = 10;
+            auto it = req.params.find("count");
+            if (it != req.params.end() && !it->second.empty()) {
+                try {
+                    count = std::stoi(it->second);
+                } catch (const std::exception& e) {
+                    Logger::error("Invalid count parameter for /monitor_file_status: " + it->second + ", error: " + e.what());
+                    count = 10;
+                }
+                if (count <= 0 || count > MAX_EVENT_QUEUE_SIZE) {
+                    count = 10;
+                }
+            }
+
+            json event_j = get_events_from_queue(count);
+            if (event_j.empty()) {
                 json r;
                 r["status"] = "no_event";
                 res.status = 204;
                 res.set_content(r.dump(2), "application/json");
                 return;
             }
+
+            json response;
+            response["status"] = "ok";
+            response["count"] = event_j.size();
+            response["events"] = event_j;
             res.status = 200;
-            res.set_content(event_j.dump(2), "application/json");
+            res.set_content(response.dump(2), "application/json");
         });
     }
     Logger::info("Starting HTTP server at " + server + ":" + std::to_string(port));
@@ -657,15 +676,20 @@ int PostData::get_dir_level(const std::string &path)
     }
     return std::count(tmp_path.begin(), tmp_path.end(), '/'); 
 }
-json PostData::get_event_from_queue()
+json PostData::get_events_from_queue(int count)
 {
     std::lock_guard<std::mutex> lk(event_queue_mutex);
     if (event_queue.empty()) {
-        return json(); 
+        return json::array();
     }
-    json event = event_queue.front();
-    event_queue.pop();  
-    return event;
+
+    json events = json::array();
+    int actual_count = std::min(count, static_cast<int>(event_queue.size()));
+    for (int i = 0; i < actual_count; ++i) {
+        events.push_back(event_queue.front());
+        event_queue.pop();
+    }
+    return events;
 }
 bool PostData::exporter_start() 
 {
