@@ -36,6 +36,10 @@ static void sig_handler(int sig)
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
+    if(data == nullptr || postdata_i == nullptr) {
+        std::cerr << "Received null data or PostData instance is null, skipping event." << std::endl;
+        return -1;
+    }
     if (data_sz < sizeof(struct event)) {
         std::cerr << "Received event with insufficient data size: [" << data_sz << "] skip." << std::endl;
         return -1;
