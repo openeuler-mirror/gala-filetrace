@@ -81,7 +81,7 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verb
         std::thread server_thread(&PostData::start_http_server, this);
         server_thread.detach(); // Detach the thread to run the HTTP server in the background
     }
-    Logger::info("PostData initialized successfully");
+    Logger::info("PostData initialized successfully!");
 }
 
 PostData::~PostData() 
@@ -194,6 +194,7 @@ int PostData::load_config(const std::string& configFile)
 
 int PostData::send(struct event e) 
 {
+    Logger::debug("Send event to Aops.");
     if(!is_valid_event(e)) {
         Logger::error("Skip event detected, skipping.");
         return 0; 
@@ -206,7 +207,7 @@ int PostData::send(struct event e)
         return 1; 
     }
     if(publish == false) {
-        Logger::info("Publishing is disabled, not sending data.");
+        Logger::info("Publishing is disabled, skip it.");
         Logger::info("Data: " + data);
         return 0; 
     }
@@ -267,7 +268,7 @@ void PostData::print_event(const struct event *event)
 }
 void PostData::cache_event(const struct event *event)
 {
-    // Build JSON representation of the printed fields and store in event queue (FIFO)
+    Logger::debug("Caching event for API access.");
     if(!cache_data) {
         Logger::info("API server is disabled, not caching event.");
         return;
@@ -287,11 +288,10 @@ void PostData::cache_event(const struct event *event)
         j["dir4"] = std::string(event->dir4);
         {
             std::lock_guard<std::mutex> lk(event_queue_mutex);
-            // Keep queue size under MAX_EVENT_QUEUE_SIZE
             if (event_queue.size() >= MAX_EVENT_QUEUE_SIZE) {
-                event_queue.pop();  // Remove oldest event (FIFO)
+                event_queue.pop(); 
             }
-            event_queue.push(std::move(j));  // Add new event to queue
+            event_queue.push(std::move(j)); 
         }
     } catch (const std::exception &ex) {
         Logger::error(std::string("Failed to build event queue JSON: ") + ex.what());
@@ -304,8 +304,10 @@ void PostData::add_ptrace(json& j, const std::string cmd, int pid)
 
 void PostData::generate_proc_trace(unsigned int &pid, json &json_data) 
 {
+    Logger::debug("Generating process trace for PID: " + std::to_string(pid));
     unsigned int proc_id = pid;
     if (proc_id  <= 1) {
+        Logger::error("Invalid PID: " + std::to_string(pid));
         return; 
     }
     struct pinfo_t *pinfo = (struct pinfo_t *)malloc(sizeof(struct pinfo_t));
@@ -336,7 +338,6 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
     // sanitize invalid UTF-8 bytes 
     pinfo_cmd = sanitize_utf8(pinfo_cmd);
     add_ptrace(json_data, std::move(pinfo_cmd), proc_id);
-        // get parent pid
         proc_id = pinfo->pid; 
     }
     free(pinfo);
@@ -667,6 +668,7 @@ void PostData::start_http_server()
 }
 int PostData::get_dir_level(const std::string &path) 
 {
+    Logger::info("Getting dir level number for path: " + path);
     if (path.empty() || path[0] != '/') {
         return -1; 
     }
@@ -693,6 +695,7 @@ json PostData::get_events_from_queue(int count)
 }
 bool PostData::exporter_start() 
 {
+    Logger::info("Starting Prometheus Exporter at " + exporter_address);
     if(exporter_address.empty()) {
         throw std::runtime_error("Exporter address is empty!");
     }
