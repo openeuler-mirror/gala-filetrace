@@ -82,6 +82,7 @@ class PostData {
         int get_dir_level(const std::string &path);
         bool exporter_start();
         json get_events_from_queue(int count = 10);
+        bool is_valid_filename(const std::string &filename);
     private:
         filetrace_bpf *skel;
         size_t log_size; 

@@ -375,9 +375,9 @@ bool PostData::compare_config_file(const vector<string> &v, const std::string &c
 {
     if (verbose) {
         Logger::info("Comparing config file: " + config + " with " + monitor_file_path);
-	if (monitor_file_path == config) {
-	    return true;
-	} 
+        if (monitor_file_path == config) {
+            return true;
+        } 
     }
 
     if (v.empty() || config.empty()) {
@@ -392,10 +392,16 @@ bool PostData::compare_config_file(const vector<string> &v, const std::string &c
     }
     return false;
 }
-
+bool PostData::is_valid_filename(const std::string &filename) 
+{
+    if (filename.empty() || filename[0] == '.') {
+        return false;
+    }
+    return true;
+}
 bool PostData::is_valid_event(struct event &e) 
 {
-   if (e.filename[0] == '\0' || e.filename[0] == '.') {
+   if (!is_valid_filename(e.filename)) {
         return false;
    }
    std::string fullpath = "";
@@ -529,7 +535,6 @@ std::string PostData::get_groupname_by_gid(unsigned int &gid)
 std::string PostData::get_full_path(const struct event *event) 
 {
     std::string fullpath;
-    //top level dir is /
     Logger::info("dir: dir1: " + std::string(event->dir1) + ", dir2: " + std::string(event->dir2)
               + ", dir3: " + std::string(event->dir3) + ", dir4: " + std::string(event->dir4)
               + ", filename: " + std::string(event->filename));
@@ -591,6 +596,9 @@ int PostData::update_config(const json &j)
             Logger::error("Unknown action: " + action);
             return -1; 
         }
+    }else {
+        Logger::error("JSON does not contain 'conf' key.");
+        return -1; 
     }
     //write to file
     std::ofstream file(config_json);
