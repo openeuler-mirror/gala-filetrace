@@ -392,6 +392,32 @@ bool PostData::compare_config_file(const vector<string> &v, const std::string &c
     }
     return false;
 }
+
+bool PostData::match_process_name(const std::vector<std::string> &skip_processes, const std::string &cmd)
+{
+    if (skip_processes.empty() || cmd.empty()) {
+        return false;
+    }
+    size_t pos = cmd.find_last_of('/');
+    std::string cmd_tmp = cmd.substr(pos + 1);
+    
+    for (const auto &skip_cmd : skip_processes) {
+        //compre skip_cmd and cmd_tmp before 15 characters
+
+        if (skip_cmd.size() > 15 || cmd_tmp.size() > 15) {
+            if (skip_cmd.compare(0, 15, cmd_tmp, 0, 15) == 0) {
+                return true;
+            }
+        } else {
+            if (skip_cmd == cmd_tmp) {
+                return true;
+            }
+        }
+        
+    }
+    return false;
+}
+
 bool PostData::is_valid_filename(const std::string &filename) 
 {
     if (filename.empty() || filename[0] == '.') {
@@ -408,11 +434,10 @@ bool PostData::is_valid_event(struct event &e)
     if (e.pid == 0) {
         return false; 
     }
-    if (std::find(skip_processes.begin(), skip_processes.end(), e.cmd) != skip_processes.end()) {
-        Logger::info("Process " + std::string(e.cmd) + " is in skip list.");
+    std::string cmd = e.cmd;
+    if(match_process_name(skip_processes, cmd)) {
         return false; 
     }
-    std::string cmd = e.cmd;
     switch (e.flag) {
         case SYS_unlinkat:
             fullpath = get_full_path(&e);

@@ -73,12 +73,13 @@ class PostData {
         // Queue for storing events (FIFO) - protected by mutex
         std::queue<json> event_queue;
         std::mutex event_queue_mutex;
-        std::mutex config_mutex; // Mutex for protecting configuration data
+        std::mutex config_mutex; 
         std::vector<std::string> split_stat_line(const std::string &line);
         void start_http_server();
         int update_config(const json &j);
         bool is_valid_ip(const std::string& ip);
-        bool compare_config_file(const vector<string> &v, const std::string &config); 
+        bool compare_config_file(const vector<string> &v, const std::string &config);
+        bool match_process_name(const std::vector<std::string> &skip_processes, const std::string &cmd);
         int get_dir_level(const std::string &path);
         bool exporter_start();
         json get_events_from_queue(int count = 10);
