@@ -51,7 +51,9 @@ static void rotate_log_file() {
 
 // Check if log file needs rotation
 static bool should_rotate_log() {
-    if (g_max_log_size == 0) return false; // 0 means unlimited
+    if (g_max_log_size == 0) {
+        return false; 
+    }
     
     struct stat st;
     if (stat(g_log_filepath.c_str(), &st) == 0) {

@@ -10,7 +10,11 @@
     "rcu_sched",
     "rcu_bh",
     "migration",
-    "watchdog"
+    "watchdog",
+    "kswapd0",
+    "ksoftirqd",
+    "kworker",
+    "rcu_tasks_kthread"
   ],
   "config_list":["/etc/hosts"],
   "publish": false,

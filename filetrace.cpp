@@ -79,7 +79,7 @@ int main(int argc, char **argv)
                     std::cerr << "Error: File path must be absolute." << std::endl;
                     return 1;
                 }
-                verbose = true; // enable verbose mode if file path is provided
+                verbose = true;
                 break;
             default:
                 std::cerr << "Usage: " << argv[0] << " [-c <config_file>] [-f <file_path>]" << std::endl;
@@ -129,7 +129,7 @@ int main(int argc, char **argv)
     // Poll the ring buffer for events
     while (true) 
     {
-        err = ring_buffer__poll(ringbuf, 100); // timeout in ms
+        err = ring_buffer__poll(ringbuf, 100); 
         if (err < 0) {
             std::cerr << "Error: " << strerror(errno) << "("<< errno <<")"<< std::endl;
             break;
