@@ -24,7 +24,6 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
     return 0;
 }
 
-
 static void sig_handler(int sig)
 {
     std::cout << "Signal received: Exiting BPF program." << std::endl;
@@ -77,6 +76,10 @@ int main(int argc, char **argv)
                 file_path = optarg;
                 if (file_path.length() > 0 && file_path[0] != '/') {
                     std::cerr << "Error: File path must be absolute." << std::endl;
+                    return 1;
+                }
+                if(!std::ifstream(file_path).good()) {
+                    std::cerr << "Error: File path does not exist or is not accessible." << std::endl;
                     return 1;
                 }
                 verbose = true;
