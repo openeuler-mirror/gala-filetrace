@@ -18,7 +18,7 @@ using namespace std;
 
 class PrometheusExporter {
 public:
-    PrometheusExporter(const std::string& address);
+    PrometheusExporter(const std::string& address, int cache_timeout_seconds);
     prometheus::Counter& add_counter(const std::string& name,
                                     const std::string& help,
                                     const std::map<std::string, std::string>& labels = {});
@@ -41,6 +41,7 @@ public:
     prometheus::Gauge* thread_check_cache_gauge = nullptr;
     //loop to check cache timeout every minute
     void task_gauge_cache_timeout();
+    int cache_timeout_seconds;
 private:
     std::unique_ptr<prometheus::Exposer> exposer;
     //std::map<std::string, prometheus::Counter*> op_counter_cache;

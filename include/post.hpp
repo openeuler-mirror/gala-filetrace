@@ -43,6 +43,7 @@ class PostData {
         std::string domain_name;
         std::string server; //provide set and config methods for ragdoll service
         std::string exporter_address;
+        int cache_timeout_seconds;
         std::string log_level;
         std::string log_file;
         bool verbose;
