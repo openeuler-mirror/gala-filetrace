@@ -1,7 +1,8 @@
 #include "exporter.hpp"
 
 
-PrometheusExporter::PrometheusExporter(const std::string& address) 
+PrometheusExporter::PrometheusExporter(const std::string& address, int cache_timeout_seconds) 
+    : cache_timeout_seconds(cache_timeout_seconds)
 {
     Logger::info("Initializing PrometheusExporter with address: " + address);
     if(address.empty()) {
@@ -74,22 +75,22 @@ std::string PrometheusExporter::get_full_path(const struct event *event)
     if (event->dir4[0] == '/') {
         fullpath += std::string(event->dir4) + std::string(event->dir3) + "/" 
                     + std::string(event->dir2) + "/" + std::string(event->dir1) + "/" + std::string(event->filename);
-        Logger::info("The 4 level fullpath: " + fullpath);
+        Logger::info("The 4 level full path: " + fullpath);
         return fullpath;
     }
     if (event->dir3[0] == '/') {
         fullpath += std::string(event->dir3) + std::string(event->dir2) + "/" + std::string(event->dir1)+ "/" + std::string(event->filename);
-        Logger::info("The 3 level fullpath: " + fullpath);
+        Logger::info("The 3 level full path: " + fullpath);
         return fullpath;
     }
     if (event->dir2[0] == '/') {
         fullpath += std::string(event->dir2) + std::string(event->dir1)+ "/" + std::string(event->filename);
-        Logger::info("The 2 level fullpath: " + fullpath);
+        Logger::info("The 2 level full path: " + fullpath);
         return fullpath;
     }
     if (event->dir1[0] == '/') {
         fullpath += std::string(event->dir1) + std::string(event->filename);
-        Logger::info("The 1 level fullpath: " + fullpath);
+        Logger::info("The 1 level full path: " + fullpath);
         return fullpath;
     }
     return fullpath;
@@ -158,8 +159,7 @@ void PrometheusExporter::set_metrics(struct event& e)
 void PrometheusExporter::task_gauge_cache_timeout() {
     Logger::info("Starting gauge cache timeout task.");
     while (true) {
-        //loop every 10 seconds
-        std::this_thread::sleep_for(std::chrono::seconds(10));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
         for (auto it = gauge_cache_timestamps.begin(); it != gauge_cache_timestamps.end(); ) {
             const std::string& key = it->first;
@@ -167,12 +167,9 @@ void PrometheusExporter::task_gauge_cache_timeout() {
             const std::string& timestamp_str = it->second;
             std::time_t timestamp = std::stol(timestamp_str);
             std::time_t now = std::time(nullptr);
-            if (now - timestamp > 30) { // 30 seconds timeout
+            if (now - timestamp > cache_timeout_seconds) { 
                 auto gauge_it = gauge_cache.find(key);
                 if (gauge_it != gauge_cache.end()) {
-                    // set metric to 0 before removing from cache so external scrapers
-                    // see a cleared value (prometheus-cpp does not support unregistering
-                    // individual metrics easily).
                     try {
                         prometheus::Gauge* g = gauge_it->second;
                         if (g) {

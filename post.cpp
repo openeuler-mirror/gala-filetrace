@@ -56,6 +56,9 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verb
     if(configFile.empty()) {
         throw std::runtime_error("Configuration file path is empty!");
     }
+    if(std::ifstream(configFile).good() == false) {
+        throw std::runtime_error("Configuration file does not exist or is not accessible: " + configFile);
+    }
     int ret = load_config(config_json);
     if (ret != 0) {
         throw std::runtime_error("Configuration load failed");
@@ -168,6 +171,11 @@ int PostData::load_config(const std::string& configFile)
         }
         port = config_json_obj.value("port", 8080);
         exporter_address = config_json_obj.value("exporter_address", "0.0.0.0:8080");
+        cache_timeout_seconds = config_json_obj.value("cache_timeout_seconds", 30);
+        if (cache_timeout_seconds <= 0) {
+            Logger::warn("cache_timeout_seconds must be positive, using default 30");
+            cache_timeout_seconds = 30;
+        }
         Logger::info("Configuration loaded from " + configFile);
         Logger::info("ragdoll_api: " + ragdoll_api);
         Logger::info("skip_processes: ");
@@ -733,7 +741,7 @@ bool PostData::exporter_start()
         throw std::runtime_error("Exporter address is empty!");
     }
     try {
-        exporter_ptr = new PrometheusExporter(exporter_address);
+        exporter_ptr = new PrometheusExporter(exporter_address, cache_timeout_seconds);
     } catch (const std::exception& e) {
         Logger::error("Failed to initialize Prometheus Exporter: " + std::string(e.what()));
         throw;
