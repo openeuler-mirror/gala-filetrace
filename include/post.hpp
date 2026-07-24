@@ -28,7 +28,7 @@ using namespace std;
 using json = nlohmann::json;
 
 const int MAX_DIR_LEVEL = 4;
-const int MAX_EVENT_QUEUE_SIZE = 1000;  // Maximum number of events to store in queue
+
 static constexpr unsigned int PID_MAX_LIMIT = 4194304;
 class PostData {
     public:
@@ -49,6 +49,7 @@ class PostData {
         bool verbose;
         bool cache_data;
         std::string monitor_file_path;
+        int max_event_queue_size; 
 
         PrometheusExporter *exporter_ptr;
         int port;

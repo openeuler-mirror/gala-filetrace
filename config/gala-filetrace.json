@@ -24,5 +24,6 @@
   "port": 8080,
   "exporter_address": "0.0.0.0:9090",
   "cache_data": false,
-  "cache_timeout_seconds": 30
+  "cache_timeout_seconds": 30,
+  "max_event_queue_size": 1000
 }
