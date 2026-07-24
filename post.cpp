@@ -176,6 +176,12 @@ int PostData::load_config(const std::string& configFile)
             Logger::warn("cache_timeout_seconds must be positive, using default 30");
             cache_timeout_seconds = 30;
         }
+        // max events to keep in memory for API access
+        max_event_queue_size = config_json_obj.value("max_event_queue_size", 1000);
+        if (max_event_queue_size <= 0) {
+            Logger::warn("max_event_queue_size must be positive, using default 1000");
+            max_event_queue_size = 1000;
+        }
         Logger::info("Configuration loaded from " + configFile);
         Logger::info("ragdoll_api: " + ragdoll_api);
         Logger::info("skip_processes: ");
@@ -186,6 +192,7 @@ int PostData::load_config(const std::string& configFile)
         for (const auto& conf : conf_list) {
             Logger::info(conf);
         }
+        Logger::info("max_event_queue_size: " + std::to_string(max_event_queue_size));
         Logger::info("host_id: " + host_id);
         Logger::info("domain_name: " + domain_name);
         Logger::info("publish: " + std::string(publish ? "true" : "false"));
@@ -296,7 +303,7 @@ void PostData::cache_event(const struct event *event)
         j["dir4"] = std::string(event->dir4);
         {
             std::lock_guard<std::mutex> lk(event_queue_mutex);
-            if (event_queue.size() >= MAX_EVENT_QUEUE_SIZE) {
+            if (event_queue.size() >= static_cast<size_t>(max_event_queue_size)) {
                 event_queue.pop(); 
             }
             event_queue.push(std::move(j)); 
@@ -682,7 +689,7 @@ void PostData::start_http_server()
                     Logger::error("Invalid count parameter for /monitor_file_status: " + it->second + ", error: " + e.what());
                     count = 10;
                 }
-                if (count <= 0 || count > MAX_EVENT_QUEUE_SIZE) {
+                if (count <= 0 || count > this->max_event_queue_size) {
                     count = 10;
                 }
             }
