@@ -27,8 +27,6 @@ extern "C" {
 using namespace std;
 using json = nlohmann::json;
 
-const int MAX_DIR_LEVEL = 4;
-
 static constexpr unsigned int PID_MAX_LIMIT = 4194304;
 class PostData {
     public:
@@ -50,6 +48,7 @@ class PostData {
         bool cache_data;
         std::string monitor_file_path;
         int max_event_queue_size; 
+        int max_dir_level;
 
         PrometheusExporter *exporter_ptr;
         int port;
