@@ -1,11 +1,18 @@
 # 1. gala-filetrace
 
-gala-filetrace is a functional component in A-OPS, mainly used for real-time monitoring of configuration files in the openEuler systems, and can also push monitoring information to gala-ragdoll. Supports monitoring the following commands and system calls:
+gala-filetrace is a functional component in A-OPS, mainly used for real-time monitoring of configuration files in the openEuler systems, and can also push monitoring information to gala-ragdoll.
 
-* Commands: vim/vi, sed, echo, cp, move
-* System calls: write
+## Features
+
+* Monitors the following commands and system calls:
+  * Commands: vim/vi, sed, echo, cp, move
+  * System calls: write
+* Integrates with Prometheus
+* Provides an API to configure the monitored files
+* Web UI (to be developed)
 
 ---
+
 # 2. Implementation Architecture
 
 # 3. Compilation and Running
