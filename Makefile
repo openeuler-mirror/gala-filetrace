@@ -24,7 +24,7 @@ endif
 
 
 # Linker flags: prefer /usr/local/lib64 if present (where you said prometheus-cpp is installed)
-LDFLAGS = -lelf -lcurl -lbpf -lcpp-httplib -lprometheus-cpp-core  -lprometheus-cpp-push -lprometheus-cpp-pull
+LDFLAGS = -lelf -lcurl -lbpf -lcpp-httplib -lprometheus-cpp-core -lprometheus-cpp-pull
 EXTRA_LIBDIRS := $(shell [ -d /usr/local/lib64 ] && echo -L/usr/local/lib64 || echo )
 #EXTRA_LIBDIRS += $(shell [ -d /usr/local/lib ] && echo -L/usr/local/lib || echo )
 LDFLAGS += $(EXTRA_LIBDIRS)
