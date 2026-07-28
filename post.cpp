@@ -50,7 +50,8 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verb
     :  config_json(configFile),
         publish(false),
         verbose(verbose),
-        monitor_file_path(monitor_file_path)
+        monitor_file_path(monitor_file_path),
+        max_dir_level(4)
 {
     std::cout << "Initializing PostData!" << std::endl;
     if(configFile.empty()) {
@@ -137,6 +138,11 @@ int PostData::load_config(const std::string& configFile)
         
         Logger::info("Log level set to: " + log_level + ", log file: " + log_file + 
                      ", log size limit: " + std::to_string(log_size_mb) + " MB");
+        max_dir_level = config_json_obj.value("max_dir_level", 4);
+        if (max_dir_level <= 0) {
+            Logger::warn("max_dir_level must be positive, using default 4");
+            max_dir_level = 4;
+        }
         //check dir level
         for (const auto& conf : conf_list) {
             int level = get_dir_level(conf);
@@ -144,8 +150,8 @@ int PostData::load_config(const std::string& configFile)
                 Logger::error("Invalid path in config: " + conf);
                 return -1; 
             }
-            if (level > MAX_DIR_LEVEL) {
-                Logger::error("Path exceeds maximum directory level (" + std::to_string(MAX_DIR_LEVEL) + "): " + conf);
+            if (level > max_dir_level) {
+                Logger::error("Path exceeds maximum directory level (" + std::to_string(max_dir_level) + "): " + conf);
                 return -1; 
             }
         }
@@ -192,6 +198,7 @@ int PostData::load_config(const std::string& configFile)
         for (const auto& conf : conf_list) {
             Logger::info(conf);
         }
+        Logger::info("max_dir_level: " + std::to_string(max_dir_level));
         Logger::info("max_event_queue_size: " + std::to_string(max_event_queue_size));
         Logger::info("host_id: " + host_id);
         Logger::info("domain_name: " + domain_name);

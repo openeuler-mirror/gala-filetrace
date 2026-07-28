@@ -25,5 +25,6 @@
   "exporter_address": "0.0.0.0:9090",
   "cache_data": false,
   "cache_timeout_seconds": 30,
+  "max_dir_level": 4,
   "max_event_queue_size": 1000
 }
