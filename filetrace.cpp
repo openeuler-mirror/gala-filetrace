@@ -18,7 +18,7 @@ PostData *postdata_i = nullptr;
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     //trace libbpf messages to stderr
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     vfprintf(stderr, format, args);
     #endif
     return 0;
@@ -44,7 +44,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return -1;
     }
     struct event *e = (struct event *)data;
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     std::cout << "Command: " << e->cmd << ", PID: " << e->pid << ",filename: "
               << std::string(e->filename)
               << ", func: " << nr_map[e->flag] << std::endl; 
