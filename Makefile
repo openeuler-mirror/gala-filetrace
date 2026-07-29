@@ -23,11 +23,15 @@ ifeq ($(DEBUG),1)
 endif
 
 
-# Linker flags: prefer /usr/local/lib64 if present (where you said prometheus-cpp is installed)
+# Linker flags: prefer /usr/local/lib64 if present (where prometheus-cpp is installed)
 LDFLAGS = -lelf -lcurl -lbpf -lcpp-httplib -lprometheus-cpp-core -lprometheus-cpp-pull
+# Search path (link time) for libs installed under /usr/local/lib64
 EXTRA_LIBDIRS := $(shell [ -d /usr/local/lib64 ] && echo -L/usr/local/lib64 || echo )
-#EXTRA_LIBDIRS += $(shell [ -d /usr/local/lib ] && echo -L/usr/local/lib || echo )
-LDFLAGS += $(EXTRA_LIBDIRS)
+# Runtime search path (rpath): /usr/local/lib64 is NOT in the default ld.so
+# cache on openEuler, so embed it as rpath so the linked binary can find the
+# .so at runtime without requiring LD_LIBRARY_PATH or ldconfig changes.
+EXTRA_RPATH := $(shell [ -d /usr/local/lib64 ] && echo -Wl,-rpath,/usr/local/lib64 || echo )
+LDFLAGS += $(EXTRA_LIBDIRS) $(EXTRA_RPATH)
 
 CINCLUDE = -I./include
 CINCLUDE += -I./
@@ -82,7 +86,7 @@ post.o: post.cpp $(OUTPUT_DIR)/exporter.o
 
 filetrace: $(OUTPUT_DIR)/filetrace.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/logger.o
 	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
-	@$(CLANGXX)  $(PROM_LIBS) $(LDFLAGS) $(CINCLUDE) $(CFLAGS)  $(CFLAGSPLUS) -o $@ $^
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS)
 
 $(OUTPUT_DIR):
 	@mkdir $(OUTPUT_DIR)
