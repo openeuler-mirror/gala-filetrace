@@ -116,6 +116,7 @@ int main(int argc, char **argv)
     if (err) 
     {
         std::cerr << "Failed to attach eBPF program!" << std::endl;
+        delete postdata_i;
         filetrace_bpf__destroy(skel);
         return err;
     }
@@ -124,6 +125,7 @@ int main(int argc, char **argv)
     {
         err = -errno;
         std::cerr << "Error: " << strerror(errno) << std::endl;
+        delete postdata_i;
         filetrace_bpf__destroy(skel);
         return err;
     }
@@ -143,6 +145,7 @@ int main(int argc, char **argv)
     {
         ring_buffer__free(ringbuf);
     }
+    delete postdata_i;
     filetrace_bpf__destroy(skel);
     return err;
 }

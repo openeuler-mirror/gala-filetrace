@@ -19,6 +19,7 @@ static std::string sanitize_utf8(const std::string &s) {
                 out.append(reinterpret_cast<const char*>(&data[i]), 2);
                 i += 2;
             } else {
+
                 out.append("\xEF\xBF\xBD");
                 ++i;
             }
@@ -91,6 +92,9 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verb
 PostData::~PostData() 
 {
     Logger::info("PostData destroyed");
+    this->skel = nullptr;
+    this->exec_map_fd = -1;
+    delete this->exporter_ptr;
     return;
 }
 

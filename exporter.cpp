@@ -13,8 +13,23 @@ PrometheusExporter::PrometheusExporter(const std::string& address, int cache_tim
     exposer->RegisterCollectable(registry);
     
     // start thread to check cache timeout
-    std::thread(&PrometheusExporter::task_gauge_cache_timeout, this).detach();
     Logger::info("PrometheusExporter initialized at: " + address);
+    this->cache_timeout_thread_ = std::thread(&PrometheusExporter::task_gauge_cache_timeout, this);
+}
+
+PrometheusExporter::~PrometheusExporter() {
+    Logger::info("Destroying PrometheusExporter.");
+    stop_cache_timeout_thread();
+    Logger::info("PrometheusExporter destroyed.");
+}
+
+void PrometheusExporter::stop_cache_timeout_thread() {
+    Logger::info("Stopping cache timeout thread.");
+    stop_thread_.store(true, std::memory_order_relaxed);
+    if (cache_timeout_thread_.joinable()) {
+        cache_timeout_thread_.join();
+    }
+    Logger::info("Cache timeout thread stopped.");
 }
 
 prometheus::Counter& PrometheusExporter::add_counter(
@@ -158,7 +173,7 @@ void PrometheusExporter::set_metrics(struct event& e)
 
 void PrometheusExporter::task_gauge_cache_timeout() {
     Logger::info("Starting gauge cache timeout task.");
-    while (true) {
+    while (!stop_thread_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
         for (auto it = gauge_cache_timestamps.begin(); it != gauge_cache_timestamps.end(); ) {
