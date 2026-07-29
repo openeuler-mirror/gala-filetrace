@@ -43,7 +43,7 @@ gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中�
 * 源码安装
 
 ```bash
-# git clone https://github.com/jupp0r/prometheus-cpp.git
+# git clone https://atomgit.com/gh_mirrors/pr/prometheus-cpp.git
 # cd prometheus-cpp
 # git submodule init && git submodule update
 # mkdir build && cd build
