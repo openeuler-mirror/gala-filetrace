@@ -75,7 +75,8 @@ gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中�
 #编译之前安装依赖包
 # make deps
 # make
-#debug add bpf_printk cat /sys/kernel/debug/tracing/trace_pipe
+#调试模式：make DEBUG=1 定义 GALA_DEBUG 宏，BPF 侧通过 bpf_printk 输出调试信息
+#实时查看：cat /sys/kernel/debug/tracing/trace_pipe
 # make DEBUG=1
 ```
 
