@@ -57,7 +57,7 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     // args[3]: mode (mode_t) - only when O_CREAT is specified in flags
     const char *pathname_ptr = (const char *)ctx->args[1];
     bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("openat detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
@@ -90,7 +90,7 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     // args[2]: flags (int)
     const char *pathname_ptr = (const char *)ctx->args[1];
     bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("unlinkat detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
@@ -187,7 +187,7 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     }
     
     bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("copy_file_range detected: PID=%u, PPID=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
@@ -217,7 +217,7 @@ static __always_inline int handle_rename(const struct trace_event_raw_sys_enter 
     const char *oldfilename_ptr = (const char *)ctx->args[0];
     bpf_probe_read_str(&e->filename, sizeof(e->filename), filename_ptr);
     bpf_probe_read_str(&e->oldfilename, sizeof(e->oldfilename), oldfilename_ptr);
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("rename detected: handle_rename pid=%u, ppid=%u, cmd=%s\n", e->pid, e->ppid, e->cmd);
     bpf_printk("Process calling handle_rename newfilename:%s\n", e->filename);
     bpf_printk("Process calling handle_rename oldfilename:%s\n", e->oldfilename);
@@ -331,7 +331,7 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
     }
 
     if (olddfd == AT_FDCWD) {
-        #ifdef DEBUG
+        #ifdef GALA_DEBUG
         bpf_printk("oldfilename relative to CWD: %s\\n", e->oldfilename);
         #endif
     }
@@ -341,7 +341,7 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
     u32 gid = (u32)(uid_gid >> 32);
     bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("sys_enter_renameat2 detected: pid=%u, ppid=%u, newfilename:%s\n", e->pid, e->ppid , e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
@@ -365,7 +365,7 @@ int enter_execve(struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
 
     bpf_get_current_comm(&p.comm, sizeof(p.comm));
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("sys_enter_execve detected: pid=%u, ppid=%u, comm=%s\n", pid, p.pid, p.comm);
     #endif
     bpf_map_update_elem(&exec_map, &pid, &p, BPF_ANY);
@@ -386,7 +386,7 @@ int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
     bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
 
     bpf_get_current_comm(&p.comm, sizeof(p.comm));
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("sched_process_exec detected: pid=%u, ppid=%u, comm=%s\n", pid, p.pid, p.comm);
     #endif
     bpf_map_update_elem(&exec_map, &pid, &p, BPF_ANY);
@@ -432,7 +432,7 @@ int trace_dup2(struct trace_event_raw_sys_enter *ctx)
     if(fname[0]!='/'){
 	    return 0 ;
     }
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("sys_enter_dup2 detected: comm=%s, filename=%s, oldfd=%d, newfd=%d\n", comm, fname, oldfd, newfd);
     #endif
     return 0;
@@ -473,7 +473,7 @@ int trace_write(struct trace_event_raw_sys_enter *ctx) {
         return 0;
     }
     bpf_fd2path(e->filename, sizeof(e->filename), fd);
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("sys_enter_write detected: pid=%u, ppid=%u, filename=%s\n", e->pid, e->ppid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);
@@ -582,7 +582,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     }
 
     bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
-    #ifdef DEBUG
+    #ifdef GALA_DEBUG
     bpf_printk("sys_enter_write detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
     bpf_ringbuf_submit(e, 0);

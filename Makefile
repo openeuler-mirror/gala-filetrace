@@ -18,8 +18,8 @@ CFLAGS += -g0 -fno-asynchronous-unwind-tables
 CFLAGS += -ferror-limit=5
 CFLAGSPLUS += -std=c++17
 ifeq ($(DEBUG),1)
-    CXXFLAGS += -DDEBUG
-    CFLAGS += -DDEBUG
+    CXXFLAGS += -DGALA_DEBUG
+    CFLAGS += -DGALA_DEBUG
 endif
 
 
