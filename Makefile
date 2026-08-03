@@ -101,26 +101,35 @@ install:
 
 deps:
 	@for tool in $(REQUIRED_TOOLS); do \
-			if ! command -v $$tool >/dev/null 2>&1; then \
-					echo "Missing tool: $$tool. Installing..."; \
-					sudo yum install -y $$tool; \
-			else \
-					echo "Found tool: $$tool"; \
-			fi \
+		if ! command -v $$tool >/dev/null 2>&1; then \
+			echo "Missing tool: $$tool. Installing..."; \
+			if ! sudo yum install -y $$tool; then \
+				echo "ERROR: failed to install tool $$tool" >&2; \
+				exit 1; \
+			fi; \
+		else \
+			echo "Found tool: $$tool"; \
+		fi \
 	done
 	@for pkg in $(REQUIRED_PKGS); do \
-			if ! rpm -q $$pkg >/dev/null 2>&1; then \
-					echo "Missing package: $$pkg. Installing..."; \
-					sudo yum install -y $$pkg; \
-			else \
-					echo "Found package: $$pkg"; \
-			fi \
+		if ! rpm -q $$pkg >/dev/null 2>&1; then \
+			echo "Missing package: $$pkg. Installing..."; \
+			if ! sudo yum install -y $$pkg; then \
+				echo "ERROR: failed to install package $$pkg" >&2; \
+				exit 1; \
+			fi; \
+		else \
+			echo "Found package: $$pkg"; \
+		fi \
 	done
 	@for path in $(REQUIRED_FILES); do \
-			if ! test -s $$path >/dev/null 2>&1; then \
-					echo "Missing file: $$path. Installing..."; \
-					sudo yum install -y $$path; \
-			else \
-					echo "Found file: $$path"; \
-			fi \
+		if ! test -s $$path >/dev/null 2>&1; then \
+			echo "Missing file: $$path. Installing..."; \
+			if ! sudo yum install -y $$path; then \
+				echo "ERROR: failed to install file $$path" >&2; \
+				exit 1; \
+			fi; \
+		else \
+			echo "Found file: $$path"; \
+		fi \
 	done
