@@ -1,13 +1,16 @@
 # 1.gala-filetrace
 
 gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中配置文件实时监控，也可以监控信息推送到gala-ragdoll。
-### 功能介绍：
+
+## 功能介绍
+
 1. 支持监控以下命令和系统调用：
-* 命令：vim/vi、sed、echo、cp、move
-* 系统调用：write
+   * 命令：vim/vi、sed、echo、cp、mv
+   * 系统调用：write
 2. 支持对接 Prometheus
 3. 提供API设置监控文件
 4. web UI(待开发）
+
 ---
 
 # 2.实现架构
@@ -135,7 +138,6 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 |
 
 浏览器访问http://IP:9090/Metrics，可以查看监控指标。
-
 
 # 4.内核升级
 
