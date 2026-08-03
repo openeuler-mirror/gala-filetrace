@@ -5,7 +5,7 @@ gala-filetrace is a functional component in A-OPS, mainly used for real-time mon
 ## Features
 
 * Monitors the following commands and system calls:
-  * Commands: vim/vi, sed, echo, cp, move
+  * Commands: vim/vi, sed, echo, cp, mv
   * System calls: write
 * Integrates with Prometheus
 * Provides an API to configure the monitored files
