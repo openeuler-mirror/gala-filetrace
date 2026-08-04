@@ -47,9 +47,8 @@ class PostData {
         bool verbose;
         bool cache_data;
         std::string monitor_file_path;
-        int max_event_queue_size; 
+        int max_event_queue_size;
         int max_dir_level;
-
         PrometheusExporter *exporter_ptr;
         int port;
         bool publish; // default is false
