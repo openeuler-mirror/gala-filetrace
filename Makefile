@@ -1,4 +1,4 @@
-REQUIRED_TOOLS := clang llvm bpftool
+REQUIRED_TOOLS := clang bpftool
 REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
 REQUIRED_FILES := /usr/include/httplib.h
 
