@@ -4,7 +4,7 @@
 PrometheusExporter::PrometheusExporter(const std::string& address, int cache_timeout_seconds) 
     : cache_timeout_seconds(cache_timeout_seconds)
 {
-    Logger::info("Initializing PrometheusExporter with address: " + address);
+    LOG_INFO("Initializing PrometheusExporter with address: " + address);
     if(address.empty()) {
         throw std::runtime_error("Address for Prometheus Exporter cannot be empty.");
     }
@@ -13,23 +13,23 @@ PrometheusExporter::PrometheusExporter(const std::string& address, int cache_tim
     exposer->RegisterCollectable(registry);
     
     // start thread to check cache timeout
-    Logger::info("PrometheusExporter initialized at: " + address);
+    LOG_INFO("PrometheusExporter initialized at: " + address);
     this->cache_timeout_thread_ = std::thread(&PrometheusExporter::task_gauge_cache_timeout, this);
 }
 
 PrometheusExporter::~PrometheusExporter() {
-    Logger::info("Destroying PrometheusExporter.");
+    LOG_INFO("Destroying PrometheusExporter.");
     stop_cache_timeout_thread();
-    Logger::info("PrometheusExporter destroyed.");
+    LOG_INFO("PrometheusExporter destroyed.");
 }
 
 void PrometheusExporter::stop_cache_timeout_thread() {
-    Logger::info("Stopping cache timeout thread.");
+    LOG_INFO("Stopping cache timeout thread.");
     stop_thread_.store(true, std::memory_order_relaxed);
     if (cache_timeout_thread_.joinable()) {
         cache_timeout_thread_.join();
     }
-    Logger::info("Cache timeout thread stopped.");
+    LOG_INFO("Cache timeout thread stopped.");
 }
 
 prometheus::Counter& PrometheusExporter::add_counter(
@@ -37,7 +37,7 @@ prometheus::Counter& PrometheusExporter::add_counter(
         const std::string& help,
         const std::map<std::string, std::string>& labels)
 {
-    Logger::info("Adding counter: " + name + " with help: " + help);
+    LOG_INFO("Adding counter: " + name + " with help: " + help);
     auto& family = prometheus::BuildCounter()
                        .Name(name)
                        .Help(help)
@@ -55,7 +55,7 @@ prometheus::Gauge& PrometheusExporter::add_gauge(
         const std::string& help,
         const std::map<std::string, std::string>& labels)
 {
-    Logger::info("Adding gauge: " + name + " with help: " + help);
+    LOG_INFO("Adding gauge: " + name + " with help: " + help);
     auto& family = prometheus::BuildGauge()
                        .Name(name)
                        .Help(help)
@@ -69,7 +69,7 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
         const prometheus::Histogram::BucketBoundaries& buckets,
         const std::map<std::string, std::string>& labels)
 {
-    Logger::info("Adding histogram: " + name + " with help: " + help);
+    LOG_INFO("Adding histogram: " + name + " with help: " + help);
     auto& family = prometheus::BuildHistogram()
                        .Name(name)
                        .Help(help)
@@ -81,7 +81,7 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
 // dir:/dir4/dir3/dir2/dir1/filename
 std::string PrometheusExporter::get_full_path(const struct event *event) 
 {
-    Logger::info("Constructing full path for event with filename: " + std::string(event->filename));
+    LOG_INFO("Constructing full path for event with filename: " + std::string(event->filename));
 
     const char *parts[] = {event->dir4, event->dir3, event->dir2, event->dir1, event->filename};
     std::string fullpath;
@@ -99,13 +99,13 @@ std::string PrometheusExporter::get_full_path(const struct event *event)
         fullpath.insert(fullpath.begin(), '/');
     }
 
-    Logger::info("Constructed full path: " + fullpath);
+    LOG_INFO("Constructed full path: " + fullpath);
     return fullpath;
 }
 
 void PrometheusExporter::set_metrics(struct event& e) 
 {
-    Logger::info("Setting metrics for event with filename: " + std::string(e.filename) + " and operation: " + std::string(nr_map[e.flag]));
+    LOG_INFO("Setting metrics for event with filename: " + std::string(e.filename) + " and operation: " + std::string(nr_map[e.flag]));
     std::string filename = std::string(e.filename);
     if(e.flag == SYS_write)
     {
@@ -122,7 +122,7 @@ void PrometheusExporter::set_metrics(struct event& e)
     
     if (file_access_counter != nullptr) {
         file_access_counter->Increment();
-        Logger::info("Incremented file_access_counter");
+        LOG_INFO("Incremented file_access_counter");
     }
     
     std::map<std::string, std::string> detailed_labels = base_labels;
@@ -143,7 +143,7 @@ void PrometheusExporter::set_metrics(struct event& e)
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
         auto it = gauge_cache.find(pid_gauge_key);
         if (it != gauge_cache.end()) {
-            Logger::info("Reusing existing gauge for PID: " + pid_gauge_key);
+            LOG_INFO("Reusing existing gauge for PID: " + pid_gauge_key);
             pid_gauge = it->second;
         } else {
             pid_gauge = &add_gauge(
@@ -160,11 +160,11 @@ void PrometheusExporter::set_metrics(struct event& e)
         }
         gauge_cache_timestamps[pid_gauge_key] = time_now;
     }
-    Logger::info("Updated PID gauge for PID " + std::to_string(e.pid));
+    LOG_INFO("Updated PID gauge for PID " + std::to_string(e.pid));
 }
 
 void PrometheusExporter::task_gauge_cache_timeout() {
-    Logger::info("Starting gauge cache timeout task.");
+    LOG_INFO("Starting gauge cache timeout task.");
     while (!stop_thread_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
@@ -185,10 +185,10 @@ void PrometheusExporter::task_gauge_cache_timeout() {
                     } 
                     catch (...) 
                     {
-                        Logger::error("Error setting gauge to 0 for key: " + key);
+                        LOG_ERROR("Error setting gauge to 0 for key: " + key);
                     }
                     gauge_cache.erase(key);
-                    Logger::info("Removed stale gauge from cache: " + key);
+                    LOG_INFO("Removed stale gauge from cache: " + key);
                 }
                 it = gauge_cache_timestamps.erase(it);
             }
