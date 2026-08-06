@@ -586,30 +586,22 @@ std::string PostData::get_groupname_by_gid(unsigned int &gid)
 std::string PostData::get_full_path(const struct event *event) 
 {
     std::string fullpath;
-    Logger::info("dir: dir1: " + std::string(event->dir1) + ", dir2: " + std::string(event->dir2)
-              + ", dir3: " + std::string(event->dir3) + ", dir4: " + std::string(event->dir4)
-              + ", filename: " + std::string(event->filename));
-    if (event->dir4[0] == '/') {
-        fullpath += std::string(event->dir4) + std::string(event->dir3) + "/" 
-                    + std::string(event->dir2) + "/" + std::string(event->dir1) + "/" + std::string(event->filename);
-        Logger::info("The 4 level fullpath: " + fullpath);
-        return fullpath;
+    const char *parts[] = {event->dir4, event->dir3, event->dir2, event->dir1, event->filename};
+    for (const char *part : parts) {
+        if (part[0] == '\0' || (part[0] == '/' && part[1] == '\0')) {
+            continue;
+        }
+        if (!fullpath.empty()) {
+            fullpath.push_back('/');
+        }
+        fullpath += part;
     }
-    if (event->dir3[0] == '/') {
-        fullpath += std::string(event->dir3) + std::string(event->dir2) + "/" + std::string(event->dir1)+ "/" + std::string(event->filename);
-        Logger::info("The 3 level fullpath: " + fullpath);
-        return fullpath;
+
+    if (!fullpath.empty() && fullpath.front() != '/') {
+        fullpath.insert(fullpath.begin(), '/');
     }
-    if (event->dir2[0] == '/') {
-        fullpath += std::string(event->dir2) + std::string(event->dir1)+ "/" + std::string(event->filename);
-        Logger::info("The 2 level fullpath: " + fullpath);
-        return fullpath;
-    }
-    if (event->dir1[0] == '/') {
-        fullpath += std::string(event->dir1) + std::string(event->filename);
-        Logger::info("The 1 level fullpath: " + fullpath);
-        return fullpath;
-    }
+
+    Logger::info("Constructed full path: " + fullpath);
     return fullpath;
 }
 
