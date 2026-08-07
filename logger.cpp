@@ -91,14 +91,21 @@ static std::string now_iso8601() {
     return ss.str();
 }
 
-void Logger::log(Logger::Level lvl, const std::string &msg) {
+static const char *basename_of_path(const char *path) {
+    if (path == nullptr) return "unknown";
+    const char *base = std::strrchr(path, '/');
+    return base ? base + 1 : path;
+}
+
+void Logger::log(Logger::Level lvl, const std::string &msg, const char *file, int line) {
     if (lvl < g_log_level) return;
     const char *lvl_s = (lvl == Logger::INFO) ? "INFO" :
                         (lvl == Logger::WARN) ? "WARN" :
                         (lvl == Logger::ERROR) ? "ERROR" :
                         (lvl == Logger::DEBUG) ? "DEBUG" : "UNKNOWN";
     std::ostringstream ss;
-    ss << now_iso8601() << " [" << lvl_s << "] " << msg << "\n";
+    ss << now_iso8601() << " [" << lvl_s << "] "
+       << basename_of_path(file) << ":" << line << " " << msg << "\n";
     std::string out = ss.str();
     std::lock_guard<std::mutex> lk(g_log_mutex);
     
@@ -114,7 +121,7 @@ void Logger::log(Logger::Level lvl, const std::string &msg) {
         std::cerr << out;
     }
 }
-void Logger::debug(const std::string &msg) { log(DEBUG, msg); }
-void Logger::info(const std::string &msg) { log(INFO, msg); }
-void Logger::warn(const std::string &msg) { log(WARN, msg); }
-void Logger::error(const std::string &msg) { log(ERROR, msg); }
+void Logger::debug(const std::string &msg, const char *file, int line) { log(DEBUG, msg, file, line); }
+void Logger::info(const std::string &msg, const char *file, int line) { log(INFO, msg, file, line); }
+void Logger::warn(const std::string &msg, const char *file, int line) { log(WARN, msg, file, line); }
+void Logger::error(const std::string &msg, const char *file, int line) { log(ERROR, msg, file, line); }
