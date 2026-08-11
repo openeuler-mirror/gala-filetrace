@@ -169,6 +169,7 @@ int PostData::load_config(const std::string& configFile)
             LOG_ERROR("Domain name is empty, please check your config file.");
             return -1; 
         }
+        cluster_id = config_json_obj.value("cluster_id", std::string(""));
         ragdoll_api = config_json_obj["ragdoll_api"].get<std::string>();
         skip_processes = config_json_obj["skip_processes_list"].get<std::vector<std::string>>();
 
@@ -206,6 +207,7 @@ int PostData::load_config(const std::string& configFile)
         LOG_INFO("max_event_queue_size: " + std::to_string(max_event_queue_size));
         LOG_INFO("host_id: " + host_id);
         LOG_INFO("domain_name: " + domain_name);
+        LOG_INFO("cluster_id: " + cluster_id);
         LOG_INFO("publish: " + std::string(publish ? "true" : "false"));
         return 0;
     } catch (json::parse_error& e) {
@@ -380,7 +382,8 @@ std::string PostData::convert_to_string(struct event &e)
     generate_proc_trace(e.pid, json_data);
 
     json_data["host_id"] = host_id;
-    json_data["domain_name"] = domain_name;  
+    json_data["domain_name"] = domain_name;
+    json_data["cluster_id"] = cluster_id;  
     json_data["flag"] = e.flag;
     json_data["syscall"] = nr_map[e.flag];
     if(e.flag == SYS_write)

@@ -4,6 +4,7 @@
   "log_size": 100,
   "host_id": "1",
   "domain_name": "zone1",
+  "cluster_id": "cluster-1",
   "skip_processes_list": [
     "systemd",
     "kthreadd",
