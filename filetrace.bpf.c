@@ -393,51 +393,8 @@ int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
     return 0;
 }
 
-static __inline int bpf_strcmp(const char *s1, const char *s2)
-{
-    #pragma unroll
-    for (int i = 0; i < 64; i++) {
-        char c1 = s1[i];
-        char c2 = s2[i];
-        if (c1 != c2)
-            return 1;
-        if (c1 == '\0')
-            break;
-    }
-    return 0;
-}
 //openEuler 2503 LTS
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
-SEC("tracepoint/syscalls/sys_enter_dup2")
-int trace_dup2(struct trace_event_raw_sys_enter *ctx)
-{
-    char comm[16];
-    bpf_get_current_comm(&comm, sizeof(comm));
-    int oldfd = ctx->args[0];
-    int newfd = ctx->args[1];
-    if(oldfd != 3 || newfd != 1 ){
-       return 0;
-    }
-    struct task_struct *t = (struct task_struct*)bpf_get_current_task();
-    /*struct files_struct *files = t->files;
-    if(files == NULL){
-       bpf_printk("dup files_struct is null.\n");
-       return 0;
-    }*/
-    char fname[16];
-    bpf_fd2path(fname, sizeof(fname), oldfd);
-    if(!bpf_strcmp(fname, "/dev/null")){
-	    return 0 ;
-    }
-    if(fname[0]!='/'){
-	    return 0 ;
-    }
-    #ifdef GALA_DEBUG
-    bpf_printk("sys_enter_dup2 detected: comm=%s, filename=%s, oldfd=%d, newfd=%d\n", comm, fname, oldfd, newfd);
-    #endif
-    return 0;
-}
-
 SEC("tracepoint/syscalls/sys_enter_write")
 int trace_write(struct trace_event_raw_sys_enter *ctx) {
     struct task_struct* t;
