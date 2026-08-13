@@ -1,4 +1,5 @@
 # 1.gala-filetrace
+[English](./README.en.md) | 简体中文
 
 gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中配置文件实时监控，也可以监控信息推送到gala-ragdoll。
 
