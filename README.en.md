@@ -34,7 +34,7 @@ For the added helper_func interface fd2path, refer to: 4. Kernel Upgrade.
 
 | System Version      | Dependency Installation         |
 | :---         |    :----:   |
-| openEuler 2203_SP3   | # yum install bpftrace libcurl-devel libbpf-devel cpp-httplib-devel zlib-devel nlohmann-json-devel bpftool clang llvm  cpp-httplib-devel   |
+| openEuler 2203_SP3   | # yum install bpftrace libcurl-devel libbpf-devel cpp-httplib-devel zlib-devel nlohmann-json-devel bpftool clang llvm   |
 
 ## 3.2 Compilation
 
