@@ -39,6 +39,7 @@ class PostData {
         std::vector<std::string> skip_processes;
         std::string host_id;
         std::string domain_name;
+        std::string cluster_id;
         std::string server; //provide set and config methods for ragdoll service
         std::string exporter_address;
         int cache_timeout_seconds;
