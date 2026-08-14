@@ -36,9 +36,9 @@ gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中�
 
 | 系统版本      | 依赖安装         |
 | :---         |    :----:   |
-| openEuler 2203_SP3   | # yum install bpftrace libcurl-devel libbpf-devel cpp-httplib-devel zlib-devel nlohmann-json-devel bpftool clang llvm  cpp-httplib-devel   |
+| openEuler 2203_SP3   | # yum install bpftrace libcurl-devel libbpf-devel cpp-httplib-devel zlib-devel nlohmann-json-devel bpftool clang llvm   |
 ---
-<font color="red">注意：openeuler 2203 lts 中cpp-httplib-devel替换为cpp-httplib；libbpf版本0.8以上</font>
+<font color="red">注意：cpp-httplib 版本小于 0.22.0 时，cpp-httplib-devel 替换为 cpp-httplib；libbpf 版本 0.8 以上</font>
 
 ---
 
