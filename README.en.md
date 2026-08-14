@@ -1,4 +1,5 @@
 # 1. gala-filetrace
+English | [简体中文](./README.md)
 
 gala-filetrace is a functional component in A-OPS, mainly used for real-time monitoring of configuration files in the openEuler systems, and can also push monitoring information to gala-ragdoll.
 
