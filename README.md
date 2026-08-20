@@ -23,12 +23,10 @@ gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中�
 | :---         |    :----:   |          ---: |  ---: |
 | openEuler 2203_SP3   | aarch64       |  OK   |无  |
 | openEuler 2203_SP3   | x86           |  OK   |无  |
-| openEuler 2403_SP1   | aarch64       |  OK   |需要在内核新增一个helper_func  |
-| openEuler 2403_SP1   | x86           |  OK   |需要在内核新增一个helper_func  |
-| openEuler 2503       | aarch64       |  OK   |需要在内核新增一个helper_func  |
-| openEuler 2503       | x86           |  OK   |需要在内核新增一个helper_func  |
----
-关于增加的helper_func接口fd2path具体实现，具体方法参照：4.内核升级。
+| openEuler 2403_SP1   | aarch64       |  OK   |  |
+| openEuler 2403_SP1   | x86           |  OK   |  |
+| openEuler 2503       | aarch64       |  OK   |  |
+| openEuler 2503       | x86           |  OK   |  |
 
 ## 3.1 依赖安装
 
