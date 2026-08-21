@@ -89,6 +89,21 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verb
     LOG_INFO("PostData initialized successfully!");
 }
 
+// Default constructor for unit testing (does not touch eBPF or config files)
+PostData::PostData()
+    : config_json(std::string()),
+      publish(false),
+      verbose(false),
+      monitor_file_path(std::string()),
+      max_dir_level(4),
+      exporter_ptr(nullptr),
+      exec_map_fd(-1),
+      log_size(0),
+      skel(nullptr)
+{
+    // Intentionally empty: test code can set fields directly.
+}
+
 PostData::~PostData() 
 {
     LOG_INFO("PostData destroyed");

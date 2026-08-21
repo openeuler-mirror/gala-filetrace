@@ -133,3 +133,9 @@ deps:
 			echo "Found file: $$path"; \
 		fi \
 	done
+
+.PHONY: test
+test: all
+	@echo "Building and running PostData unit tests"
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_postdata tests/test_postdata.cpp $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(LDFLAGS)
+	@./tests/test_postdata
