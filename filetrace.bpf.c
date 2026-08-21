@@ -393,50 +393,6 @@ int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
     return 0;
 }
 
-//openEuler 2503 LTS
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
-SEC("tracepoint/syscalls/sys_enter_write")
-int trace_write(struct trace_event_raw_sys_enter *ctx) {
-    struct task_struct* t;
-    struct task_struct* p;
-    struct event *e;
-
-    e = bpf_create_ringbuf();
-    if(!e) {
-        return 0;
-    }
-    e->flag = SYS_write;
-    u64 uid_gid = bpf_get_current_uid_gid();
-    u32 uid = (u32)uid_gid;         // low 32 bit is UID
-    u32 gid = (u32)(uid_gid >> 32); // high 32 bit is GID
-    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
-    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
-
-    t = (struct task_struct*)bpf_get_current_task();
-    //bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
-    unsigned long pid_tgid = bpf_get_current_pid_tgid();
-    e->pid = pid_tgid >> 32;  // 获取 tgid（用户
-    bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
-    bpf_probe_read(&p, sizeof(p), &t->real_parent);
-    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
-    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
-
-    int fd = (__s32)ctx->args[0];
-    if (fd == 0 || fd == 1 || fd == 2 ) {
-        bpf_ringbuf_discard(e, 0);
-        return 0; 
-    }
-    if(fd < 3 ){
-        return 0;
-    }
-    bpf_fd2path(e->filename, sizeof(e->filename), fd);
-    #ifdef GALA_DEBUG
-    bpf_printk("sys_enter_write detected: pid=%u, ppid=%u, filename=%s\n", e->pid, e->ppid, e->filename);
-    #endif
-    bpf_ringbuf_submit(e, 0);
-    return 0;
-}
-#else
 /*for vim echo ...
 write(int fd, const void *buf, size_t count)
 args[0]: fd (int)
@@ -545,4 +501,3 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
-#endif
