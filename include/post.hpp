@@ -30,6 +30,7 @@ using json = nlohmann::json;
 static constexpr unsigned int PID_MAX_LIMIT = 4194304;
 class PostData {
     public:
+        PostData();
         PostData(filetrace_bpf *skel, const std::string& configFile, bool verbose = false, const std::string& monitorFilePath = "");
         ~PostData();
         //config items
