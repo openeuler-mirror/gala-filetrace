@@ -139,3 +139,7 @@ test: all
 	@echo "Building and running PostData unit tests"
 	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_postdata tests/test_postdata.cpp $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(LDFLAGS)
 	@./tests/test_postdata
+
+	@echo "Building and running Logger unit tests"
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_logger tests/test_logger.cpp $(OUTPUT_DIR)/logger.o $(LDFLAGS)
+	@./tests/test_logger
