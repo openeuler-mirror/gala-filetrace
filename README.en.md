@@ -1,4 +1,5 @@
 # 1. gala-filetrace
+
 English | [简体中文](./README.md)
 
 gala-filetrace is a functional component in A-OPS, mainly used for real-time monitoring of configuration files in the openEuler systems, and can also push monitoring information to gala-ragdoll.
@@ -27,8 +28,8 @@ Currently supported openEuler versions:
 | openEuler 2403_SP1   | x86           |  OK   |None  |
 | openEuler 2503       | aarch64       |  OK   |Requires adding a new helper_func to the kernel  |
 | openEuler 2503       | x86           |  OK   |Requires adding a new helper_func to the kernel  |
-For the added helper_func interface fd2path, refer to: 4. Kernel Upgrade.
 ---
+For the added helper_func interface fd2path, refer to: 4. Kernel Upgrade.
 
 ## 3.1 Dependency Installation
 
