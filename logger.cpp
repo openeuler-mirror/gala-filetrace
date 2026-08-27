@@ -21,6 +21,18 @@ static Logger::Level parse_level(const std::string &s) {
     return Logger::INFO;
 }
 
+// Level enum values are not ordered by severity (DEBUG has the largest value),
+// so compare explicit severity ranks when applying the configured threshold.
+static int severity_rank(Logger::Level level) {
+    switch (level) {
+        case Logger::DEBUG: return 0;
+        case Logger::INFO:  return 1;
+        case Logger::WARN:  return 2;
+        case Logger::ERROR: return 3;
+    }
+    return 1;
+}
+
 // Rotate the log file: rename current log to backup and create new one
 static void rotate_log_file() {
     if (g_log_ofs.is_open()) {
@@ -98,7 +110,7 @@ static const char *basename_of_path(const char *path) {
 }
 
 void Logger::log(Logger::Level lvl, const std::string &msg, const char *file, int line) {
-    if (lvl < g_log_level) return;
+    if (severity_rank(lvl) < severity_rank(g_log_level)) return;
     const char *lvl_s = (lvl == Logger::INFO) ? "INFO" :
                         (lvl == Logger::WARN) ? "WARN" :
                         (lvl == Logger::ERROR) ? "ERROR" :
