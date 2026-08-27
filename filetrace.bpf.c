@@ -393,6 +393,93 @@ int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
     return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+// Capture writes without resolving an fd: hook the VFS permission check
+// (invoked with MAY_WRITE for write operations), which already hands us the
+// backing struct file *. We then walk dentry->d_parent to rebuild the path,
+// exactly like the other handlers.
+#ifndef MAY_WRITE
+#define MAY_WRITE 2
+#endif
+
+SEC("fentry/security_file_permission")
+int BPF_PROG(trace_write, struct file *file, int mask)
+{
+    if (!(mask & MAY_WRITE))
+        return 0;
+
+    struct task_struct* t;
+    struct task_struct* p;
+    struct event *e;
+
+    e = bpf_create_ringbuf();
+    if(!e) {
+        return 0;
+    }
+    e->flag = SYS_write;
+
+    u64 uid_gid = bpf_get_current_uid_gid();
+    u32 uid = (u32)uid_gid;
+    u32 gid = (u32)(uid_gid >> 32);
+    e->uid = uid;
+    e->gid = gid;
+
+    t = (struct task_struct*)bpf_get_current_task();
+    unsigned long pid_tgid = bpf_get_current_pid_tgid();
+    e->pid = pid_tgid >> 32;
+    bpf_get_current_comm(&e->cmd, sizeof(e->cmd));
+    bpf_probe_read(&p, sizeof(p), &t->real_parent);
+    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
+    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
+
+    // Only regular files are interesting (skip pipes/sockets/devices)
+    struct inode *inode = NULL;
+    bpf_probe_read(&inode, sizeof(inode), &file->f_inode);
+    umode_t mode = 0;
+    bpf_probe_read(&mode, sizeof(mode), &inode->i_mode);
+    if ((mode & S_IFMT) != S_IFREG)
+    {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+    bpf_probe_read(&e->i_ino, sizeof(inode->i_ino), &inode->i_ino);
+
+    //get filename from struct file
+    struct path path;
+    struct dentry* dentry;
+    struct qstr pathname;
+    bpf_probe_read(&path, sizeof(path), &file->f_path);
+    bpf_probe_read(&dentry, sizeof(dentry), &path.dentry);
+    bpf_probe_read(&pathname, sizeof(pathname), &dentry->d_name);
+
+    struct dentry* d_parent;
+    #pragma unroll
+    for (int i = 0; i < MAX_DEPTH; i++)
+    {
+        bpf_probe_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
+        if (d_parent == dentry) {
+            break;
+        }
+        if(i == 0){
+            bpf_probe_read(&e->dir1, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
+        }else if(i == 1){
+            bpf_probe_read(&e->dir2, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
+        }else if(i == 2){
+            bpf_probe_read(&e->dir3, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
+        }else if(i == 3){
+            bpf_probe_read(&e->dir4, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
+        }
+        dentry = d_parent;
+    }
+
+    bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
+    #ifdef GALA_DEBUG
+    bpf_printk("sys_enter_write detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
+    #endif
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+#else
 /*for vim echo ...
 write(int fd, const void *buf, size_t count)
 args[0]: fd (int)
@@ -501,3 +588,4 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
+#endif
