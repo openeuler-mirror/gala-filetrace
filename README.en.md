@@ -26,10 +26,8 @@ Currently supported openEuler versions:
 | openEuler 2203_SP3   | x86           |  OK   |None  |
 | openEuler 2403_SP1   | aarch64       |  OK   |None  |
 | openEuler 2403_SP1   | x86           |  OK   |None  |
-| openEuler 2503       | aarch64       |  OK   |Requires adding a new helper_func to the kernel  |
-| openEuler 2503       | x86           |  OK   |Requires adding a new helper_func to the kernel  |
----
-For the added helper_func interface fd2path, refer to: 4. Kernel Upgrade.
+| openEuler 2503       | aarch64       |  OK   |None  |
+| openEuler 2503       | x86           |  OK   |None  |
 
 ## 3.1 Dependency Installation
 
