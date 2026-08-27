@@ -3,7 +3,7 @@ Version:        1.0
 Release:        1%{?dist}
 Summary:        Real-time file trace tool for openEuler
 
-License:        MIT
+License:        MulanPSL-2.0
 Source0:        https://raw.atomgit.com/openeuler/gala-filetrace/archive/refs/heads/master.zip
 
 BuildRequires:  clang
@@ -38,8 +38,8 @@ make
 install -d %{buildroot}/usr/bin
 install -m 755 filetrace %{buildroot}/usr/bin/filetrace
 
-install -d %{buildroot}/etc/gala-filetrace/gala-filetrace.json
-install -m 644 config/filetrace.json %{buildroot}/etc/gala-filetrace/gala-filetrace.json
+install -d %{buildroot}/etc/gala-filetrace
+install -m 644 config/gala-filetrace.json %{buildroot}/etc/gala-filetrace/gala-filetrace.json
 
 install -d %{buildroot}/usr/lib/systemd/system
 install -m 644 config/gala-filetrace.service %{buildroot}/usr/lib/systemd/system/gala-filetrace.service
