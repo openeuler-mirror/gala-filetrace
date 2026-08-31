@@ -194,7 +194,9 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-static __always_inline int handle_rename(const struct trace_event_raw_sys_enter *ctx, struct event *e)
+static __always_inline int handle_rename(struct event *e,
+                                         const char *oldfilename_ptr,
+                                         const char *filename_ptr)
 {
     struct task_struct* t;
     struct task_struct* p;
@@ -213,10 +215,8 @@ static __always_inline int handle_rename(const struct trace_event_raw_sys_enter 
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
     bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
 
-    const char *filename_ptr = (const char *)ctx->args[1];
-    const char *oldfilename_ptr = (const char *)ctx->args[0];
-    bpf_probe_read_str(&e->filename, sizeof(e->filename), filename_ptr);
-    bpf_probe_read_str(&e->oldfilename, sizeof(e->oldfilename), oldfilename_ptr);
+    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), filename_ptr);
+    bpf_probe_read_user_str(&e->oldfilename, sizeof(e->oldfilename), oldfilename_ptr);
     #ifdef GALA_DEBUG
     bpf_printk("rename detected: handle_rename pid=%u, ppid=%u, cmd=%s\n", e->pid, e->ppid, e->cmd);
     bpf_printk("Process calling handle_rename newfilename:%s\n", e->filename);
@@ -240,12 +240,14 @@ int rename(const struct trace_event_raw_sys_enter *ctx)
     }
     e->flag = SYS_rename;
 
-    return handle_rename(ctx, e);
+    return handle_rename(e,
+                         (const char *)ctx->args[0],
+                         (const char *)ctx->args[1]);
 }
 #endif
-// rename(const char *oldpath, const char *newpath)
-// args[0]: oldpath (const char *)
-// args[1]: newpath (const char *)
+// renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath)
+// args[1]: oldpath (const char *)
+// args[3]: newpath (const char *)
 SEC("tracepoint/syscalls/sys_enter_renameat")
 int renameat(const struct trace_event_raw_sys_enter *ctx)
 {
@@ -255,7 +257,9 @@ int renameat(const struct trace_event_raw_sys_enter *ctx)
     }
     e->flag = SYS_renameat;
 
-    return handle_rename(ctx, e);
+    return handle_rename(e,
+                         (const char *)ctx->args[1],
+                         (const char *)ctx->args[3]);
 }
 //for move
 /*  move oldfile newfile  
