@@ -516,11 +516,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
     int fd = (__s32)ctx->args[0];
-    if (fd == 0 || fd == 1 || fd == 2 ) {
-        bpf_ringbuf_discard(e, 0);
-        return 0; 
-    }
-    
+
     //get file struct from task_struct
     struct files_struct *f = NULL;
     struct fdtable *fdt = NULL;
