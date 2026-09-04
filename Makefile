@@ -37,6 +37,7 @@ LDFLAGS += $(EXTRA_LIBDIRS) $(EXTRA_RPATH)
 
 CINCLUDE = -I./$(SRC_DIR)/include
 CINCLUDE += -I./$(SRC_DIR)/
+CINCLUDE += -I./
 CINCLUDE += -I/usr/local/include/
 #CINCLUDE += -I/usr/src/kernels/$(shell uname -r)
 
