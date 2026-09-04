@@ -2,6 +2,8 @@ REQUIRED_TOOLS := clang bpftool
 REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
 REQUIRED_FILES := /usr/include/httplib.h
 
+SRC_DIR := src
+
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
     TARGET_ARCH := x86
@@ -9,7 +11,7 @@ else ifeq ($(ARCH),aarch64)
     TARGET_ARCH := arm64
 endif
 
-TARGETS := $(patsubst %.c,%.o,$(wildcard *.c))
+TARGETS := $(patsubst %.c,%.o,$(notdir $(wildcard $(SRC_DIR)/*.c)))
 
 CFLAGS = -Wno-error 
 CFLAGS += -Wno-unknown-attributes
@@ -33,8 +35,8 @@ EXTRA_LIBDIRS := $(shell [ -d /usr/local/lib64 ] && echo -L/usr/local/lib64 || e
 EXTRA_RPATH := $(shell [ -d /usr/local/lib64 ] && echo -Wl,-rpath,/usr/local/lib64 || echo )
 LDFLAGS += $(EXTRA_LIBDIRS) $(EXTRA_RPATH)
 
-CINCLUDE = -I./include
-CINCLUDE += -I./
+CINCLUDE = -I./$(SRC_DIR)/include
+CINCLUDE += -I./$(SRC_DIR)/
 CINCLUDE += -I/usr/local/include/
 #CINCLUDE += -I/usr/src/kernels/$(shell uname -r)
 
@@ -54,7 +56,7 @@ clean:
 	@echo "Cleaning up ..."
 	@rm -rf $(OUTPUT_DIR) filetrace filetrace.o filetrace.skel.h
  
-$(TARGETS): %.o: %.c | $(OUTPUT_DIR)
+$(TARGETS): %.o: $(SRC_DIR)/%.c | $(OUTPUT_DIR)
 	@echo "Compiling $< to $@ ..."
 	@bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 	@#$(CLANG) -S $(CFLAGS) -D__TARGET_ARCH_$(TARGET_ARCH) -g -O2 -emit-llvm -c $<
@@ -68,19 +70,19 @@ filetrace.skel.h: $(BPF_OBJ)
 	@bpftool gen skeleton $< > $@
 
 #compile filetrace.cpp to filetrace.o
-filetrace.o: filetrace.cpp 
+filetrace.o: $(SRC_DIR)/filetrace.cpp
 	@echo "Compiling $< to $@ ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE)  -o $(OUTPUT_DIR)/$@ $<
 
-logger.o: logger.cpp
+logger.o: $(SRC_DIR)/logger.cpp
 	@echo "Compiling logger.cpp to logger.o ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
 
-exporter.o: exporter.cpp
+exporter.o: $(SRC_DIR)/exporter.cpp
 	@echo "Compiling exporter.cpp to exporter.o ..."
 	@$(CLANGXX)  -c $(CFLAGS) $(CFLAGSPLUS)  $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
 
-post.o: post.cpp $(OUTPUT_DIR)/exporter.o
+post.o: $(SRC_DIR)/post.cpp $(OUTPUT_DIR)/exporter.o
 	@echo "Compiling post.cpp to post.o ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS)  $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
 
