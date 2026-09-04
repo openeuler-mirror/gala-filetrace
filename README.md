@@ -138,53 +138,9 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 
 浏览器访问http://IP:9090/Metrics，可以查看监控指标。
 
-# 4.内核升级
+# 4.QA
 
-在内核6.6.0中，无法从task_struct中获取进程中fd列表了。所以只能通过在内核中增加接口来实现。
-下图是从ebpf探针中获取文件名称的方法：
-<img src="./img/getfilename.png" width="600" height="400">
-
-以下升级内核参照示例，具体需要根据实际环境执行。
-
-## 4.1 kernel源码安装
-
-```bash
-# yum download kernel-source-6.6.0-72.6.0.56.oe2503.x86_64
-# rpm -ivh kernel-source-6.6.0-72.6.0.56.oe2503.x86_64*
-# cp /boot/config-6.6.0-72.6.0.56.oe2503.x86_64 .config
-```
-
-### 应用patch
-
-```bash
-# patch -p1 < /path/to/my_patch.patch
-```
-
-## 4.2 编译
-
-```bash
-# make O=out
-```
-
-## 4.3 安装模块
-
-```bash
-# make O=out modules_install
-```
-
-默认安装到/lib/modules/
-
-## 4.4  安装内核映像
-
-```bash
-# make O=out install
-```
-
-安装 vmlinuz、System.map、config 等到 /boot/
-
-# 5.QA
-
-## 1.dmesg中出现以下日志
+## 4.1 dmesg中出现以下日志
 
 ```text
 permission error while running as root; try raising 'ulimit -l'? current value: 64.0 KiB.
