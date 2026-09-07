@@ -146,3 +146,7 @@ test: all
 	@echo "Building and running Logger unit tests"
 	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_logger tests/test_logger.cpp $(OUTPUT_DIR)/logger.o $(LDFLAGS)
 	@./tests/test_logger
+
+	@echo "Building and running PrometheusExporter unit tests"
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_exporter tests/test_exporter.cpp $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(LDFLAGS)
+	@./tests/test_exporter
