@@ -136,7 +136,7 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 | exporter_address  |string   |  Prometheus Node Exporter监听地址 |
 |
 
-浏览器访问http://IP:9090/Metrics，可以查看监控指标。
+浏览器访问 <http://IP:9090/Metrics>，可以查看监控指标。
 
 # 4.QA
 
