@@ -1,6 +1,8 @@
 #include <cassert>
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 #include <nlohmann/json.hpp>
 #include "post.hpp"
 #include "filetrace.h"
@@ -80,6 +82,50 @@ int main()
     e.flag = SYS_write;
     // reuse filename and dirs from above
     assert(p.is_valid_event(e) == true);
+
+    // update_config must persist the whole config object, not the request body
+    {
+        PostData p2;
+        const std::string cfg_path = "/tmp/gala_test_update_config.json";
+        {
+            std::ofstream out(cfg_path);
+            out << "{\n"
+                << "  \"host_id\": \"1\",\n"
+                << "  \"domain_name\": \"zone1\",\n"
+                << "  \"ragdoll_api\": \"http://localhost:8080/conftrace/data\",\n"
+                << "  \"config_list\": [\"/etc/hosts\"]\n"
+                << "}\n";
+        }
+        p2.config_json = cfg_path;
+        {
+            std::ifstream in(cfg_path);
+            in >> p2.config_json_obj;
+        }
+        p2.conf_list = {"/etc/hosts"};
+
+        // add: unrelated keys must survive the write-back
+        json req;
+        req["conf"] = "/etc/profile";
+        req["action"] = "add";
+        assert(p2.update_config(req) == 0);
+
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved.value("host_id", std::string()) == "1");
+            assert(saved.value("domain_name", std::string()) == "zone1");
+            assert(saved.value("ragdoll_api", std::string()) ==
+                   "http://localhost:8080/conftrace/data");
+            assert(saved["config_list"].size() == 2);
+            assert(saved["config_list"][1] == "/etc/profile");
+        }
+        // in-memory state must stay in sync with the file
+        assert(p2.conf_list.size() == 2);
+        assert(p2.config_json_obj["config_list"].size() == 2);
+
+        unlink(cfg_path.c_str());
+    }
 
     std::cout << "All PostData unit tests passed." << std::endl;
     return 0;
