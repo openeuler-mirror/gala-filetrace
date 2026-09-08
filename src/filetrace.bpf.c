@@ -29,6 +29,34 @@ static __inline struct event* bpf_create_ringbuf(void)
     return e;
 }
 
+// Walk up to MAX_DEPTH levels of dentry->d_parent starting from `dentry`,
+// storing each parent directory name into e->dir1..dir4 (nearest parent
+// first). User space rebuilds the full path as /dir4/dir3/dir2/dir1/filename.
+static __always_inline void fill_parent_dirs(struct event *e, struct dentry *dentry)
+{
+    struct dentry *d_parent;
+    #pragma unroll
+    for (int i = 0; i < MAX_DEPTH; i++)
+    {
+        bpf_probe_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
+        if (d_parent == dentry) {
+            break;
+        }
+        struct qstr parent_name;
+        bpf_probe_read(&parent_name, sizeof(parent_name), &d_parent->d_name);
+        if(i == 0){
+            bpf_probe_read_str(&e->dir1, sizeof(e->dir1), parent_name.name);
+        }else if(i == 1){
+            bpf_probe_read_str(&e->dir2, sizeof(e->dir2), parent_name.name);
+        }else if(i == 2){
+            bpf_probe_read_str(&e->dir3, sizeof(e->dir3), parent_name.name);
+        }else if(i == 3){
+            bpf_probe_read_str(&e->dir4, sizeof(e->dir4), parent_name.name);
+        }
+        dentry = d_parent;
+    }
+}
+
 SEC("tracepoint/syscalls/sys_enter_openat")
 int enter_openat(const struct trace_event_raw_sys_enter *ctx)
 {
@@ -165,26 +193,7 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&dentry, sizeof(dentry), &path.dentry);
     bpf_probe_read(&pathname, sizeof(pathname), &dentry->d_name);
 
-    struct dentry* d_parent;
-    #pragma unroll
-    for (int i = 0; i < MAX_DEPTH; i++) 
-    {
-        bpf_probe_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
-        if (d_parent == dentry) {
-            break;
-        }
-        //fix me 
-        if(i == 0){
-            bpf_probe_read(&e->dir1, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 1){
-            bpf_probe_read(&e->dir2, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 2){
-            bpf_probe_read(&e->dir3, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 3){
-            bpf_probe_read(&e->dir4, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }    
-        dentry = d_parent;
-    }
+    fill_parent_dirs(e, dentry);
     
     bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
     #ifdef GALA_DEBUG
@@ -308,30 +317,13 @@ int renameat2(const struct trace_event_raw_sys_enter *ctx)
     struct dentry* dentry;
     bpf_probe_read(&dentry, sizeof(dentry), (const void*)&pwd.dentry);
 
-    struct dentry* d_parent;
-
     unsigned int olddfd = (__u32)ctx->args[0];
     unsigned int newdfd = (__u32)ctx->args[2];
 
     if (newdfd == AT_FDCWD) {
-        #pragma unroll
-        for (int i = 0; i < MAX_DEPTH; i++) {
-            bpf_probe_read(&d_parent, sizeof(d_parent), (const void*)&dentry->d_parent);
-            if (d_parent == dentry) {
-                break;
-            }
-            //fix me 
-            if(i == 0){
-                bpf_probe_read(&e->dir1, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-            }else if(i == 1){
-                bpf_probe_read(&e->dir2, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-            }else if(i == 2){
-                bpf_probe_read(&e->dir3, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-            }else if(i == 3){
-                bpf_probe_read(&e->dir4, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-            }
-            dentry = d_parent;
-        }
+        // fill dir1..dir4 from the CWD chain so user space can resolve
+        // relative newpath arguments
+        fill_parent_dirs(e, dentry);
     }
 
     if (olddfd == AT_FDCWD) {
@@ -456,25 +448,7 @@ int BPF_PROG(trace_write, struct file *file, int mask)
     bpf_probe_read(&dentry, sizeof(dentry), &path.dentry);
     bpf_probe_read(&pathname, sizeof(pathname), &dentry->d_name);
 
-    struct dentry* d_parent;
-    #pragma unroll
-    for (int i = 0; i < MAX_DEPTH; i++)
-    {
-        bpf_probe_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
-        if (d_parent == dentry) {
-            break;
-        }
-        if(i == 0){
-            bpf_probe_read(&e->dir1, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 1){
-            bpf_probe_read(&e->dir2, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 2){
-            bpf_probe_read(&e->dir3, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 3){
-            bpf_probe_read(&e->dir4, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }
-        dentry = d_parent;
-    }
+    fill_parent_dirs(e, dentry);
 
     bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
     #ifdef GALA_DEBUG
@@ -560,26 +534,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&dentry, sizeof(dentry), &path.dentry);
     bpf_probe_read(&pathname, sizeof(pathname), &dentry->d_name);
 
-    struct dentry* d_parent;
-    #pragma unroll
-    for (int i = 0; i < MAX_DEPTH; i++) 
-    {
-        bpf_probe_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
-        if (d_parent == dentry) {
-            break;
-        }
-        //fix me 
-        if(i == 0){
-            bpf_probe_read(&e->dir1, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 1){
-            bpf_probe_read(&e->dir2, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 2){
-            bpf_probe_read(&e->dir3, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }else if(i == 3){
-            bpf_probe_read(&e->dir4, sizeof(d_parent->d_iname), (const void*)&d_parent->d_iname);
-        }    
-        dentry = d_parent;
-    }
+    fill_parent_dirs(e, dentry);
 
     bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
     #ifdef GALA_DEBUG
