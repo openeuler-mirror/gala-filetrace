@@ -68,6 +68,17 @@ static void test_add_counter_and_inc()
     std::cout << "  PASS: add_counter and inc_counter" << std::endl;
 }
 
+// ---- Test: get_full_path with all dirs ----
+static void test_get_full_path_all_dirs()
+{
+    PrometheusExporter exp("127.0.0.1:19094", 30);
+    struct event e = make_event(1, 0, "cmd", "file.txt", "dir1", "dir2", "dir3", "dir4",
+                                SYS_write, 0, 0, 100);
+    std::string path = exp.get_full_path(&e);
+    assert(path == "/dir4/dir3/dir2/dir1/file.txt");
+
+    std::cout << "  PASS: get_full_path with all dirs" << std::endl;
+}
 
 int main()
 {
@@ -76,6 +87,7 @@ int main()
     test_constructor_valid();
     test_constructor_empty_address();
     test_add_counter_and_inc();
+    test_get_full_path_all_dirs();
 
     std::cout << "All PrometheusExporter unit tests passed." << std::endl;
     return 0;
