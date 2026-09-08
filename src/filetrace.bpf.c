@@ -230,7 +230,8 @@ static __always_inline int handle_rename(struct event *e,
 // rename(const char *oldpath, const char *newpath)
 // args[0]: oldpath (const char *)
 // args[1]: newpath (const char *)
-#ifdef __x86_64__
+// Use __TARGET_ARCH_x86 which is passed via -D flag by the Makefile
+#ifdef __TARGET_ARCH_x86
 SEC("tracepoint/syscalls/sys_enter_rename")
 int rename(const struct trace_event_raw_sys_enter *ctx)
 {
