@@ -644,35 +644,43 @@ std::string PostData::get_loginip_by_username(const std::string& username)
     endutxent();
     return clientip;
 }
-int PostData::update_config(const json &j) 
+int PostData::update_config(const json &j)
 {
     LOG_INFO("Updating configuration with JSON: " + j.dump());
     std::lock_guard<std::mutex> lk(config_mutex);
-    if (j.contains("conf")) {
-        std::string conf = j["conf"];
-        std::string action = j["action"];
-        if (action == "add") {
-            conf_list.push_back(conf);
-        } else if (action == "remove") {
-            conf_list.erase(std::remove(conf_list.begin(), conf_list.end(), conf), conf_list.end());
-        } else {
-            LOG_ERROR("Unknown action: " + action);
-            return -1; 
-        }
-    }else {
+    if (!j.contains("conf")) {
         LOG_ERROR("JSON does not contain 'conf' key.");
-        return -1; 
-    }
-    //write to file
-    std::ofstream file(config_json);
-    if (!file.is_open()) {
-        LOG_ERROR("Could not open config file for writing: " + config_json);
         return -1;
     }
-    file << j.dump(4);
-    file.close();
+
+    std::string conf = j["conf"];
+    std::string action = j["action"];
+    if (action == "add") {
+        conf_list.push_back(conf);
+    } else if (action == "remove") {
+        conf_list.erase(std::remove(conf_list.begin(), conf_list.end(), conf), conf_list.end());
+    } else {
+        LOG_ERROR("Unknown action: " + action);
+        return -1;
+    }
+    // Keep the parsed config object in sync and persist the WHOLE object.
+    config_json_obj["config_list"] = conf_list;
+    const std::string tmp_path = config_json + ".tmp";
+    {
+        std::ofstream file(tmp_path, std::ios::trunc);
+        if (!file.is_open()) {
+            LOG_ERROR("Could not open config file for writing: " + tmp_path);
+            return -1;
+        }
+        file << config_json_obj.dump(4) << "\n";
+        file.close();
+    }
+    if (std::rename(tmp_path.c_str(), config_json.c_str()) != 0) {
+        LOG_ERROR("Failed to rename " + tmp_path + " to " + config_json);
+        return -1;
+    }
     LOG_INFO("Configuration updated successfully.");
-    return 0; 
+    return 0;
 }
 void PostData::start_http_server() 
 {
