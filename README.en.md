@@ -97,59 +97,16 @@ Configuration description:
 | ragdoll_api       | string           |     |
 | publish       | bool         |     Whether to push to ragdoll |
 
-# 4. Kernel Upgrade
+# 4. QA
 
-In kernel 6.6.0, it's no longer possible to get the fd list from task_struct in a process. Therefore, this can only be implemented by adding interfaces to the kernel. The following diagram shows the method to get file names from eBPF probes:
-![Architecture Diagram](./img/getfilename.png)
+## 4.1 The following log appears in dmesg
 
-The following kernel upgrade is a reference example, specific execution should be based on the actual environment.
-
-## 4.1 Kernel Source Installation
-
-```bash
-# yum download kernel-source-6.6.0-72.6.0.56.oe2503.x86_64
-# rpm -ivh kernel-source-6.6.0-72.6.0.56.oe2503.x86_64*
-# cp /boot/config-6.6.0-72.6.0.56.oe2503.x86_64 .config
-```
-
-### Apply Patch
-
-```bash
-# patch -p1 < /path/to/my_patch.patch
-```
-
-## 4.2 Compilation
-
-```bash
-# make O=out
-```
-
-## 4.3 Install Modules
-
-```bash
-# make O=out modules_install
-```
-
-Default installation to /lib/modules/
-
-## 4.4 Install Kernel Image
-
-```bash
-# make O=out install
-```
-
-Install vmlinuz, System.map, config, etc. to /boot/
-
-# 5.QA
-
-## 1.The following log appears in dmesg
-
-```text 
+```text
 permission error while running as root; try raising 'ulimit -l'? current value: 64.0 KiB.
  ```
 
 Solution：
 
-```bash 
+```bash
 # ulimit -l 819200  
 ```
