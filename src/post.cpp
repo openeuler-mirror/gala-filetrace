@@ -446,7 +446,7 @@ bool PostData::match_process_name(const std::vector<std::string> &skip_processes
     std::string cmd_tmp = cmd.substr(pos + 1);
     
     for (const auto &skip_cmd : skip_processes) {
-        //compre skip_cmd and cmd_tmp before 15 characters
+        // compare skip_cmd and cmd_tmp before 15 characters
 
         if (skip_cmd.size() > 15 || cmd_tmp.size() > 15) {
             if (skip_cmd.compare(0, 15, cmd_tmp, 0, 15) == 0) {
@@ -699,7 +699,7 @@ void PostData::start_http_server()
         j["conf_list"] = conf_list;
         res.set_content(j.dump(2), "application/json");
     });
-    // New endpoint: return one events from evnet queue 
+    // New endpoint: return one events from event queue
     if(cache_data) {
         LOG_INFO("API monitor file status is enabled, caching events for API access.");
         svr.Get("/monitor_file_status", [this](const httplib::Request& req, httplib::Response& res) {
