@@ -648,13 +648,14 @@ int PostData::update_config(const json &j)
 {
     LOG_INFO("Updating configuration with JSON: " + j.dump());
     std::lock_guard<std::mutex> lk(config_mutex);
-    if (!j.contains("conf")) {
-        LOG_ERROR("JSON does not contain 'conf' key.");
+    if (!j.is_object() || !j.contains("conf") || !j["conf"].is_string() ||
+        !j.contains("action") || !j["action"].is_string()) {
+        LOG_ERROR("JSON must contain string fields 'conf' and 'action'.");
         return -1;
     }
 
-    std::string conf = j["conf"];
-    std::string action = j["action"];
+    const std::string conf = j["conf"].get<std::string>();
+    const std::string action = j["action"].get<std::string>();
     if (action == "add") {
         conf_list.push_back(conf);
     } else if (action == "remove") {
@@ -682,23 +683,46 @@ int PostData::update_config(const json &j)
     LOG_INFO("Configuration updated successfully.");
     return 0;
 }
-void PostData::start_http_server() 
+
+void PostData::handle_update_config_request(const std::string &body, httplib::Response &res)
 {
-    LOG_INFO("Starting HTTP Server.");
-    httplib::Server svr;
-    svr.Post("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
-        auto j = json::parse(req.body);
-        //body {"conf": "value", "action": "add|remove"}
-        std::string value = j["key"];
-        std::string action = j["action"];
-        int ret = update_config(j);
-        if (ret != 0) {
+    try {
+        const json j = json::parse(body);
+        if (!j.is_object() || !j.contains("conf") || !j["conf"].is_string() ||
+            !j.contains("action") || !j["action"].is_string()) {
+            res.status = 400;
+            res.set_content("JSON must contain string fields 'conf' and 'action'", "text/plain");
+            return;
+        }
+
+        const std::string action = j["action"].get<std::string>();
+        if (action != "add" && action != "remove") {
+            res.status = 400;
+            res.set_content("'action' must be 'add' or 'remove'", "text/plain");
+            return;
+        }
+
+        if (update_config(j) != 0) {
             res.status = 500;
             res.set_content("Failed to update configuration", "text/plain");
             return;
         }
         res.status = 200;
         res.set_content("Configuration updated successfully", "text/plain");
+    } catch (const json::exception &e) {
+        LOG_ERROR("Invalid configuration update JSON: " + std::string(e.what()));
+        res.status = 400;
+        res.set_content("Invalid JSON request", "text/plain");
+    }
+}
+
+void PostData::start_http_server()
+{
+    LOG_INFO("Starting HTTP Server.");
+    httplib::Server svr;
+    svr.Post("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
+        //body {"conf": "value", "action": "add|remove"}
+        handle_update_config_request(req.body, res);
     });
     svr.Get("/filetrace", [this](const httplib::Request& req, httplib::Response& res) {
         json j;
