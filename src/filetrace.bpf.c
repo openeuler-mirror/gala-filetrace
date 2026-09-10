@@ -84,7 +84,7 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     // args[2]: flags (int)
     // args[3]: mode (mode_t) - only when O_CREAT is specified in flags
     const char *pathname_ptr = (const char *)ctx->args[1];
-    bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
+    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), pathname_ptr);
     #ifdef GALA_DEBUG
     bpf_printk("openat detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
@@ -117,7 +117,7 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     // args[1]: pathname (const char *)
     // args[2]: flags (int)
     const char *pathname_ptr = (const char *)ctx->args[1];
-    bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
+    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), pathname_ptr);
     #ifdef GALA_DEBUG
     bpf_printk("unlinkat detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
