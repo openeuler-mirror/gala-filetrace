@@ -137,6 +137,31 @@ deps:
 		fi \
 	done
 
+RPMBUILD_DIR ?= $(HOME)/rpmbuild
+SPEC_FILE := config/gala-filetrace.spec
+SOURCE_URL := https://raw.atomgit.com/openeuler/gala-filetrace/archive/refs/heads/master.zip
+
+# Build the RPM package via the spec file in config/.
+# The source archive (master.zip) is fetched into $(RPMBUILD_DIR)/SOURCES
+# when missing, then handed to rpmbuild. Resulting packages land in
+# $(RPMBUILD_DIR)/RPMS/<arch>/.
+.PHONY: rpm
+rpm:
+	@echo "Preparing rpmbuild tree in $(RPMBUILD_DIR) ..."
+	@mkdir -p $(RPMBUILD_DIR)/SOURCES
+	@if [ ! -s $(RPMBUILD_DIR)/SOURCES/master.zip ]; then \
+		echo "Fetching source archive from $(SOURCE_URL) ..."; \
+		wget -O $(RPMBUILD_DIR)/SOURCES/master.zip.part $(SOURCE_URL) && \
+		mv $(RPMBUILD_DIR)/SOURCES/master.zip.part $(RPMBUILD_DIR)/SOURCES/master.zip; \
+	else \
+		echo "Using existing source archive $(RPMBUILD_DIR)/SOURCES/master.zip"; \
+	fi
+	@echo "Running rpmbuild -ba $(SPEC_FILE) ..."
+	@rpmbuild -ba --define "_topdir $(RPMBUILD_DIR)" $(SPEC_FILE)
+	@echo ""
+	@echo "RPM package(s) created in $(RPMBUILD_DIR)/RPMS/ :"
+	@ls -lh $(RPMBUILD_DIR)/RPMS/
+
 .PHONY: test
 test: all
 	@echo "Building and running PostData unit tests"
