@@ -237,11 +237,10 @@ int PostData::load_config(const std::string& configFile)
 
 int PostData::send(struct event e) 
 {
-    LOG_DEBUG("Send event to Aops.");
     if(!is_valid_event(e)) {
-        LOG_ERROR("Skip event detected, skipping.");
         return 0; 
     }
+    LOG_DEBUG("Send event to Aops.");
     exporter_ptr->set_metrics(e);
     print_event(&e);
     std::string data = convert_to_string(e);

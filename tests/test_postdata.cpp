@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include "post.hpp"
 #include "filetrace.h"
+#include "logger.hpp"
 
 using json = nlohmann::json;
 
@@ -82,6 +83,23 @@ int main()
     e.flag = SYS_write;
     // reuse filename and dirs from above
     assert(p.is_valid_event(e) == true);
+
+    // Rejected events must not write a log entry: the logger's write is also
+    // observed by the BPF program and would otherwise feed events back into
+    // this path indefinitely.
+    {
+        const std::string log_path = "/tmp/gala_test_filtered_event.log";
+        unlink(log_path.c_str());
+        Logger::init(log_path, "info", 0);
+
+        struct event rejected_event{};
+        assert(p.send(rejected_event) == 0);
+
+        std::ifstream log(log_path, std::ios::binary | std::ios::ate);
+        assert(log.is_open());
+        assert(log.tellg() == 0);
+        unlink(log_path.c_str());
+    }
 
     // update_config must persist the whole config object, not the request body
     {

@@ -95,13 +95,22 @@ int main(int argc, char **argv)
 
     libbpf_set_print(libbpf_print_fn);
 
-    // Load and verify the eBPF program
-    skel = filetrace_bpf__open_and_load();
+    // Open the skeleton first so the tracer's TGID can be written to rodata
+    // before the BPF object is loaded and verified.
+    skel = filetrace_bpf__open();
     if (!skel) 
     {
-        std::cerr << "Failed to open and load eBPF skeleton!" << std::endl;
+        std::cerr << "Failed to open eBPF skeleton!" << std::endl;
         std::cerr << "Error: " << strerror(errno) << std::endl;
         return errno;
+    }
+    skel->rodata->self_tgid = static_cast<__u32>(getpid());
+    err = filetrace_bpf__load(skel);
+    if (err)
+    {
+        std::cerr << "Failed to load eBPF skeleton: " << strerror(-err) << std::endl;
+        filetrace_bpf__destroy(skel);
+        return err;
     }
     //init PostData instance
     postdata_i = new PostData(skel, config_file, verbose, file_path); 

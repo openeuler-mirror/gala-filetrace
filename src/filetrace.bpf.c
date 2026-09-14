@@ -6,6 +6,11 @@
 
 char _license[] SEC("license") = "GPL";
 
+// Set by user space before the BPF object is loaded. Events emitted by the
+// tracer itself must not be sent back to user space, otherwise logging while
+// handling an event can recursively generate more file events.
+const volatile __u32 self_tgid = 0;
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, u32);
@@ -21,6 +26,11 @@ struct {
 
 static __inline struct event* bpf_create_ringbuf(void)
 {
+    __u32 current_tgid = bpf_get_current_pid_tgid() >> 32;
+    if (self_tgid != 0 && current_tgid == self_tgid) {
+        return NULL;
+    }
+
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
     if (!e) {
         return NULL;
