@@ -78,6 +78,7 @@ class PostData {
         std::mutex config_mutex; 
         std::vector<std::string> split_stat_line(const std::string &line);
         void start_http_server();
+        void handle_update_config_request(const std::string &body, httplib::Response &res);
         int update_config(const json &j);
         bool is_valid_ip(const std::string& ip);
         bool compare_config_file(const vector<string> &v, const std::string &config);

@@ -142,6 +142,28 @@ int main()
         assert(p2.conf_list.size() == 2);
         assert(p2.config_json_obj["config_list"].size() == 2);
 
+        // The HTTP request contract uses conf/action. It must not try to read a
+        // non-existent "key", and client-side JSON errors must return 400.
+        httplib::Response response;
+        p2.handle_update_config_request(
+            R"({"conf":"/etc/bashrc","action":"add"})", response);
+        assert(response.status == 200);
+        assert(p2.conf_list.back() == "/etc/bashrc");
+
+        response = httplib::Response();
+        p2.handle_update_config_request("not-json", response);
+        assert(response.status == 400);
+
+        response = httplib::Response();
+        p2.handle_update_config_request(
+            R"({"conf":42,"action":"add"})", response);
+        assert(response.status == 400);
+
+        response = httplib::Response();
+        p2.handle_update_config_request(
+            R"({"conf":"/etc/profile"})", response);
+        assert(response.status == 400);
+
         unlink(cfg_path.c_str());
     }
 
