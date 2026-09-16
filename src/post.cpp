@@ -488,7 +488,6 @@ bool PostData::is_valid_event(struct event &e)
                 return false; 
             }
             break;
-        case SYS_copy_file_range:
         case SYS_rename:
         case SYS_renameat:
 
@@ -497,6 +496,11 @@ bool PostData::is_valid_event(struct event &e)
                 return false; 
             }
             break;       
+        // copy_file_range and write only carry the basename in filename and
+        // rebuild the path from dir1..dir4, so they must be matched against
+        // the full path - a basename never equals an entry of conf_list, which
+        // holds absolute paths.
+        case SYS_copy_file_range:
         case SYS_write:
             fullpath = get_full_path(&e);
             if(!compare_config_file(conf_list, fullpath)) {
