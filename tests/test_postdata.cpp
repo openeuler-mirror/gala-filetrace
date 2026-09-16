@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include "post.hpp"
 #include "filetrace.h"
+#include "logger.hpp"
 
 using json = nlohmann::json;
 
@@ -83,6 +84,23 @@ int main()
     // reuse filename and dirs from above
     assert(p.is_valid_event(e) == true);
 
+    // Rejected events must not write a log entry: the logger's write is also
+    // observed by the BPF program and would otherwise feed events back into
+    // this path indefinitely.
+    {
+        const std::string log_path = "/tmp/gala_test_filtered_event.log";
+        unlink(log_path.c_str());
+        Logger::init(log_path, "info", 0);
+
+        struct event rejected_event{};
+        assert(p.send(rejected_event) == 0);
+
+        std::ifstream log(log_path, std::ios::binary | std::ios::ate);
+        assert(log.is_open());
+        assert(log.tellg() == 0);
+        unlink(log_path.c_str());
+    }
+
     // update_config must persist the whole config object, not the request body
     {
         PostData p2;
@@ -123,6 +141,28 @@ int main()
         // in-memory state must stay in sync with the file
         assert(p2.conf_list.size() == 2);
         assert(p2.config_json_obj["config_list"].size() == 2);
+
+        // The HTTP request contract uses conf/action. It must not try to read a
+        // non-existent "key", and client-side JSON errors must return 400.
+        httplib::Response response;
+        p2.handle_update_config_request(
+            R"({"conf":"/etc/bashrc","action":"add"})", response);
+        assert(response.status == 200);
+        assert(p2.conf_list.back() == "/etc/bashrc");
+
+        response = httplib::Response();
+        p2.handle_update_config_request("not-json", response);
+        assert(response.status == 400);
+
+        response = httplib::Response();
+        p2.handle_update_config_request(
+            R"({"conf":42,"action":"add"})", response);
+        assert(response.status == 400);
+
+        response = httplib::Response();
+        p2.handle_update_config_request(
+            R"({"conf":"/etc/profile"})", response);
+        assert(response.status == 400);
 
         unlink(cfg_path.c_str());
     }

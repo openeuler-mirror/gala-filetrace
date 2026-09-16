@@ -6,6 +6,11 @@
 
 char _license[] SEC("license") = "GPL";
 
+// Set by user space before the BPF object is loaded. Events emitted by the
+// tracer itself must not be sent back to user space, otherwise logging while
+// handling an event can recursively generate more file events.
+const volatile __u32 self_tgid = 0;
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, u32);
@@ -21,6 +26,11 @@ struct {
 
 static __inline struct event* bpf_create_ringbuf(void)
 {
+    __u32 current_tgid = bpf_get_current_pid_tgid() >> 32;
+    if (self_tgid != 0 && current_tgid == self_tgid) {
+        return NULL;
+    }
+
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(struct event), 0);
     if (!e) {
         return NULL;
@@ -84,7 +94,7 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     // args[2]: flags (int)
     // args[3]: mode (mode_t) - only when O_CREAT is specified in flags
     const char *pathname_ptr = (const char *)ctx->args[1];
-    bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
+    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), pathname_ptr);
     #ifdef GALA_DEBUG
     bpf_printk("openat detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
@@ -117,7 +127,7 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     // args[1]: pathname (const char *)
     // args[2]: flags (int)
     const char *pathname_ptr = (const char *)ctx->args[1];
-    bpf_probe_read_user(&e->filename, sizeof(e->filename), pathname_ptr);
+    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), pathname_ptr);
     #ifdef GALA_DEBUG
     bpf_printk("unlinkat detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
