@@ -4,11 +4,14 @@
 #include <map>
 #include <thread>
 #include <chrono>
+#include <atomic>
+#include <mutex>
 
 #include <prometheus/registry.h>
 #include <prometheus/exposer.h>
 #include <prometheus/counter.h>
 #include <prometheus/gauge.h>
+#include <prometheus/family.h>
 #include <prometheus/histogram.h>
 #include <prometheus/summary.h>
 #include "logger.hpp"
@@ -48,6 +51,7 @@ public:
     void stop_cache_timeout_thread();
 private:
     std::unique_ptr<prometheus::Exposer> exposer;
+    prometheus::Family<prometheus::Gauge>* info_gauge_family = nullptr;
     //std::map<std::string, prometheus::Counter*> op_counter_cache;
     std::map<std::string, prometheus::Gauge*> gauge_cache;
     std::map<std::string, std::string> gauge_cache_timestamps;

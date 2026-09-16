@@ -146,11 +146,13 @@ void PrometheusExporter::set_metrics(struct event& e)
             LOG_INFO("Reusing existing gauge for PID: " + pid_gauge_key);
             pid_gauge = it->second;
         } else {
-            pid_gauge = &add_gauge(
-                "filetrace_info_record",
-                "filetrace info",
-                detailed_labels
-            );
+            if (!info_gauge_family) {
+                info_gauge_family = &prometheus::BuildGauge()
+                    .Name("filetrace_info_record")
+                    .Help("filetrace info")
+                    .Register(*registry);
+            }
+            pid_gauge = &info_gauge_family->Add(detailed_labels);
             gauge_cache[pid_gauge_key] = pid_gauge;
         }
 
@@ -177,15 +179,10 @@ void PrometheusExporter::task_gauge_cache_timeout() {
             if (now - timestamp > cache_timeout_seconds) { 
                 auto gauge_it = gauge_cache.find(key);
                 if (gauge_it != gauge_cache.end()) {
-                    try {
-                        prometheus::Gauge* g = gauge_it->second;
-                        if (g) {
-                            g->Set(0.0);
-                        }
-                    } 
-                    catch (...) 
-                    {
-                        LOG_ERROR("Error setting gauge to 0 for key: " + key);
+                    // The Family owns the gauge; erasing the cached pointer alone
+                    // leaves the old labeled series registered and exported.
+                    if (info_gauge_family && gauge_it->second) {
+                        info_gauge_family->Remove(gauge_it->second);
                     }
                     gauge_cache.erase(key);
                     LOG_INFO("Removed stale gauge from cache: " + key);

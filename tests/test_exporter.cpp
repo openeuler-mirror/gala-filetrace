@@ -80,6 +80,36 @@ static void test_get_full_path_all_dirs()
     std::cout << "  PASS: get_full_path with all dirs" << std::endl;
 }
 
+static size_t info_metric_count(PrometheusExporter& exp)
+{
+    size_t count = 0;
+    for (const auto& family : exp.registry->Collect()) {
+        if (family.name == "filetrace_info_record") {
+            count += family.metric.size();
+        }
+    }
+    return count;
+}
+
+// Expiration must remove the series from the Registry, including after the
+// same PID returns with a new timestamp label.
+static void test_expired_gauge_removed()
+{
+    PrometheusExporter exp("127.0.0.1:19095", 0);
+    auto e = make_event(123, 1, "cmd", "file.txt", nullptr, nullptr,
+                        nullptr, nullptr, SYS_openat, 0, 0, 100);
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        exp.set_metrics(e);
+        assert(info_metric_count(exp) == 1);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (info_metric_count(exp) != 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        assert(info_metric_count(exp) == 0);
+    }
+    std::cout << "  PASS: expired gauge removed from Registry across repeated cycles" << std::endl;
+}
+
 int main()
 {
     std::cout << "Running PrometheusExporter unit tests..." << std::endl;
@@ -88,6 +118,7 @@ int main()
     test_constructor_empty_address();
     test_add_counter_and_inc();
     test_get_full_path_all_dirs();
+    test_expired_gauge_removed();
 
     std::cout << "All PrometheusExporter unit tests passed." << std::endl;
     return 0;
