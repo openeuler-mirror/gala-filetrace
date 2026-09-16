@@ -67,6 +67,89 @@ static __always_inline void fill_parent_dirs(struct event *e, struct dentry *den
     }
 }
 
+// Resolve the base directory dentry for a *at() syscall: AT_FDCWD means
+// "relative to the process CWD", any other non-negative value is a directory
+// fd. Returns NULL when the base cannot be resolved, in which case the caller
+// leaves the dir fields empty.
+static __always_inline struct dentry *resolve_base_dentry(struct task_struct *t, int dfd)
+{
+    struct dentry *base = NULL;
+    if (dfd == AT_FDCWD) {
+        struct fs_struct *fs = NULL;
+        struct path pwd;
+        __builtin_memset(&pwd, 0, sizeof(pwd));
+        bpf_probe_read(&fs, sizeof(fs), &t->fs);
+        if (!fs) {
+            return NULL;
+        }
+        bpf_probe_read(&pwd, sizeof(pwd), &fs->pwd);
+        bpf_probe_read(&base, sizeof(base), &pwd.dentry);
+    } else {
+        if (dfd < 0) {
+            return NULL;
+        }
+        struct files_struct *files = NULL;
+        struct fdtable *fdt = NULL;
+        struct file **fd_array = NULL;
+        struct file *file = NULL;
+        struct path fpath;
+        bpf_probe_read(&files, sizeof(files), &t->files);
+        if (!files) {
+            return NULL;
+        }
+        bpf_probe_read(&fdt, sizeof(fdt), &files->fdt);
+        if (!fdt) {
+            return NULL;
+        }
+        bpf_probe_read(&fd_array, sizeof(fd_array), &fdt->fd);
+        if (!fd_array) {
+            return NULL;
+        }
+        bpf_probe_read(&file, sizeof(file), &fd_array[dfd]);
+        if (!file) {
+            return NULL;
+        }
+        __builtin_memset(&fpath, 0, sizeof(fpath));
+        bpf_probe_read(&fpath, sizeof(fpath), &file->f_path);
+        bpf_probe_read(&base, sizeof(base), &fpath.dentry);
+    }
+    return base;
+}
+
+// Store the name of `dentry` itself into e->dir1 and then walk up to
+// MAX_DEPTH-1 parents into dir2..dir4. Used for *at() syscalls whose pathname
+// is relative to a base directory: unlike fill_parent_dirs() — which starts
+// from the *file* dentry and therefore skips it — the base directory here is
+// itself part of the path.
+static __always_inline void fill_dir_chain(struct event *e, struct dentry *dentry)
+{
+    if (!dentry) {
+        return;
+    }
+    struct qstr name;
+    bpf_probe_read(&name, sizeof(name), &dentry->d_name);
+    bpf_probe_read_str(&e->dir1, sizeof(e->dir1), name.name);
+
+    struct dentry *d_parent;
+    #pragma unroll
+    for (int i = 0; i < MAX_DEPTH - 1; i++)
+    {
+        bpf_probe_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
+        if (d_parent == dentry) {
+            break;
+        }
+        bpf_probe_read(&name, sizeof(name), &d_parent->d_name);
+        if(i == 0){
+            bpf_probe_read_str(&e->dir2, sizeof(e->dir2), name.name);
+        }else if(i == 1){
+            bpf_probe_read_str(&e->dir3, sizeof(e->dir3), name.name);
+        }else if(i == 2){
+            bpf_probe_read_str(&e->dir4, sizeof(e->dir4), name.name);
+        }
+        dentry = d_parent;
+    }
+}
+
 SEC("tracepoint/syscalls/sys_enter_openat")
 int enter_openat(const struct trace_event_raw_sys_enter *ctx)
 {
@@ -128,6 +211,14 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     // args[2]: flags (int)
     const char *pathname_ptr = (const char *)ctx->args[1];
     bpf_probe_read_user_str(&e->filename, sizeof(e->filename), pathname_ptr);
+    // A relative pathname is resolved against its base directory (dfd, or the
+    // CWD when dfd is AT_FDCWD). Store that chain in dir1..dir4 so user space
+    // can rebuild the full path; absolute pathnames carry their own path and
+    // need no base directory.
+    if (e->filename[0] != '/') {
+        int dfd = (__s32)ctx->args[0];
+        fill_dir_chain(e, resolve_base_dentry(t, dfd));
+    }
     #ifdef GALA_DEBUG
     bpf_printk("unlinkat detected: pid=%u, ppid=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
