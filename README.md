@@ -85,12 +85,16 @@ gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中�
 ### 3.2.1 rpm 构建
 
 ```bash
+# 方式一：make rpm（自动下载源码包并执行 rpmbuild）
+make rpm
+
+# 方式二：手动执行
 # wget -O ~/rpmbuild/SOURCES/master.zip https://raw.atomgit.com/openeuler/gala-filetrace/archive/refs/heads/master.zip
 # git clone https://atomgit.com/openeuler/gala-filetrace.git
 # rpmbuild -ba config/gala-filetrace.spec  
 ```
 
-构建成功后，在/root/rpmbuild/RPMS/\<arch>目录下存在gala-filetrace的rpm包。
+构建成功后，在~/rpmbuild/RPMS/\<arch>目录下存在gala-filetrace的rpm包。
 
 ## 3.3 安装
 
