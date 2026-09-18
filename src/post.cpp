@@ -400,7 +400,9 @@ std::string PostData::convert_to_string(struct event &e)
     json_data["cluster_id"] = cluster_id;  
     json_data["flag"] = e.flag;
     json_data["syscall"] = nr_map[e.flag];
-    if(e.flag == SYS_write)
+    // SYS_write and SYS_copy_file_range are matched against the rebuilt full
+    // path (see is_valid_event), so report the same string that was matched.
+    if(e.flag == SYS_write || e.flag == SYS_copy_file_range)
     {
         json_data["file"] = get_full_path(&e);
     } else {
