@@ -142,6 +142,20 @@ int main()
         assert(p2.conf_list.size() == 2);
         assert(p2.config_json_obj["config_list"].size() == 2);
 
+	// remove: must also preserve unrelated keys
+	json req2;
+	req2["conf"] = "/etc/profile";
+	req2["action"] = "remove";
+	assert(p2.update_config(req2) == 0);
+	{
+	    std::ifstream in(cfg_path);
+	    json saved;
+	    in >> saved;
+	    assert(saved["config_list"].size() == 1);
+	    assert(saved["config_list"][0] == "/etc/hosts");
+	    assert(saved.value("host_id", std::string()) == "1");
+	}
+
         // The HTTP request contract uses conf/action. It must not try to read a
         // non-existent "key", and client-side JSON errors must return 400.
         httplib::Response response;
