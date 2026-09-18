@@ -84,6 +84,24 @@ int main()
     // reuse filename and dirs from above
     assert(p.is_valid_event(e) == true);
 
+    // copy_file_range events carry only the basename in filename and rebuild
+    // the path from dir1..dir4, so they must be matched against the full path.
+    // Comparing the bare basename with an absolute conf_list entry silently
+    // dropped every cp event.
+    struct event cfr{};
+    cfr.pid = 100;
+    cfr.flag = SYS_copy_file_range;
+    strncpy(cfr.dir1, "etc", sizeof(cfr.dir1) - 1);
+    strncpy(cfr.filename, "hosts", sizeof(cfr.filename) - 1);
+
+    p.conf_list = {"/etc/hosts"};
+    assert(p.is_valid_event(cfr) == true);
+
+    // a copy destination outside the monitored list must still be rejected
+    strncpy(cfr.filename, "shadow", sizeof(cfr.filename) - 1);
+    assert(p.is_valid_event(cfr) == false);
+    strncpy(cfr.filename, "hosts", sizeof(cfr.filename) - 1);
+
     // Rejected events must not write a log entry: the logger's write is also
     // observed by the BPF program and would otherwise feed events back into
     // this path indefinitely.
