@@ -226,36 +226,74 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-//for copy command
-// copy_file_range(int fd_in, loff_t *off_in, int fd_out, loff_t *off_out, size_t len, unsigned int flags)
-// args[0]: fd_in (int)
-// args[1]: off_in (loff_t *) 
-// args[2]: fd_out (int)
-// args[3]: off_out (loff_t *) 
-// args[4]: len (size_t)
-// args[5]: flags (unsigned int)
-
-SEC("tracepoint/syscalls/sys_enter_copy_file_range")
-int copy_file_range(const struct trace_event_raw_sys_enter *ctx)    
+// Fill an event for the destination file of a copy operation: pid/ppid/cmd,
+// inode and the path rebuilt from the dentry chain (dir1..dir4 hold the parent
+// directories, filename the basename). Shared by the fd based and the file
+// based capture paths below.
+static __always_inline struct event *create_file_event(struct file *file, int flag)
 {
-    struct task_struct* t;
-    struct task_struct* p;
-
     struct event *e = bpf_create_ringbuf();
-    if(!e) {
-        return 0;
+    if (!e) {
+        return NULL;
     }
-
-    e->flag = SYS_copy_file_range;
+    e->flag = flag;
 
     u64 uid_gid = bpf_get_current_uid_gid();
-    u32 uid = (u32)uid_gid;        // low 32 bit is UID
+    u32 uid = (u32)uid_gid;         // low 32 bit is UID
     u32 gid = (u32)(uid_gid >> 32); // high 32 bit is GID
     bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
 
+    struct task_struct *t = (struct task_struct*)bpf_get_current_task();
+    struct task_struct *p;
+
+    //fill pid cmd ppid pcmd
+    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
+    bpf_probe_read(&p, sizeof(p), &t->real_parent);
+    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
+    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
+
+    //get file ino from struct file
+    struct inode *inode = NULL;
+    bpf_probe_read(&inode, sizeof(inode), &file->f_inode);
+    bpf_probe_read(&e->i_ino, sizeof(inode->i_ino), &inode->i_ino);
+
+    umode_t mode = 0;
+    bpf_probe_read(&mode, sizeof(mode), &inode->i_mode);
+    //fixme
+    /*if(!S_ISREG(mode))
+    {
+        return 0;
+    }*/
+    //get filename from struct file
+    struct path path;
+    struct dentry* dentry;
+    struct qstr pathname;
+    bpf_probe_read(&path, sizeof(path), &file->f_path);
+    bpf_probe_read(&dentry, sizeof(dentry), &path.dentry);
+    bpf_probe_read(&pathname, sizeof(pathname), &dentry->d_name);
+
+    fill_parent_dirs(e, dentry);
+
+    bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
+    return e;
+}
+
+//for copy command
+// copy_file_range(int fd_in, loff_t *off_in, int fd_out, loff_t *off_out, size_t len, unsigned int flags)
+// args[0]: fd_in (int)
+// args[1]: off_in (loff_t *)
+// args[2]: fd_out (int)
+// args[3]: off_out (loff_t *)
+// args[4]: len (size_t)
+// args[5]: flags (unsigned int)
+
+SEC("tracepoint/syscalls/sys_enter_copy_file_range")
+int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
+{
     int fd = (__s32)ctx->args[2];
-    t = (struct task_struct*)bpf_get_current_task();
+    struct task_struct *t = (struct task_struct*)bpf_get_current_task();
 
     struct files_struct *f = NULL;
     struct fdtable *fdt = NULL;
@@ -268,35 +306,10 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&file_ptr, sizeof(file_ptr), &fd_array[fd]);
     file = file_ptr;
 
-    //fill pid cmd ppid pcmd
-    bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
-    bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
-    bpf_probe_read(&p, sizeof(p), &t->real_parent);
-    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
-    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
-
-    struct inode *inode = NULL;
-    bpf_probe_read(&inode, sizeof(inode), &file->f_inode);
-    bpf_probe_read(&e->i_ino, sizeof(inode->i_ino), &inode->i_ino);
-
-    umode_t mode = 0;
-    bpf_probe_read(&mode, sizeof(mode), &inode->i_mode);
-    //fixme 
-    /*if(!S_ISREG(mode))
-    {
+    struct event *e = create_file_event(file, SYS_copy_file_range);
+    if (!e) {
         return 0;
-    }*/
-    //get filename  
-    struct path path;
-    struct dentry* dentry;
-    struct qstr pathname;
-    bpf_probe_read(&path, sizeof(path), &file->f_path);
-    bpf_probe_read(&dentry, sizeof(dentry), &path.dentry);
-    bpf_probe_read(&pathname, sizeof(pathname), &dentry->d_name);
-
-    fill_parent_dirs(e, dentry);
-    
-    bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)pathname.name);
+    }
     #ifdef GALA_DEBUG
     bpf_printk("copy_file_range detected: PID=%u, PPID=%u, file='%s'\n", e->pid, e->ppid, e->filename);
     #endif
