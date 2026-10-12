@@ -53,6 +53,8 @@ static __always_inline void fill_parent_dirs(struct event *e, struct dentry *den
             break;
         }
         struct qstr parent_name;
+        // zero-init so a failed read cannot leave a garbage name pointer
+        __builtin_memset(&parent_name, 0, sizeof(parent_name));
         bpf_probe_read(&parent_name, sizeof(parent_name), &d_parent->d_name);
         if(i == 0){
             bpf_probe_read_str(&e->dir1, sizeof(e->dir1), parent_name.name);
@@ -245,18 +247,29 @@ static __always_inline struct event *create_file_event(struct file *file, int fl
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
 
     struct task_struct *t = (struct task_struct*)bpf_get_current_task();
-    struct task_struct *p;
+    struct task_struct *p = NULL;
 
     //fill pid cmd ppid pcmd
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
-    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
-    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
+    if (p) {
+        bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
+        bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
+    }
+
+    if (!file) {
+        bpf_ringbuf_discard(e, 0);
+        return NULL;
+    }
 
     //get file ino from struct file
     struct inode *inode = NULL;
     bpf_probe_read(&inode, sizeof(inode), &file->f_inode);
+    if (!inode) {
+        bpf_ringbuf_discard(e, 0);
+        return NULL;
+    }
     bpf_probe_read(&e->i_ino, sizeof(inode->i_ino), &inode->i_ino);
 
     umode_t mode = 0;
@@ -268,10 +281,16 @@ static __always_inline struct event *create_file_event(struct file *file, int fl
     }*/
     //get filename from struct file
     struct path path;
-    struct dentry* dentry;
+    struct dentry *dentry = NULL;
     struct qstr pathname;
+    __builtin_memset(&path, 0, sizeof(path));
+    __builtin_memset(&pathname, 0, sizeof(pathname));
     bpf_probe_read(&path, sizeof(path), &file->f_path);
     bpf_probe_read(&dentry, sizeof(dentry), &path.dentry);
+    if (!dentry) {
+        bpf_ringbuf_discard(e, 0);
+        return NULL;
+    }
     bpf_probe_read(&pathname, sizeof(pathname), &dentry->d_name);
 
     fill_parent_dirs(e, dentry);
@@ -300,11 +319,15 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
     struct file **fd_array = NULL;
     struct file *file = NULL;
     bpf_probe_read(&f, sizeof(f), &t->files);
-    bpf_probe_read(&fdt, sizeof(fdt), &f->fdt);
-    bpf_probe_read(&fd_array, sizeof(fd_array), &fdt->fd);
-    struct file *file_ptr = NULL;
-    bpf_probe_read(&file_ptr, sizeof(file_ptr), &fd_array[fd]);
-    file = file_ptr;
+    if (f) {
+        bpf_probe_read(&fdt, sizeof(fdt), &f->fdt);
+    }
+    if (fdt) {
+        bpf_probe_read(&fd_array, sizeof(fd_array), &fdt->fd);
+    }
+    if (fd_array) {
+        bpf_probe_read(&file, sizeof(file), &fd_array[fd]);
+    }
 
     struct event *e = create_file_event(file, SYS_copy_file_range);
     if (!e) {
