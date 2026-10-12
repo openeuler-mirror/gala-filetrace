@@ -107,7 +107,10 @@ void PrometheusExporter::set_metrics(struct event& e)
 {
     LOG_INFO("Setting metrics for event with filename: " + std::string(e.filename) + " and operation: " + std::string(nr_map[e.flag]));
     std::string filename = std::string(e.filename);
-    if(e.flag == SYS_write)
+    // Keep the label consistent with PostData::is_valid_event() and
+    // convert_to_string(): write and copy_file_range events only carry the
+    // basename and are matched/published through the rebuilt full path.
+    if(e.flag == SYS_write || e.flag == SYS_copy_file_range)
     {
         filename = get_full_path(&e);
     } else {
