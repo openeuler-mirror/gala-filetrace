@@ -102,6 +102,10 @@ int main()
     assert(p.is_valid_event(cfr) == false);
     strncpy(cfr.filename, "hosts", sizeof(cfr.filename) - 1);
 
+    // the reported path must be the string that was matched
+    json reported = json::parse(p.convert_to_string(cfr));
+    assert(reported["file"].get<std::string>() == "/etc/hosts");
+
     // Rejected events must not write a log entry: the logger's write is also
     // observed by the BPF program and would otherwise feed events back into
     // this path indefinitely.
