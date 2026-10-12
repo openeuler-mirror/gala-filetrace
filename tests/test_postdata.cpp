@@ -178,6 +178,18 @@ int main()
             assert(saved.value("host_id", std::string()) == "1");
         }
 
+        // unknown action must be rejected without touching the file
+        json req3;
+        req3["conf"] = "/etc/fstab";
+        req3["action"] = "frobnicate";
+        assert(p2.update_config(req3) == -1);
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 1);
+        }
+
         // The HTTP request contract uses conf/action. It must not try to read a
         // non-existent "key", and client-side JSON errors must return 400.
         httplib::Response response;
