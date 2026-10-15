@@ -1,6 +1,7 @@
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <unistd.h>
 #include <nlohmann/json.hpp>
@@ -115,12 +116,73 @@ int main()
         Logger::init(log_path, "info", 0);
 
         struct event rejected_event{};
-        assert(p.send(rejected_event) == 0);
+        assert(p.process_event(rejected_event) == 0);
 
         std::ifstream log(log_path, std::ios::binary | std::ios::ate);
         assert(log.is_open());
         assert(log.tellg() == 0);
         unlink(log_path.c_str());
+    }
+
+    // Rejected events must never reach any output or evict an accepted event,
+    // including in verbose mode. A null exporter also catches accidental sends.
+    {
+        PostData dispatch;
+        dispatch.cache_data = true;
+        dispatch.max_event_queue_size = 1;
+        dispatch.conf_list = {"/etc/hosts"};
+        struct event accepted{};
+        accepted.pid = 1;
+        accepted.flag = SYS_write;
+        strncpy(accepted.cmd, "writer", sizeof(accepted.cmd) - 1);
+        strncpy(accepted.dir1, "etc", sizeof(accepted.dir1) - 1);
+        strncpy(accepted.filename, "hosts", sizeof(accepted.filename) - 1);
+
+        json sentinel = {{"filename", "hosts"}};
+        for (bool verbose : {false, true}) {
+            dispatch.verbose = verbose;
+            dispatch.event_queue.push(sentinel);
+            std::ostringstream rejected_output;
+            auto *original = std::cout.rdbuf(rejected_output.rdbuf());
+
+            struct event unrelated = accepted;
+            strncpy(unrelated.filename, "shadow", sizeof(unrelated.filename) - 1);
+            assert(dispatch.process_event(unrelated) == 0);
+
+            dispatch.skip_processes = {"writer"};
+            assert(dispatch.process_event(accepted) == 0);
+            dispatch.skip_processes.clear();
+
+            struct event unsupported = accepted;
+            unsupported.flag = SYS_NR_MAX;
+            assert(dispatch.process_event(unsupported) == 0);
+
+            struct event invalid{};
+            assert(dispatch.process_event(invalid) == 0);
+            std::cout.rdbuf(original);
+            assert(rejected_output.str().empty());
+            assert(dispatch.get_events_from_queue(10) == json::array({sentinel}));
+        }
+
+        // Verbose mode prints accepted events without publishing or caching.
+        std::ostringstream printed;
+        auto *original = std::cout.rdbuf(printed.rdbuf());
+        assert(dispatch.process_event(accepted) == 0);
+        std::cout.rdbuf(original);
+        assert(printed.str().find("Filename: hosts") != std::string::npos);
+        assert(dispatch.get_events_from_queue(10).empty());
+
+        // Normal mode still caches accepted events when publishing is disabled.
+        dispatch.verbose = false;
+        dispatch.exporter_ptr = new PrometheusExporter("127.0.0.1:0", 30);
+        assert(dispatch.process_event(accepted) == 0);
+        auto cached = dispatch.get_events_from_queue(10);
+        assert(cached.size() == 1);
+        assert(cached[0]["filename"] == "hosts");
+
+        dispatch.cache_data = false;
+        assert(dispatch.process_event(accepted) == 0);
+        assert(dispatch.get_events_from_queue(10).empty());
     }
 
     // update_config must persist the whole config object, not the request body

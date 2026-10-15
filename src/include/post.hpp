@@ -56,7 +56,8 @@ class PostData {
         bool publish; // default is false
         json config_json_obj;
         int http_connect_init();
-        int send(struct event e);
+        // Single entry point: validate once before dispatching any event effects.
+        int process_event(struct event e);
         int exec_map_fd;
         static int WriteCallback(void* contents, size_t size, size_t nmemb, void* userp);
         int load_config(const std::string& configFile);
@@ -70,8 +71,6 @@ class PostData {
         void add_ptrace(json& j, const std::string cmd, int pid);
         std::string get_full_path(const struct event *event);
         std::string get_loginip_by_username(const std::string &username);
-        void print_event(const struct event *event);
-        void cache_event(const struct event *event);
         // Queue for storing events (FIFO) - protected by mutex
         std::queue<json> event_queue;
         std::mutex event_queue_mutex;
@@ -88,6 +87,9 @@ class PostData {
         json get_events_from_queue(int count = 10);
         bool is_valid_filename(const std::string &filename);
     private:
+        int send(struct event e);
+        void print_event(const struct event *event);
+        void cache_event(const struct event *event);
         filetrace_bpf *skel;
         size_t log_size; 
 };

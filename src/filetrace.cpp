@@ -44,18 +44,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return -1;
     }
     struct event *e = (struct event *)data;
-    #ifdef GALA_DEBUG
-    std::cout << "Command: " << e->cmd << ", PID: " << e->pid << ",filename: "
-              << std::string(e->filename)
-              << ", func: " << nr_map[e->flag] << std::endl; 
-    #endif
-    
-    if (postdata_i->verbose && postdata_i->is_valid_event(*e)) {
-        postdata_i->print_event(e);
-        return 0;
-    }
-    postdata_i->send(*e);
-    postdata_i->cache_event(e); 
+    postdata_i->process_event(*e);
     return 0;
 }
 
