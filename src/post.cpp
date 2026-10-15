@@ -425,11 +425,11 @@ bool PostData::compare_config_file(const vector<string> &v, const std::string &c
         } 
     }
 
+    std::lock_guard<std::mutex> lk(config_mutex);
     if (v.empty() || config.empty()) {
         return false; 
     }
 
-    std::lock_guard<std::mutex> lk(config_mutex);
     for (const auto& item : v) {
         if (item == config) {
             return true;
