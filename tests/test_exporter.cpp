@@ -94,9 +94,11 @@ static void test_add_histogram()
     h.Observe(7.0);
     h.Observe(99.0);
 
-    auto sum = h.sum();
-    assert(sum == 109.0);
-    assert(h.sample_count() == 3);
+    // The installed prometheus-cpp exposes no direct sum()/sample_count()
+    // accessors, so verify the observed values through Collect().
+    auto cm = h.Collect();
+    assert(cm.histogram.sample_count == 3);
+    assert(cm.histogram.sample_sum == 109.0);
 
     std::cout << "  PASS: add_histogram" << std::endl;
 }
@@ -233,6 +235,24 @@ static void test_destructor_stops_thread()
     std::cout << "  PASS: destructor stops thread without crash" << std::endl;
 }
 
+// ---- Test: set_metrics increments file_access_counter when configured ----
+static void test_set_metrics_file_access_counter()
+{
+    PrometheusExporter exp("127.0.0.1:19103", 30);
+    auto& c = exp.add_counter("file_access_total", "File access events", {});
+    exp.file_access_counter = &c;
+
+    struct event e = make_event(300, 1, "bash", "access.log", "var", "log", "", "",
+                                SYS_write, 0, 0, 7000);
+    exp.set_metrics(e);
+    assert(c.Value() == 1.0);
+
+    exp.set_metrics(e);
+    assert(c.Value() == 2.0);
+
+    std::cout << "  PASS: set_metrics increments file_access_counter" << std::endl;
+}
+
 int main()
 {
     std::cout << "Running PrometheusExporter unit tests..." << std::endl;
@@ -251,6 +271,7 @@ int main()
     test_set_metrics_openat();
     test_cache_timeout_thread();
     test_destructor_stops_thread();
+    test_set_metrics_file_access_counter();
 
     std::cout << "All PrometheusExporter unit tests passed." << std::endl;
     return 0;
