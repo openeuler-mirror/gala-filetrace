@@ -9,6 +9,11 @@
 #include "filetrace.h"
 #include "logger.hpp"
 
+// The filetrace.cpp handle_event() tests live in test_filetrace.cpp. That file
+// is included here (it defines no main() of its own) so they run inside this
+// binary without any Makefile changes.
+#include "test_filetrace.cpp"
+
 using json = nlohmann::json;
 
 int main()
@@ -277,6 +282,198 @@ int main()
         unlink(cfg_path.c_str());
     }
 
-    std::cout << "All PostData unit tests passed." << std::endl;
+    // load_config: full validation matrix
+    {
+        Logger::init("/tmp/gala_test_loadcfg.log", "info", 0);
+
+        const std::string good_cfg = "/tmp/gala_test_loadcfg_good.json";
+        {
+            std::ofstream out(good_cfg);
+            out << R"({
+  "host_id": "h1",
+  "domain_name": "d1",
+  "ragdoll_api": "http://127.0.0.1:1/api",
+  "config_list": ["/etc/hosts"],
+  "skip_processes_list": ["bash"],
+  "log_level": "debug",
+  "log_file": "/tmp/gala_test_loadcfg.out.log",
+  "server": "127.0.0.1"
+})";
+        }
+        PostData pc;
+        assert(pc.load_config(good_cfg) == 0);
+        assert(pc.host_id == "h1");
+        assert(pc.domain_name == "d1");
+        assert(pc.ragdoll_api == "http://127.0.0.1:1/api");
+        assert(pc.conf_list.size() == 1);
+        assert(pc.conf_list[0] == "/etc/hosts");
+        assert(pc.skip_processes.size() == 1);
+        assert(pc.skip_processes[0] == "bash");
+        assert(pc.server == "127.0.0.1");
+        assert(pc.port == 8080);
+        assert(pc.max_dir_level == 4);
+        assert(pc.log_level == "debug");
+
+        PostData pc2;
+        assert(pc2.load_config("/tmp/gala_test_loadcfg_missing.json") == -1);
+
+        const std::string bad_json = "/tmp/gala_test_loadcfg_badjson.json";
+        {
+            std::ofstream out(bad_json);
+            out << "not a json";
+        }
+        PostData pc3;
+        assert(pc3.load_config(bad_json) == -1);
+
+        const std::string empty_list = "/tmp/gala_test_loadcfg_emptylist.json";
+        {
+            std::ofstream out(empty_list);
+            out << R"({"host_id":"h","domain_name":"d","ragdoll_api":"u","config_list":[]})";
+        }
+        PostData pc4;
+        assert(pc4.load_config(empty_list) == -1);
+
+        const std::string rel_path = "/tmp/gala_test_loadcfg_relpath.json";
+        {
+            std::ofstream out(rel_path);
+            out << R"({"host_id":"h","domain_name":"d","ragdoll_api":"u","config_list":["etc/hosts"],"skip_processes_list":[]})";
+        }
+        PostData pc5;
+        assert(pc5.load_config(rel_path) == -1);
+
+        const std::string deep_path = "/tmp/gala_test_loadcfg_deeppath.json";
+        {
+            std::ofstream out(deep_path);
+            out << R"({"host_id":"h","domain_name":"d","ragdoll_api":"u","config_list":["/a/b/c/d/e/file"],"skip_processes_list":[]})";
+        }
+        PostData pc6;
+        assert(pc6.load_config(deep_path) == -1);
+
+        const std::string empty_host = "/tmp/gala_test_loadcfg_emptyhost.json";
+        {
+            std::ofstream out(empty_host);
+            out << R"({"host_id":"","domain_name":"d","ragdoll_api":"u","config_list":["/etc/hosts"],"skip_processes_list":[]})";
+        }
+        PostData pc7;
+        assert(pc7.load_config(empty_host) == -1);
+
+        const std::string bad_server = "/tmp/gala_test_loadcfg_badserver.json";
+        {
+            std::ofstream out(bad_server);
+            out << R"({"host_id":"h","domain_name":"d","ragdoll_api":"u","config_list":["/etc/hosts"],"skip_processes_list":[],"server":"300.1.1.1"})";
+        }
+        PostData pc8;
+        assert(pc8.load_config(bad_server) == -1);
+
+        const std::string no_api = "/tmp/gala_test_loadcfg_noapi.json";
+        {
+            std::ofstream out(no_api);
+            out << R"({"host_id":"h","domain_name":"d","config_list":["/etc/hosts"],"skip_processes_list":[]})";
+        }
+        PostData pc9;
+        assert(pc9.load_config(no_api) == -1);
+
+        unlink(good_cfg.c_str());
+        unlink(bad_json.c_str());
+        unlink(empty_list.c_str());
+        unlink(rel_path.c_str());
+        unlink(deep_path.c_str());
+        unlink(empty_host.c_str());
+        unlink(bad_server.c_str());
+        unlink(no_api.c_str());
+    }
+
+    // cache_event: disabled, and FIFO eviction beyond max_event_queue_size
+    {
+        PostData pc;
+        struct event ce;
+        memset(&ce, 0, sizeof(ce));
+        ce.ppid = 0;
+        ce.flag = SYS_write;
+        strncpy(ce.cmd, "bash", sizeof(ce.cmd) - 1);
+        strncpy(ce.filename, "f", sizeof(ce.filename) - 1);
+
+        // cache_data disabled: nothing is cached
+        pc.cache_data = false;
+        ce.pid = 1;
+        pc.cache_event(&ce);
+        assert(pc.get_events_from_queue(10).size() == 0);
+
+        // enabled: oldest event evicted once the queue exceeds max size
+        pc.cache_data = true;
+        pc.max_event_queue_size = 2;
+        for (unsigned int i = 2; i <= 4; ++i) {
+            ce.pid = i;
+            pc.cache_event(&ce);
+        }
+        auto arr = pc.get_events_from_queue(10);
+        assert(arr.is_array());
+        assert(arr.size() == 2);
+        assert(arr[0]["pid"] == 3);
+        assert(arr[1]["pid"] == 4);
+    }
+
+    // WriteCallback appends curl payload to the caller's buffer
+    {
+        std::string buf;
+        const char payload[] = "hello";
+        assert(PostData::WriteCallback(const_cast<char *>(payload), 1, 5, &buf) == 5);
+        assert(buf == "hello");
+    }
+
+    // get_username_by_uid / get_groupname_by_gid
+    {
+        PostData pc;
+        unsigned int uid = static_cast<unsigned int>(getuid());
+        assert(!pc.get_username_by_uid(uid).empty());
+        unsigned int uid_missing = 54321;
+        if (getpwuid(uid_missing) == nullptr) {
+            assert(pc.get_username_by_uid(uid_missing) == "54321");
+        }
+        unsigned int gid = static_cast<unsigned int>(getgid());
+        assert(!pc.get_groupname_by_gid(gid).empty());
+        unsigned int gid_missing = 54321;
+        if (getgrgid(gid_missing) == nullptr) {
+            assert(pc.get_groupname_by_gid(gid_missing) == "54321");
+        }
+    }
+
+    // get_procinfo_by_pid_from_system: own process and invalid pids
+    {
+        PostData pc;
+        struct pinfo_t pi;
+        memset(&pi, 0, sizeof(pi));
+        unsigned int my_pid = static_cast<unsigned int>(getpid());
+        assert(pc.get_procinfo_by_pid_from_system(&pi, my_pid) == 0);
+        assert(pi.pid == static_cast<unsigned int>(getppid()));
+        assert(strlen(pi.comm) > 0);
+
+        unsigned int zero_pid = 0;
+        assert(pc.get_procinfo_by_pid_from_system(&pi, zero_pid) == -1);
+        unsigned int huge_pid = PID_MAX_LIMIT + 1;
+        assert(pc.get_procinfo_by_pid_from_system(&pi, huge_pid) == -1);
+    }
+
+    // generate_proc_trace: invalid pid yields no entries, own pid walks up the chain
+    {
+        PostData pc;
+
+        json j1;
+        unsigned int bad_pid = 1;
+        pc.generate_proc_trace(bad_pid, j1);
+        assert(!j1.contains("ptrace") || j1["ptrace"].empty());
+
+        json j2;
+        unsigned int my_pid = static_cast<unsigned int>(getpid());
+        pc.generate_proc_trace(my_pid, j2);
+        assert(j2.contains("ptrace"));
+        assert(j2["ptrace"].size() >= 1);
+        assert(j2["ptrace"][0]["pid"] == static_cast<int>(my_pid));
+    }
+
+    // filetrace.cpp handle_event() tests (see test_filetrace.cpp)
+    run_filetrace_handle_event_tests();
+
+    std::cout << "All PostData and filetrace handle_event unit tests passed." << std::endl;
     return 0;
 }

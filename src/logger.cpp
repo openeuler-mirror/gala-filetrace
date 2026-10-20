@@ -88,6 +88,11 @@ void Logger::init(const std::string &filepath, const std::string &level, size_t 
             mkdir(dir.c_str(), 0755);
         }
     }
+    // Close before reopening: on libstdc++ calling open() on an already-open
+    // stream leaves failbit set, and every later write is silently dropped.
+    if (g_log_ofs.is_open()) {
+        g_log_ofs.close();
+    }
     g_log_ofs.open(filepath, std::ios::app);
     if (!g_log_ofs.is_open()) {
         std::cerr << "Logger: failed to open log file '" << filepath << "', logging to stderr" << std::endl;
