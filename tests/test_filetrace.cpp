@@ -74,14 +74,14 @@ static int run_filetrace_handle_event_tests()
         assert(arr.size() == 0);
     }
 
-    // verbose + invalid: falls through to send + cache_event
+    // verbose + invalid: dropped by validation, so nothing is printed, sent
+    // or cached (process_event() validates before dispatching any effect)
     struct event bad = make_event(200, "bash", "shadow", "etc", SYS_write, 0, 0);
     assert(handle_event(nullptr, &bad, sizeof(struct event)) == 0);
     {
         auto arr = post.get_events_from_queue(10);
         assert(arr.is_array());
-        assert(arr.size() == 1);
-        assert(arr[0]["pid"] == 200);
+        assert(arr.size() == 0);
     }
 
     // non-verbose valid: full path send + cache_event
