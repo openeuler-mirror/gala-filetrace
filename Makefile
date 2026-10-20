@@ -3,6 +3,8 @@ REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpfto
 REQUIRED_FILES := /usr/include/httplib.h
 
 SRC_DIR := src
+OUTPUT_DIR ?= output
+.DEFAULT_GOAL := all
 
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -11,7 +13,9 @@ else ifeq ($(ARCH),aarch64)
     TARGET_ARCH := arm64
 endif
 
-TARGETS := $(patsubst %.c,%.o,$(notdir $(wildcard $(SRC_DIR)/*.c)))
+TARGETS := $(patsubst $(SRC_DIR)/%.c,$(OUTPUT_DIR)/%.o,$(wildcard $(SRC_DIR)/*.c))
+CXX_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(OUTPUT_DIR)/%.o,$(wildcard $(SRC_DIR)/*.cpp))
+DEPFILES := $(TARGETS:.o=.d) $(CXX_OBJS:.o=.d)
 
 CFLAGS = -Wno-error 
 CFLAGS += -Wno-unknown-attributes
@@ -45,54 +49,47 @@ CLANG ?= clang
 CLANGXX ?= clang++
 LLC ?= llc
 
-OUTPUT_DIR ?= output
 BPF_OBJ := $(OUTPUT_DIR)/filetrace.bpf.o
 
 
-all: $(TARGETS) filetrace.skel.h filetrace.o exporter.o post.o logger.o filetrace
+all: filetrace
 
-.PHONY: clean
+.PHONY: all clean install deps
+.DELETE_ON_ERROR:
 
 clean:
 	@echo "Cleaning up ..."
-	@rm -rf $(OUTPUT_DIR) filetrace filetrace.o filetrace.skel.h
+	@rm -rf $(OUTPUT_DIR) filetrace filetrace.o filetrace.skel.h vmlinux.h
+	@rm -f tests/test_postdata tests/test_logger tests/test_exporter
  
-$(TARGETS): %.o: $(SRC_DIR)/%.c | $(OUTPUT_DIR)
+vmlinux.h:
+	@echo "Generating kernel type header ..."
+	@bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@.tmp && mv $@.tmp $@
+
+$(TARGETS): $(OUTPUT_DIR)/%.o: $(SRC_DIR)/%.c vmlinux.h | $(OUTPUT_DIR)
 	@echo "Compiling $< to $@ ..."
-	@bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
-	@#$(CLANG) -S $(CFLAGS) -D__TARGET_ARCH_$(TARGET_ARCH) -g -O2 -emit-llvm -c $<
-	@#$(LLC) -march=bpf -filetype=obj -o $(OUTPUT_DIR)/$@ ${@:.o=.ll}
-	@#rm ${@:.o=.ll}
-	@$(CLANG) -target bpf -D__TARGET_ARCH_$(TARGET_ARCH) $(CFLAGS) $(CINCLUDE) -g -O2 -c $< -o $(OUTPUT_DIR)/$@
+	@$(CLANG) -target bpf -D__TARGET_ARCH_$(TARGET_ARCH) $(CFLAGS) $(CINCLUDE) -MMD -MP -g -O2 -c $< -o $@
 
 # create skeleton include file
 filetrace.skel.h: $(BPF_OBJ)
 	@echo "Generating skeleton header file for BPF object ..."
-	@bpftool gen skeleton $< > $@
+	@bpftool gen skeleton $< > $@.tmp && mv $@.tmp $@
 
-#compile filetrace.cpp to filetrace.o
-filetrace.o: $(SRC_DIR)/filetrace.cpp
+# These sources include the generated skeleton, directly or through post.hpp.
+$(OUTPUT_DIR)/filetrace.o $(OUTPUT_DIR)/post.o: filetrace.skel.h
+
+$(CXX_OBJS): $(OUTPUT_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OUTPUT_DIR)
 	@echo "Compiling $< to $@ ..."
-	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE)  -o $(OUTPUT_DIR)/$@ $<
+	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -MMD -MP -o $@ $<
 
-logger.o: $(SRC_DIR)/logger.cpp
-	@echo "Compiling logger.cpp to logger.o ..."
-	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
-
-exporter.o: $(SRC_DIR)/exporter.cpp
-	@echo "Compiling exporter.cpp to exporter.o ..."
-	@$(CLANGXX)  -c $(CFLAGS) $(CFLAGSPLUS)  $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
-
-post.o: $(SRC_DIR)/post.cpp $(OUTPUT_DIR)/exporter.o
-	@echo "Compiling post.cpp to post.o ..."
-	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS)  $(CINCLUDE) -o $(OUTPUT_DIR)/$@ $<
-
-filetrace: $(OUTPUT_DIR)/filetrace.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/logger.o
+filetrace: $(CXX_OBJS)
 	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
 	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS)
 
 $(OUTPUT_DIR):
-	@mkdir $(OUTPUT_DIR)
+	@mkdir -p $@
+
+-include $(DEPFILES)
 
 install:
 	@install -d $(DESTDIR)/usr/bin
