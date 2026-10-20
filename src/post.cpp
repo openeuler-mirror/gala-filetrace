@@ -235,11 +235,29 @@ int PostData::load_config(const std::string& configFile)
     return -1; 
 }
 
-int PostData::send(struct event e) 
+int PostData::process_event(struct event e)
 {
-    if(!is_valid_event(e)) {
-        return 0; 
+    if (!is_valid_event(e)) {
+        return 0;
     }
+    #ifdef GALA_DEBUG
+    std::cout << "Command: " << e.cmd << ", PID: " << e.pid << ",filename: "
+              << std::string(e.filename)
+              << ", func: " << nr_map[e.flag] << std::endl;
+    #endif
+    if (verbose) {
+        print_event(&e);
+        return 0;
+    }
+
+    int result = send(e);
+    // Cache accepted events even when publishing fails or is disabled.
+    cache_event(&e);
+    return result;
+}
+
+int PostData::send(struct event e)
+{
     LOG_DEBUG("Send event to Aops.");
     exporter_ptr->set_metrics(e);
     print_event(&e);
