@@ -86,10 +86,12 @@ class PostData {
         bool exporter_start();
         json get_events_from_queue(int count = 10);
         bool is_valid_filename(const std::string &filename);
+        // Exposed for unit tests: the test-only constructor has no exporter or
+        // eBPF state, so tests cannot reach this through process_event().
+        void cache_event(const struct event *event);
     private:
         int send(struct event e);
         void print_event(const struct event *event);
-        void cache_event(const struct event *event);
         filetrace_bpf *skel;
         size_t log_size; 
 };
