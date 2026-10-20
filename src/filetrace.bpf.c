@@ -274,11 +274,13 @@ static __always_inline struct event *create_file_event(struct file *file, int fl
 
     umode_t mode = 0;
     bpf_probe_read(&mode, sizeof(mode), &inode->i_mode);
-    //fixme
-    /*if(!S_ISREG(mode))
-    {
-        return 0;
-    }*/
+    // a copy only modifies regular files (the VFS rejects anything else), so
+    // skip pipes, sockets and devices instead of reporting them
+    if ((mode & S_IFMT) != S_IFREG) {
+        bpf_ringbuf_discard(e, 0);
+        return NULL;
+    }
+
     //get filename from struct file
     struct path path;
     struct dentry *dentry = NULL;
