@@ -108,6 +108,17 @@ int main()
     assert(p.is_valid_event(cfr) == false);
     strncpy(cfr.filename, "hosts", sizeof(cfr.filename) - 1);
 
+    // unlinkat is matched against the rebuilt path as well, so a relative
+    // pathname must be reported as the full path too
+    struct event unl{};
+    unl.pid = 100;
+    unl.flag = SYS_unlinkat;
+    strncpy(unl.dir1, "etc", sizeof(unl.dir1) - 1);
+    strncpy(unl.filename, "hosts", sizeof(unl.filename) - 1);
+    assert(p.is_valid_event(unl) == true);
+    json unl_reported = json::parse(p.convert_to_string(unl));
+    assert(unl_reported["file"].get<std::string>() == "/etc/hosts");
+
     // the reported path must be the string that was matched
     json reported = json::parse(p.convert_to_string(cfr));
     assert(reported["file"].get<std::string>() == "/etc/hosts");
