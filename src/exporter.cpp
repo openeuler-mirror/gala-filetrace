@@ -103,14 +103,19 @@ std::string PrometheusExporter::get_full_path(const struct event *event)
     return fullpath;
 }
 
-void PrometheusExporter::set_metrics(struct event& e) 
+void PrometheusExporter::set_metrics(struct event& e, const std::string& reported_file)
 {
     LOG_INFO("Setting metrics for event with filename: " + std::string(e.filename) + " and operation: " + std::string(nr_map[e.flag]));
     std::string filename = std::string(e.filename);
-    // Keep the label consistent with PostData::is_valid_event() and
-    // convert_to_string(): write, unlinkat and copy_file_range events are
-    // matched and published through the rebuilt full path.
-    if(e.flag == SYS_write || e.flag == SYS_unlinkat || e.flag == SYS_copy_file_range)
+    // PostData passes the same path it publishes in the JSON "file" field
+    // (the monitored side of a rename), so the metric label and the event
+    // agree. Direct callers/tests may omit it and get the historical
+    // rebuilt-path fallback.
+    if (!reported_file.empty()) {
+        filename = reported_file;
+    } else if (e.flag == SYS_write || e.flag == SYS_unlinkat ||
+               e.flag == SYS_copy_file_range || e.flag == SYS_rename ||
+               e.flag == SYS_renameat || e.flag == SYS_renameat2)
     {
         filename = get_full_path(&e);
     } else {

@@ -94,7 +94,8 @@ static int run_filetrace_handle_event_tests()
         assert(arr[0]["pid"] == 100);
     }
 
-    // non-verbose valid SYS_renameat2: matches directly on e.filename and cached
+    // non-verbose valid SYS_renameat2: matched through the rebuilt (absolute)
+    // destination path and cached
     struct event ren = make_event(300, "mv", "/etc/hosts", nullptr, SYS_renameat2, 0, 0);
     assert(handle_event(nullptr, &ren, sizeof(struct event)) == 0);
     {

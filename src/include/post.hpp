@@ -75,6 +75,9 @@ class PostData {
         void generate_proc_trace(unsigned int &pid, json &json_data);
         void add_ptrace(json& j, const std::string cmd, int pid);
         std::string get_full_path(const struct event *event);
+        std::string get_old_full_path(const struct event *event);
+        std::string get_reported_path(const struct event *event,
+                                      std::string *old_full_path = nullptr);
         std::string get_loginip_by_username(const std::string &username);
         // Queue for storing events (FIFO) - protected by mutex
         std::queue<json> event_queue;

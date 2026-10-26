@@ -118,38 +118,59 @@ static __always_inline struct dentry *resolve_base_dentry(struct task_struct *t,
     return base;
 }
 
-// Store the name of `dentry` itself into e->dir1 and then walk up to
-// MAX_DEPTH-1 parents into dir2..dir4. Used for *at() syscalls whose pathname
-// is relative to a base directory: unlike fill_parent_dirs() — which starts
-// from the *file* dentry and therefore skips it — the base directory here is
-// itself part of the path.
-static __always_inline void fill_dir_chain(struct event *e, struct dentry *dentry)
+// Store the name of `dentry` itself into the first field and then walk up to
+// MAX_DEPTH-1 parents into the remaining ones. Used for *at() syscalls whose
+// pathname is relative to a base directory: unlike fill_parent_dirs() — which
+// starts from the *file* dentry and therefore skips it — the base directory
+// here is itself part of the path.
+static __always_inline void fill_dentry_chain(char *d1, char *d2, char *d3,
+                                              char *d4, struct dentry *dentry)
 {
     if (!dentry) {
         return;
     }
-    struct qstr name;
+    struct qstr name = {};
     bpf_probe_read(&name, sizeof(name), &dentry->d_name);
-    bpf_probe_read_str(&e->dir1, sizeof(e->dir1), name.name);
+    bpf_probe_read_str(d1, MAX_DIRNAME_LEN, name.name);
 
     struct dentry *d_parent;
     #pragma unroll
     for (int i = 0; i < MAX_DEPTH - 1; i++)
     {
-        bpf_probe_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
+        if (bpf_probe_read(&d_parent, sizeof(d_parent), &dentry->d_parent) < 0) {
+            break;
+        }
         if (d_parent == dentry) {
             break;
         }
-        bpf_probe_read(&name, sizeof(name), &d_parent->d_name);
-        if(i == 0){
-            bpf_probe_read_str(&e->dir2, sizeof(e->dir2), name.name);
-        }else if(i == 1){
-            bpf_probe_read_str(&e->dir3, sizeof(e->dir3), name.name);
-        }else if(i == 2){
-            bpf_probe_read_str(&e->dir4, sizeof(e->dir4), name.name);
+        // Clear the scratch qstr before every read: a failed read must not
+        // reuse the previous iteration's dentry name. The helper does zero
+        // dst on error, but do not depend on that implicit behaviour.
+        __builtin_memset(&name, 0, sizeof(name));
+        if (bpf_probe_read(&name, sizeof(name), &d_parent->d_name) < 0) {
+            break;
+        }
+        if (i == 0) {
+            bpf_probe_read_str(d2, MAX_DIRNAME_LEN, name.name);
+        } else if (i == 1) {
+            bpf_probe_read_str(d3, MAX_DIRNAME_LEN, name.name);
+        } else if (i == 2) {
+            bpf_probe_read_str(d4, MAX_DIRNAME_LEN, name.name);
         }
         dentry = d_parent;
     }
+}
+
+// Destination-side dir1..dir4 chain for a rename.
+static __always_inline void fill_dir_chain(struct event *e, struct dentry *dentry)
+{
+    fill_dentry_chain(e->dir1, e->dir2, e->dir3, e->dir4, dentry);
+}
+
+// Source-side odir1..odir4 chain for a rename.
+static __always_inline void fill_odir_chain(struct event *e, struct dentry *dentry)
+{
+    fill_dentry_chain(e->odir1, e->odir2, e->odir3, e->odir4, dentry);
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat")
@@ -387,7 +408,9 @@ int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
 
 static __always_inline int handle_rename(struct event *e,
                                          const char *oldfilename_ptr,
-                                         const char *filename_ptr)
+                                         const char *filename_ptr,
+                                         int olddfd,
+                                         int newdfd)
 {
     struct task_struct* t;
     struct task_struct* p;
@@ -406,8 +429,25 @@ static __always_inline int handle_rename(struct event *e,
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
     bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
 
-    bpf_probe_read_user_str(&e->filename, sizeof(e->filename), filename_ptr);
-    bpf_probe_read_user_str(&e->oldfilename, sizeof(e->oldfilename), oldfilename_ptr);
+    // A failed read leaves the corresponding string empty; user space then
+    // cannot match that side and (for a rename) falls back to the other one.
+    if (bpf_probe_read_user_str(&e->filename, sizeof(e->filename), filename_ptr) < 0) {
+        e->filename[0] = '\0';
+    }
+    if (bpf_probe_read_user_str(&e->oldfilename, sizeof(e->oldfilename), oldfilename_ptr) < 0) {
+        e->oldfilename[0] = '\0';
+    }
+
+    // For *at() variants (and the plain rename, whose paths are relative to
+    // the CWD) fill the matching directory chain so user space can rebuild
+    // the absolute old/new path. Absolute pathnames carry their own path and
+    // need no base directory; an empty pathname has nothing to resolve.
+    if (e->oldfilename[0] != '\0' && e->oldfilename[0] != '/') {
+        fill_odir_chain(e, resolve_base_dentry(t, olddfd));
+    }
+    if (e->filename[0] != '\0' && e->filename[0] != '/') {
+        fill_dir_chain(e, resolve_base_dentry(t, newdfd));
+    }
     #ifdef GALA_DEBUG
     bpf_printk("rename detected: handle_rename pid=%u, ppid=%u, cmd=%s\n", e->pid, e->ppid, e->cmd);
     bpf_printk("Process calling handle_rename newfilename:%s\n", e->filename);
@@ -434,11 +474,15 @@ int rename(const struct trace_event_raw_sys_enter *ctx)
 
     return handle_rename(e,
                          (const char *)ctx->args[0],
-                         (const char *)ctx->args[1]);
+                         (const char *)ctx->args[1],
+                         AT_FDCWD,
+                         AT_FDCWD);
 }
 #endif
 // renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath)
+// args[0]: olddirfd (int)
 // args[1]: oldpath (const char *)
+// args[2]: newdirfd (int)
 // args[3]: newpath (const char *)
 SEC("tracepoint/syscalls/sys_enter_renameat")
 int renameat(const struct trace_event_raw_sys_enter *ctx)
@@ -451,82 +495,34 @@ int renameat(const struct trace_event_raw_sys_enter *ctx)
 
     return handle_rename(e,
                          (const char *)ctx->args[1],
-                         (const char *)ctx->args[3]);
+                         (const char *)ctx->args[3],
+                         (__s32)ctx->args[0],
+                         (__s32)ctx->args[2]);
 }
 //for move
-/*  move oldfile newfile  
-    f == newfile  
+/*  move oldfile newfile
+    f == newfile
     #mv /tmp/hosts /etc/hosts
     f == oldfile
-    #mv /tmp/hosts /etc 
-    #mv /etc/hosts /tmp/hosts 
-    #mv /etc/hosts /tmp/ 
+    #mv /tmp/hosts /etc
+    #mv /etc/hosts /tmp/hosts
+    #mv /etc/hosts /tmp/
 */
 SEC("tracepoint/syscalls/sys_enter_renameat2")
 int renameat2(const struct trace_event_raw_sys_enter *ctx)
 {
-    struct task_struct* t;
-    struct task_struct* p;
-    struct event *e;
-
-    e = bpf_create_ringbuf();
+    struct event *e = bpf_create_ringbuf();
     if(!e) {
         return 0;
     }
 
     e->flag = SYS_renameat2;
 
-    t = (struct task_struct*)bpf_get_current_task();
-    //bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
-    unsigned long pid_tgid = bpf_get_current_pid_tgid();
-    e->pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID）
-    bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
-    bpf_probe_read(&p, sizeof(p), &t->real_parent);
-    bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
-    bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
-
-    const char *oldpath = (const char *)ctx->args[1];
-    const char *newpath = (const char *)ctx->args[3];
-
-
-    bpf_probe_read_str((void*)&e->filename, sizeof(e->filename), (const void*)newpath);
-    bpf_probe_read_str((void*)&e->oldfilename, sizeof(e->oldfilename), (const void*)oldpath);
-
-    struct fs_struct *fs; 
-    struct path pwd;
-    bpf_probe_read(&fs, sizeof(fs), (const void*)&t->fs);
-    bpf_probe_read(&pwd, sizeof(pwd), (const void*)&fs->pwd);
-
-    struct dentry* dentry;
-    bpf_probe_read(&dentry, sizeof(dentry), (const void*)&pwd.dentry);
-
-    unsigned int olddfd = (__u32)ctx->args[0];
-    unsigned int newdfd = (__u32)ctx->args[2];
-
-    if (newdfd == AT_FDCWD) {
-        // fill dir1..dir4 from the CWD chain so user space can resolve
-        // relative newpath arguments
-        fill_parent_dirs(e, dentry);
-    }
-
-    if (olddfd == AT_FDCWD) {
-        #ifdef GALA_DEBUG
-        bpf_printk("oldfilename relative to CWD: %s\\n", e->oldfilename);
-        #endif
-    }
-
-    u64 uid_gid = bpf_get_current_uid_gid();
-    u32 uid = (u32)uid_gid;
-    u32 gid = (u32)(uid_gid >> 32);
-    bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
-    bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
-    #ifdef GALA_DEBUG
-    bpf_printk("sys_enter_renameat2 detected: pid=%u, ppid=%u, newfilename:%s\n", e->pid, e->ppid , e->filename);
-    #endif
-    bpf_ringbuf_submit(e, 0);
-
-    return 0;
-
+    return handle_rename(e,
+                         (const char *)ctx->args[1],
+                         (const char *)ctx->args[3],
+                         (__s32)ctx->args[0],
+                         (__s32)ctx->args[2]);
 }
 // execve(const char *pathname, char *const argv[], char *const envp[])
 // args[0]: pathname (const char *)
