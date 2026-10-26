@@ -310,6 +310,39 @@ static __always_inline struct event *create_file_event(struct file *file, int fl
 // args[4]: len (size_t)
 // args[5]: flags (unsigned int)
 
+// Both capture paths are compiled in and user space enables exactly one of
+// them at startup based on the *running* kernel (see filetrace.cpp), so the
+// probe still works when the build headers and the running kernel differ.
+//
+// vfs_copy_file_range() is also called from kernel threads (e.g. nfsd), where
+// the current task is not the process that asked for the copy. Skip those so
+// the event is not attributed to a bogus kworker/nfsd pid.
+// ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
+//                             struct file *file_out, loff_t pos_out,
+//                             size_t len, unsigned int flags)
+SEC("fentry/vfs_copy_file_range")
+int BPF_PROG(trace_copy_file_range, struct file *file_in, __u64 pos_in,
+             struct file *file_out, __u64 pos_out, __u64 len, __u32 flags)
+{
+    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+    unsigned int tflags = 0;
+    bpf_probe_read(&tflags, sizeof(tflags), &t->flags);
+    if (tflags & PF_KTHREAD) {
+        return 0;
+    }
+
+    struct event *e = create_file_event(file_out, SYS_copy_file_range);
+    if (!e) {
+        return 0;
+    }
+    #ifdef GALA_DEBUG
+    bpf_printk("copy_file_range detected: PID=%u, PPID=%u, file='%s'\n", e->pid, e->ppid, e->filename);
+    #endif
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+// Fallback for kernels where the fd table is reachable from task_struct.
 SEC("tracepoint/syscalls/sys_enter_copy_file_range")
 int copy_file_range(const struct trace_event_raw_sys_enter *ctx)
 {
