@@ -548,6 +548,15 @@ int BPF_PROG(trace_write, struct file *file, int mask)
     struct task_struct* p;
     struct event *e;
 
+    t = (struct task_struct*)bpf_get_current_task();
+    // Skip kernel threads: security_file_permission() is also reached from
+    // e.g. nfsd, where the current task is not the writer to report.
+    unsigned int tflags = 0;
+    bpf_probe_read(&tflags, sizeof(tflags), &t->flags);
+    if (tflags & PF_KTHREAD) {
+        return 0;
+    }
+
     e = bpf_create_ringbuf();
     if(!e) {
         return 0;
@@ -560,7 +569,6 @@ int BPF_PROG(trace_write, struct file *file, int mask)
     e->uid = uid;
     e->gid = gid;
 
-    t = (struct task_struct*)bpf_get_current_task();
     unsigned long pid_tgid = bpf_get_current_pid_tgid();
     e->pid = pid_tgid >> 32;
     bpf_get_current_comm(&e->cmd, sizeof(e->cmd));
