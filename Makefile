@@ -52,14 +52,14 @@ LLC ?= llc
 BPF_OBJ := $(OUTPUT_DIR)/filetrace.bpf.o
 
 
-all: filetrace
+all: filetrace filetrace-tui
 
 .PHONY: all clean install deps
 .DELETE_ON_ERROR:
 
 clean:
 	@echo "Cleaning up ..."
-	@rm -rf $(OUTPUT_DIR) filetrace filetrace.o filetrace.skel.h vmlinux.h
+	@rm -rf $(OUTPUT_DIR) filetrace filetrace-tui filetrace.o filetrace.skel.h vmlinux.h
 	@rm -f tests/test_postdata tests/test_logger tests/test_exporter tests/test_stats
  
 vmlinux.h:
@@ -84,7 +84,13 @@ $(CXX_OBJS): $(OUTPUT_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OUTPUT_DIR)
 
 filetrace: $(CXX_OBJS)
 	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS)
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS) $(TUILDFLAGS)
+
+TUILDFLAGS = -lncurses -ltinfo -lpthread
+
+filetrace-tui: $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o
+	@echo "Linking tui.o stats.o to filetrace-tui ..."
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o $(LDFLAGS) $(TUILDFLAGS)
 
 $(OUTPUT_DIR):
 	@mkdir -p $@
