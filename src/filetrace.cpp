@@ -10,14 +10,23 @@
 #include <signal.h>
 #include <sys/utsname.h>
 
-#include "filetrace.skel.h" 
+#include "filetrace.skel.h"
 #include "filetrace.h"
 #include "post.hpp"
+#include "stats.hpp"
+#include "tui.hpp"
+
+#include <atomic>
+#include <memory>
+#include <nlohmann/json.hpp>
+#include <thread>
 
 using namespace std;
 
 static struct filetrace_bpf *skel;
 PostData *postdata_i = nullptr;
+static TraceStats *tui_stats = nullptr;   // set in TUI mode
+static std::atomic<bool> tui_running{true};
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     //trace libbpf messages to stderr
@@ -64,7 +73,7 @@ static void sig_handler(int sig)
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-    if(data == nullptr || postdata_i == nullptr) {
+    if(data == nullptr || (postdata_i == nullptr && tui_stats == nullptr)) {
         std::cerr << "Received null data or PostData instance is null, skipping event." << std::endl;
         return -1;
     }
@@ -73,6 +82,30 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return -1;
     }
     struct event *e = (struct event *)data;
+
+    if (tui_stats) {
+        // TUI mode: aggregate into the stats layer; the path is matched
+        // against the configured monitor paths first.
+        std::string full = TraceStats::event_path(*e);
+        std::string matched;
+        for (const auto &p : tui_stats->monitor_paths()) {
+            if (p == "/" || full == p || full.rfind(p + "/", 0) == 0) {
+                matched = p;
+                break;
+            }
+            // write/copy_file_range events may only carry the basename:
+            // accept when the configured path ends with the event path
+            if (!e->dir1[0] && full.size() > 1 && p.size() > full.size() &&
+                p.compare(p.size() - full.size(), full.size(), full) == 0 &&
+                p[p.size() - full.size() - 1] == '/') {
+                matched = p;
+                break;
+            }
+        }
+        tui_stats->on_event(*e, matched);
+        return 0;
+    }
+
     postdata_i->process_event(*e);
     return 0;
 }
@@ -84,11 +117,15 @@ int main(int argc, char **argv)
     std::string config_file = "/etc/gala-filetrace/gala-filetrace.json";
     std::string file_path;
     bool verbose = false;
+    bool tui_mode = false;
     int opt;
-    while ((opt = getopt(argc, argv, "c:f:")) != -1) {
+    while ((opt = getopt(argc, argv, "c:f:t")) != -1) {
         switch (opt) {
             case 'c':
                 config_file = optarg;
+                break;
+            case 't':
+                tui_mode = true;
                 break;
             case 'f':
                 file_path = optarg;
@@ -103,7 +140,8 @@ int main(int argc, char **argv)
                 verbose = true;
                 break;
             default:
-                std::cerr << "Usage: " << argv[0] << " [-c <config_file>] [-f <file_path>]" << std::endl;
+                std::cerr << "Usage: " << argv[0]
+                          << " [-c <config_file>] [-f <file_path>] [-t]" << std::endl;
                 return 1;
         }
     }
@@ -132,12 +170,14 @@ int main(int argc, char **argv)
         return err;
     }
     //init PostData instance
-    postdata_i = new PostData(skel, config_file, verbose, file_path); 
-    if (!postdata_i) 
-    {
-        std::cerr << "Failed to create PostData instance!" << std::endl;
-        filetrace_bpf__destroy(skel);
-        return -ENOMEM;
+    if (!tui_mode) {
+        postdata_i = new PostData(skel, config_file, verbose, file_path);
+        if (!postdata_i)
+        {
+            std::cerr << "Failed to create PostData instance!" << std::endl;
+            filetrace_bpf__destroy(skel);
+            return -ENOMEM;
+        }
     }
     // Attach the eBPF program to its hook
     err = filetrace_bpf__attach(skel);
@@ -159,10 +199,52 @@ int main(int argc, char **argv)
     }
 
     std::cout << "eBPF program attached, press Ctrl+C to exit." << std::endl;
+
+    if (tui_mode) {
+        // TUI mode: load config_list, feed stats from a polling thread
+        // and run the UI on the main thread.
+        std::vector<std::string> paths;
+        try {
+            std::ifstream f(config_file);
+            json cfg = json::parse(f);
+            if (cfg.contains("config_list") && cfg["config_list"].is_array()) {
+                paths = cfg["config_list"].get<std::vector<std::string>>();
+            }
+        } catch (const std::exception &e) {
+            std::cerr << "Failed to parse " << config_file << ": " << e.what() << std::endl;
+        }
+        if (paths.empty()) {
+            std::cerr << "No config_list entries; nothing to monitor." << std::endl;
+            ring_buffer__free(ringbuf);
+            filetrace_bpf__destroy(skel);
+            return 1;
+        }
+        TraceStats stats(paths);
+        tui_stats = &stats;
+
+        std::thread poller([ringbuf]() {
+            while (tui_running) {
+                int rc = ring_buffer__poll(ringbuf, 100);
+                (void)rc;
+            }
+        });
+
+        TuiOptions topts;
+        TuiApp tui(stats, topts);
+        tui.run();                    // blocks until the user quits
+
+        tui_running = false;
+        poller.join();
+        tui_stats = nullptr;
+        ring_buffer__free(ringbuf);
+        filetrace_bpf__destroy(skel);
+        return 0;
+    }
+
     // Poll the ring buffer for events
-    while (true) 
+    while (true)
     {
-        err = ring_buffer__poll(ringbuf, 100); 
+        err = ring_buffer__poll(ringbuf, 100);
         if (err < 0) {
             std::cerr << "Error: " << strerror(errno) << "("<< errno <<")"<< std::endl;
             break;

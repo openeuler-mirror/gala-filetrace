@@ -99,9 +99,43 @@ make rpm
 
 构建成功后，在~/rpmbuild/RPMS/\<arch>目录下存在gala-filetrace的rpm包。
 
-## 3.3 安装
+## 3.3 终端 UI（top 风格）
 
-### 3.3.1 编译安装
+在配置文件 `/etc/gala-filetrace/gala-filetrace.json` 的 `config_list` 中配置需要监控的文件，然后以 TUI 模式运行：
+
+```bash
+# TUI 模式（读取 config_list，实时显示哪些进程修改了监控文件）
+filetrace -t
+
+# 指定配置文件 / 刷新间隔
+filetrace -t -c /path/to/gala-filetrace.json -r 500
+
+# 独立预览（不加载 eBPF，用模拟数据演示界面）
+filetrace-tui -d
+```
+
+界面分为三部分：顶部状态栏（事件总数、进程数、刷新时间）、上方"Monitored Files"面板（每个监控文件的操作分类计数：OPS/WRITE/OPEN/UNLINK/RENAME/OTHER）、下方进程表（PID/PPID/USER/%CPU/%MEM/OPS/COMMAND）。
+
+按键说明：
+
+| 按键 | 操作 |
+| ---- | ---- |
+| h / ? | 打开/关闭帮助，仍继续采样 |
+| q | 主界面退出；帮助/详情页返回 |
+| Tab | 切换设备 / 进程列表焦点 |
+| 上下箭头、j / k | 进程焦点时移动选择；设备焦点时滚动列表 |
+| PageUp / PageDown、Home / End | 翻页或到首尾 |
+| 左右箭头 | 横向查看长命令行 |
+| 鼠标左键点击 %MEM / %CPU / OPS 表头 | 切换排序列时默认降序，再点当前列切换升降序 |
+| s / S | 按 OPS → %MEM → %CPU 循环切换排序列，每次切换恢复降序 |
+| / | 反转当前排序方向 |
+| 鼠标左键点击进程行 | 选中进程；点击排序表头以外的非进程区域取消选择 |
+| Enter | 打开选中进程的详情；详情页内返回进程列表 |
+| Esc | 帮助/详情返回；列表中先取消选择，无选择时退出 |
+
+## 3.4 安装
+
+### 3.4.1 编译安装
 
 ```bash
 #default install
@@ -110,7 +144,7 @@ make rpm
 # make install DESTDIR=/your/install/path
 ```
 
-### 3.3.2 rpm 安装
+### 3.4.2 rpm 安装
 
 ```bash
 cd ~/rpmbuild/RPMS/<arch>
