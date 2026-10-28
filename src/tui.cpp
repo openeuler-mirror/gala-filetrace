@@ -330,7 +330,8 @@ void TuiApp::run()
     keypad(stdscr, TRUE);
     curs_set(0);
     set_escdelay(50);
-    timeout(opts_.refresh_ms);       // blocking getch() ticks the interval
+    timeout(0);                      // non-blocking input; loop sleeps
+    mousemask(BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED, nullptr);
 
     if (opts_.use_color && has_colors()) {
         start_color();
@@ -347,25 +348,16 @@ void TuiApp::run()
     render();
     auto last_sample = std::chrono::steady_clock::now();
 
-    while (running_) {
-        // getch() blocks up to one refresh interval, so a key press is
-        // handled the moment it arrives instead of waiting out a full
-        // sleep'ed tick first (with the 60 s upper bound on refresh_ms
-        // that wait made the UI feel dead).
-        int ch = getch();
-        if (ch != ERR) {
-            // Drain the whole typeahead buffer before drawing: a burst of
-            // keys must be handled immediately, but one full-screen render
-            // per key is wasted work. The drain itself uses a zero timeout
-            // so the batch ends as soon as the buffer is empty.
-            timeout(0);
-            do {
-                handle_key(ch);
-                if (!running_) {
-                    break;
+        int ch;
+        while ((ch = getch()) != ERR) {
+            if (ch == KEY_MOUSE) {
+                MEVENT ev;
+                if (getmouse(&ev) == OK) {
+                    handle_mouse(ev);
                 }
-            } while ((ch = getch()) != ERR);
-            timeout(opts_.refresh_ms);
+            } else {
+                handle_key(ch);
+            }
             if (!running_) {
                 break;
             }
@@ -532,8 +524,11 @@ void TuiApp::render_procs()
     }
 
     // column header; sortable columns get the sort marker
+    proc_header_y_ = y;
     for (int i = 0; i < kNumCols; i++) {
         int w = kColumns[i].width != 0 ? kColumns[i].width : cmd_w;
+        col_x_[i] = x;
+        col_w_[i] = w;
         std::string title = kColumns[i].title;
         bool sortable = title == "OPS" || title == "%MEM" ||
                         title == "%CPU" || title == "PID" || title == "COMMAND";
@@ -699,10 +694,101 @@ void TuiApp::render_detail()
 }
 
 // ---------------------------------------------------------------------------
-// input
+// sorting controls
 // ---------------------------------------------------------------------------
 
-// Move the process selection up/down, keeping the view scrolled.
+// s / S: cycle OPS -> %MEM -> %CPU (spec order), resetting to descending.
+void TuiApp::cycle_sort()
+{
+    switch (sort_col_) {
+        case SortColumn::Ops:
+            sort_col_ = SortColumn::Mem;
+            break;
+        case SortColumn::Mem:
+            sort_col_ = SortColumn::Cpu;
+            break;
+        case SortColumn::Cpu:
+        default:
+            sort_col_ = SortColumn::Ops;
+            break;
+    }
+    sort_desc_ = true;
+    sort_rows();
+    clamp_cursors();
+}
+
+// '/': reverse the current sort direction.
+void TuiApp::reverse_sort()
+{
+    sort_desc_ = !sort_desc_;
+    sort_rows();
+    clamp_cursors();
+}
+
+// Header click: switch to that column descending by default; clicking
+// the active column again flips the direction.
+void TuiApp::set_sort_column(SortColumn col)
+{
+    if (sort_col_ == col) {
+        sort_desc_ = !sort_desc_;
+    } else {
+        sort_col_ = col;
+        sort_desc_ = true;
+    }
+    sort_rows();
+    clamp_cursors();
+}
+
+static SortColumn column_to_sort(const char *title)
+{
+    if (strcmp(title, "OPS") == 0) return SortColumn::Ops;
+    if (strcmp(title, "%MEM") == 0) return SortColumn::Mem;
+    if (strcmp(title, "%CPU") == 0) return SortColumn::Cpu;
+    return SortColumn::Ops;
+}
+
+// ---------------------------------------------------------------------------
+// mouse
+// ---------------------------------------------------------------------------
+
+void TuiApp::handle_mouse(const MEVENT &ev)
+{
+    int mx = ev.x, my = ev.y;
+
+    // header row: sortable column click sorts
+    if (page_ == Page::Main && my == proc_header_y_) {
+        for (int i = 0; i < kNumCols; i++) {
+            if (mx >= col_x_[i] && mx < col_x_[i] + col_w_[i]) {
+                const char *title = kColumns[i].title;
+                if (strcmp(title, "OPS") == 0 || strcmp(title, "%MEM") == 0 ||
+                    strcmp(title, "%CPU") == 0) {
+                    set_sort_column(column_to_sort(title));
+                }
+                return;
+            }
+        }
+        return;
+    }
+
+    if (page_ != Page::Main) {
+        return;
+    }
+
+    // process row click selects; click below the table (footer/blank)
+    // clears the selection
+    int row = my - proc_top_ - 1;    // -1 for column header
+    if (row >= 0 && row < proc_height_) {
+        int idx = proc_scroll_ + row;
+        if (idx < (int)proc_rows_.size()) {
+            proc_cursor_ = idx;
+            selection_active_ = true;
+        }
+        return;
+    }
+    selection_active_ = false;
+}
+
+
 void TuiApp::move_proc_cursor(int delta)
 {
     if (proc_rows_.empty()) {
@@ -875,21 +961,10 @@ void TuiApp::handle_key(int ch)
             break;
         case 's':
         case 'S':
-            // cycle sort column: OPS -> %MEM -> %CPU -> PID -> COMMAND
-            switch (sort_col_) {
-                case SortColumn::Ops: sort_col_ = SortColumn::Mem; break;
-                case SortColumn::Mem: sort_col_ = SortColumn::Cpu; break;
-                case SortColumn::Cpu: sort_col_ = SortColumn::Pid; break;
-                case SortColumn::Pid: sort_col_ = SortColumn::Cmd; break;
-                case SortColumn::Cmd: sort_col_ = SortColumn::Ops; break;
-            }
-            sort_rows();
-            clamp_cursors();
+            cycle_sort();
             break;
         case '/':
-            sort_desc_ = !sort_desc_;
-            sort_rows();
-            clamp_cursors();
+            reverse_sort();
             break;
         case '\n':
         case '\r':
