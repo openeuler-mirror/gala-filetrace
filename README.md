@@ -85,7 +85,7 @@ gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中�
 # make DEBUG=1
 ```
 
-### 3.2.1 rpm 构建
+### 3.2.2 rpm 构建
 
 ```bash
 # 方式一：make rpm（自动下载源码包并执行 rpmbuild）
@@ -141,7 +141,6 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 | ragdoll_api       | string           |  ragdoll 地址   |
 | publish       | bool         |     是否推送到ragdoll |
 | exporter_address  |string   |  Prometheus Node Exporter监听地址 |
-|
 
 浏览器访问 <http://IP:9090/Metrics>，可以查看监控指标。
 
