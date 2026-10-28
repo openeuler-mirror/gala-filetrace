@@ -685,15 +685,168 @@ void TuiApp::render_detail()
 // input
 // ---------------------------------------------------------------------------
 
-// Key handling is extended in later stages; this stage only quits.
+// Move the process selection up/down, keeping the view scrolled.
+void TuiApp::move_proc_cursor(int delta)
+{
+    if (proc_rows_.empty()) {
+        return;
+    }
+    selection_active_ = true;
+    proc_cursor_ += delta;
+    if (proc_cursor_ < 0) {
+        proc_cursor_ = 0;
+    }
+    if (proc_cursor_ >= (int)proc_rows_.size()) {
+        proc_cursor_ = (int)proc_rows_.size() - 1;
+    }
+    clamp_cursors();
+}
+
+// Scroll the focused list by delta lines (devices when device-focused,
+// processes otherwise).
+void TuiApp::scroll_list(int delta)
+{
+    if (focus_ == Focus::Devices) {
+        int n = (int)snap_.devices.size();
+        int visible = dev_height_ - DEV_HEADER;
+        if (visible <= 0) {
+            return;
+        }
+        device_scroll_ += delta;
+        if (device_scroll_ > n - visible) {
+            device_scroll_ = n - visible;
+        }
+        if (device_scroll_ < 0) {
+            device_scroll_ = 0;
+        }
+    } else {
+        move_proc_cursor(delta);
+    }
+}
+
+void TuiApp::open_detail()
+{
+    if (focus_ != Focus::Procs || proc_rows_.empty() ||
+        proc_cursor_ >= (int)proc_rows_.size()) {
+        return;
+    }
+    detail_pid_ = proc_rows_[proc_cursor_].pid;
+    page_ = Page::Detail;
+}
+
+// Esc semantics: help/detail go back; in the main view first clear the
+// selection, and quit only when nothing is selected.
+void TuiApp::escape()
+{
+    switch (page_) {
+        case Page::Help:
+        case Page::Detail:
+            page_ = Page::Main;
+            break;
+        case Page::Main:
+        default:
+            if (selection_active_) {
+                selection_active_ = false;
+            } else {
+                running_ = false;
+            }
+            break;
+    }
+}
+
 void TuiApp::handle_key(int ch)
 {
+    // Help / detail pages: limited keys, sampling keeps running.
+    if (page_ == Page::Help) {
+        switch (ch) {
+            case 'h':
+            case '?':
+            case 27:            // Esc
+            case 'q':
+                page_ = Page::Main;
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+    if (page_ == Page::Detail) {
+        switch (ch) {
+            case 27:            // Esc
+            case '\n':
+            case '\r':
+            case KEY_ENTER:
+                page_ = Page::Main;
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
     switch (ch) {
         case 'q':
         case 'Q':
-            if (page_ == Page::Main) {
-                running_ = false;
+            running_ = false;
+            break;
+        case 'h':
+        case '?':
+            page_ = Page::Help;
+            break;
+        case '\t':
+            focus_ = focus_ == Focus::Procs ? Focus::Devices : Focus::Procs;
+            break;
+        case KEY_UP:
+        case 'k':
+            move_proc_cursor(-1);
+            break;
+        case KEY_DOWN:
+        case 'j':
+            move_proc_cursor(1);
+            break;
+        case KEY_PPAGE:
+            scroll_list(-std::max(proc_height_ - 1, 1));
+            break;
+        case KEY_NPAGE:
+            scroll_list(std::max(proc_height_ - 1, 1));
+            break;
+        case KEY_HOME:
+            if (focus_ == Focus::Devices) {
+                device_scroll_ = 0;
+            } else {
+                proc_cursor_ = 0;
+                clamp_cursors();
             }
+            break;
+        case KEY_END:
+            if (focus_ == Focus::Devices) {
+                int n = (int)snap_.devices.size();
+                int visible = dev_height_ - DEV_HEADER;
+                device_scroll_ = visible > 0 ? std::max(n - visible, 0) : 0;
+            } else if (!proc_rows_.empty()) {
+                proc_cursor_ = (int)proc_rows_.size() - 1;
+                clamp_cursors();
+            }
+            break;
+        case KEY_LEFT:
+            h_scroll_ -= 8;      // reveal later part of long command lines
+            if (h_scroll_ < -(1 << 16)) {
+                h_scroll_ = -(1 << 16);
+            }
+            break;
+        case KEY_RIGHT:
+            h_scroll_ += 8;
+            if (h_scroll_ > 0) {
+                h_scroll_ = 0;
+            }
+            break;
+        case '\n':
+        case '\r':
+        case KEY_ENTER:
+            open_detail();
+            break;
+        case 27:                 // Esc
+            escape();
             break;
         default:
             break;
