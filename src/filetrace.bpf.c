@@ -173,6 +173,10 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
     bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
 
+    u64 uid_gid = bpf_get_current_uid_gid();
+    e->uid = (u32)uid_gid;
+    e->gid = (u32)(uid_gid >> 32);
+
     // For openat(int dfd, const char *pathname, int flags, mode_t mode)
     // args[0]: dfd (int)
     // args[1]: pathname (const char *)
@@ -206,6 +210,12 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
     bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
+
+    // Without uid/gid every rm is attributed to root in the published
+    // JSON and in the exporter labels.
+    u64 uid_gid = bpf_get_current_uid_gid();
+    e->uid = (u32)uid_gid;
+    e->gid = (u32)(uid_gid >> 32);
 
     // 对于 unlinkat(int dfd, const char *pathname, int flags)
     // args[0]: dfd (int)
