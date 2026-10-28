@@ -1,11 +1,14 @@
 #include <iostream>
+#include <cstdio>
 #include <vector>
 #include <linux/bpf.h>
 #include <getopt.h>
 
 #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/utsname.h>
 
 #include "filetrace.skel.h" 
 #include "filetrace.h"
@@ -22,6 +25,32 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
     vfprintf(stderr, format, args);
     #endif
     return 0;
+}
+
+// The copy_file_range probe comes in two variants: an fentry program used on
+// kernels >= 6.6 (where the fd table can no longer be resolved from
+// task_struct) and the sys_enter tracepoint used before that. Both are built
+// into the object; pick the one matching the kernel we are actually running on
+// instead of the kernel headers the binary was built against.
+static bool running_kernel_at_least(int want_major, int want_minor)
+{
+    struct utsname info;
+    if (uname(&info) != 0) {
+        return false;
+    }
+    int major = 0;
+    int minor = 0;
+    if (std::sscanf(info.release, "%d.%d", &major, &minor) != 2) {
+        return false;
+    }
+    return major > want_major || (major == want_major && minor >= want_minor);
+}
+
+static void select_copy_file_range_probe(struct filetrace_bpf *skel)
+{
+    bool use_fentry = running_kernel_at_least(6, 6);
+    bpf_program__set_autoload(skel->progs.trace_copy_file_range, use_fentry);
+    bpf_program__set_autoload(skel->progs.copy_file_range, !use_fentry);
 }
 
 static void sig_handler(int sig)
@@ -94,6 +123,7 @@ int main(int argc, char **argv)
         return errno;
     }
     skel->rodata->self_tgid = static_cast<__u32>(getpid());
+    select_copy_file_range_probe(skel);
     err = filetrace_bpf__load(skel);
     if (err)
     {
