@@ -17,6 +17,40 @@ gala-filetrace是A-OPS中一个功能组件，主要用于对openEuler系统中�
 
 # 2.实现架构
 
+gala-filetrace 基于 eBPF 实现对配置文件变更的内核态采集与用户态处理，整体数据流如下：
+
+```text
+┌───────────────────────── 内核态 (eBPF) ─────────────────────────┐
+│  tracepoint/fentry 钩子                                          │
+│   - sys_enter_openat / unlinkat / rename(at/at2) / execve        │
+│   - sys_enter_copy_file_range / write (或 fentry security_*)     │
+│   - sched_process_exec                                           │
+│        │ 组装 struct event（pid/ppid/cmd/uid/gid/inode/路径链）  │
+│        ├──► exec_map (HASH)：缓存进程血缘，供用户态回溯 ptrace   │
+│        └──► events  (RINGBUF, 16MB)：投递文件事件到用户态        │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │ ring_buffer__poll
+┌───────────────────────────────▼───── 用户态 ────────────────────┐
+│  handle_event → PostData::process_event                          │
+│        │ is_valid_event 过滤（路径命中 config_list、跳过噪声进程）│
+│        ├──► PrometheusExporter：更新 file_access_total / gauge    │
+│        ├──► curl HTTP POST → gala-ragdoll（publish=true 时）      │
+│        └──► cache_event：缓存到内存队列，供 API 查询             │
+│                                                                  │
+│  cpp-httplib HTTP Server（server:port）提供监控文件配置/查询 API │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+核心模块：
+
+| 模块 | 文件 | 职责 |
+| :--- | :--- | :--- |
+| eBPF 程序 | `src/filetrace.bpf.c` | 挂载系统调用/VFS 钩子，采集事件并写入 ring buffer |
+| 主程序 | `src/filetrace.cpp` | 加载/attach skeleton，轮询 ring buffer 并分发事件 |
+| 事件处理 | `src/post.cpp` | 过滤、配置加载、推送 ragdoll、进程血缘回溯、HTTP API |
+| 指标导出 | `src/exporter.cpp` | 对接 Prometheus，暴露 counter/gauge 指标 |
+| 日志 | `src/logger.cpp` | 分级日志与文件轮转 |
+
 # 3.编译和运行
 
 目前适配支持的openEuler版本:
@@ -133,16 +167,93 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 
 ## 3.5 配置说明
 
-配置说明:
-| 配置项        | 值         |  说明          |
-| :---         |    :----:   |          ---: |
-| host_id       | string          | 主机UUID
-| domain_name       | string      | 主机所在域/数据中心    |
-| ragdoll_api       | string           |  ragdoll 地址   |
-| publish       | bool         |     是否推送到ragdoll |
-| exporter_address  |string   |  Prometheus Node Exporter监听地址 |
+配置说明（配置文件默认路径 `/etc/gala-filetrace/gala-filetrace.json`，可用 `-c` 指定）:
+| 配置项 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| host_id | string | 无 | 主机 UUID，**必填**，为空时启动失败 |
+| domain_name | string | 无 | 主机所在域/数据中心，**必填** |
+| cluster_id | string | `""` | 集群 ID，可选 |
+| config_list | array | 无 | 需监控的配置文件绝对路径列表，**必填且不能为空** |
+| skip_processes_list | array | 无 | 忽略的进程名列表（噪声进程），**必填** |
+| ragdoll_api | string | 无 | gala-ragdoll 接收地址 |
+| publish | bool | `false` | 是否将事件推送到 ragdoll，为 `true` 时启用内置 HTTP Server |
+| exporter_address | string | `0.0.0.0:8080` | Prometheus Exporter 监听地址 |
+| server | string | `0.0.0.0` | 配置/查询 API 的监听地址（需为合法 IPv4） |
+| port | int | `8080` | 配置/查询 API 的监听端口 |
+| cache_data | bool | `false` | 是否在内存缓存事件以供 `/monitor_file_status` 查询 |
+| cache_timeout_seconds | int | `30` | Prometheus gauge 缓存记录的超时秒数 |
+| max_event_queue_size | int | `1000` | 事件内存队列保留的最大条数 |
+| max_dir_level | int | `4` | `config_list` 路径允许的最大目录层级 |
+| log_level | string | `info` | 日志级别（debug/info/warn/error） |
+| log_file | string | `/var/log/filetrace.log` | 日志文件路径 |
+| log_size | int | `100` | 单个日志文件大小上限（MB） |
 
 浏览器访问 <http://IP:9090/Metrics>，可以查看监控指标。
+
+## 3.6 API 接口
+
+内置 HTTP Server 仅在 `publish` 为 `true` 时启动（监听 `server:port`），提供以下接口。其中 `POST /filetrace` 与 `GET /filetrace` 在服务启动后始终可用；`/monitor_file_status` 仅在 `cache_data` 为 `true` 时注册。
+
+### 3.6.1 添加/移除监控文件
+
+```
+POST /filetrace
+Content-Type: application/json
+
+{"conf": "/etc/hosts", "action": "add"}
+```
+
+- `action` 取 `add` 或 `remove`；`conf` 为配置文件绝对路径。
+- 更新成功后会回写持久化到配置文件。
+- 响应：成功 `200`（`Configuration updated successfully`）；参数非法 `400`；写盘失败 `500`。
+
+查询当前监控列表：
+
+```
+GET /filetrace
+```
+
+响应示例：
+
+```json
+{
+  "status": "ok",
+  "conf_list": ["/etc/hosts"]
+}
+```
+
+### 3.6.2 查询监控事件
+
+```
+GET /monitor_file_status?count=10
+```
+
+- `count` 为返回条数，缺省或非法时取 `10`，上限为 `max_event_queue_size`。
+- 事件有返回时 `200`；队列为空时 `204` 且 `status` 为 `no_event`。
+
+响应示例：
+
+```json
+{
+  "status": "ok",
+  "count": 1,
+  "events": [
+    {
+      "pid": 1234,
+      "ppid": 5678,
+      "cmd": "vim",
+      "flag": 5,
+      "syscall": "sys_enter_write",
+      "filename": "hosts",
+      "oldfilename": "",
+      "dir1": "etc",
+      "dir2": "",
+      "dir3": "",
+      "dir4": ""
+    }
+  ]
+}
+```
 
 # 4.QA
 
