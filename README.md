@@ -263,7 +263,11 @@ GET /monitor_file_status?count=10
 permission error while running as root; try raising 'ulimit -l'? current value: 64.0 KiB.
  ```
 
-解决方法：
+原因：加载 eBPF 程序需要提升 `RLIMIT_MEMLOCK`（可锁定内存上限），默认的 64 KiB 不够用。
+
+* 通过 systemd 服务启动（推荐）：`config/gala-filetrace.service` 已配置 `LimitMEMLOCK=infinity`，无需再手动处理。
+
+* 通过命令行直接运行 `filetrace` 时，需先在当前 shell 提升限制：
 
 ```bash
 # ulimit -l 819200

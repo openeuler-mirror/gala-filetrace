@@ -261,7 +261,11 @@ Example response:
 permission error while running as root; try raising 'ulimit -l'? current value: 64.0 KiB.
  ```
 
-Solution：
+Cause: loading eBPF programs requires raising `RLIMIT_MEMLOCK` (the maximum amount of lockable memory); the default 64 KiB is insufficient.
+
+* Started as a systemd service (recommended): `config/gala-filetrace.service` already sets `LimitMEMLOCK=infinity`, so no manual step is needed.
+
+* When running `filetrace` directly from the command line, raise the limit in the current shell first:
 
 ```bash
 # ulimit -l 819200  
