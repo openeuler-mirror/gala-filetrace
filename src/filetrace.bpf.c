@@ -572,7 +572,10 @@ int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
     return 0;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+// Both write capture paths are compiled in and user space enables exactly one
+// of them at startup based on the *running* kernel (see filetrace.cpp), so the
+// probe still works when the build headers and the running kernel differ.
+//
 // Capture writes without resolving an fd: hook the VFS permission check
 // (invoked with MAY_WRITE for write operations), which already hands us the
 // backing struct file *. We then walk dentry->d_parent to rebuild the path,
@@ -648,7 +651,7 @@ int BPF_PROG(trace_write, struct file *file, int mask)
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
-#else
+// Fallback for kernels where the fd table is reachable from task_struct.
 /*for vim echo ...
 write(int fd, const void *buf, size_t count)
 args[0]: fd (int)
@@ -734,4 +737,3 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
-#endif
