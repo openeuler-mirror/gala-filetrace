@@ -133,8 +133,9 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     // fields: state(3) ppid(4) ... utime(14) stime(15) ...
     //         starttime(22) vsize(23) rss(24)
     if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu "
-               "%*d %*d %*d %*d %*d %*d %*u %*u %lu",
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %lu",
+    if (sscanf(p + 2,
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*u %lu",
                &utime, &stime, &rss_pages) < 3) {
         return false;
     }
