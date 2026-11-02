@@ -79,7 +79,8 @@ private:
     mutable std::mutex mutex_;
     std::vector<std::string> paths_;       // configured monitor paths
     std::map<unsigned int, ProcStat> procs_; // keyed by pid
-    std::map<std::string, DeviceStat> devices_; // keyed by configured path
+    std::map<std::string, DeviceStat> devices_; // keyed by rebuilt event path;
+                                                // seeded with configured paths
     uint64_t total_events_ = 0;
     uint64_t dropped_events_ = 0;
     uint64_t seq_ = 0;                     // monotonic counter for LRU order

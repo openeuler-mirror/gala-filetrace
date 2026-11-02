@@ -45,7 +45,10 @@ static void evict_lru(Map &m, size_t cap, Evictable evictable)
 }
 
 // per_file entries carry no seq; trim the least-touched ones instead.
-static void evict_cold_files(std::map<std::string, uint64_t> &m, size_t cap)
+// `evictable` may veto victims (configured monitor paths are protected).
+template <typename Evictable>
+static void evict_cold_files(std::map<std::string, uint64_t> &m, size_t cap,
+                             Evictable evictable)
 {
     size_t target = cap - cap / EVICT_TARGET_FRAC;
     if (m.size() <= target) {
@@ -54,13 +57,18 @@ static void evict_cold_files(std::map<std::string, uint64_t> &m, size_t cap)
     std::vector<uint64_t> counts;
     counts.reserve(m.size());
     for (const auto &kv : m) {
-        counts.push_back(kv.second);
+        if (evictable(kv)) {
+            counts.push_back(kv.second);
+        }
     }
-    size_t excess = m.size() - target;
+    if (counts.empty()) {
+        return;
+    }
+    size_t excess = std::min(m.size() - target, counts.size());
     std::nth_element(counts.begin(), counts.begin() + excess - 1, counts.end());
     uint64_t threshold = counts[excess - 1];
     for (auto it = m.begin(); it != m.end() && excess > 0;) {
-        if (it->second <= threshold) {
+        if (it->second <= threshold && evictable(*it)) {
             it = m.erase(it);
             excess--;
         } else {
@@ -106,9 +114,8 @@ std::string TraceStats::event_path(const struct event &e)
     if (!fullpath.empty() && fullpath.front() != '/') {
         fullpath.insert(fullpath.begin(), '/');
     }
-    if (fullpath.empty()) {
-        fullpath = "/";
-    }
+    // no path information at all: return "" (same as exporter's
+    // get_full_path); on_event() counts such events as dropped
     return fullpath;
 }
 
@@ -161,7 +168,10 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.ops++;
     if (p.per_file.size() >= MAX_PER_FILE_ENTRIES &&
         p.per_file.find(path) == p.per_file.end()) {
-        evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES);
+        // configured monitor paths are never trimmed from per_file
+        evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES, [this](const auto &kv) {
+            return std::find(paths_.begin(), paths_.end(), kv.first) == paths_.end();
+        });
     }
     p.per_file[path]++;
     p.last_active_ms = now;
