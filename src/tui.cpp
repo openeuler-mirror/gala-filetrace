@@ -779,7 +779,7 @@ void TuiApp::handle_mouse(const MEVENT &ev)
     // process row click selects; click below the table (footer/blank)
     // clears the selection
     int row = my - proc_top_ - 1;    // -1 for column header
-    if (row >= 0 && row < proc_height_) {
+    if (row >= 0 && row < proc_height_ - 1) {
         int idx = proc_scroll_ + row;
         if (idx < (int)proc_rows_.size()) {
             proc_cursor_ = idx;
