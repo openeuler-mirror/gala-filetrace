@@ -132,6 +132,10 @@ ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
                "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %lu",
                &utime, &stime, &rss_pages) < 3) {
         return u;
+    if (sscanf(p + 2,
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*u %lu",
+               &utime, &stime, &rss_pages) < 3) {
+        return u;
     }
 
     if (have_prev && total_mem_kb > 0) {
