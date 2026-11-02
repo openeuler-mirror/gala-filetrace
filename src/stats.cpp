@@ -79,7 +79,11 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     ProcStat &p = procs_[e.pid];
     p.pid = e.pid;
     p.ppid = e.ppid;
-    p.cmd = std::string(e.cmd, strnlen(e.cmd, sizeof(e.cmd)));
+    if (p.cmd.empty()) {
+        // cmd is fixed per pid; assign only on first sight of the process
+        // so the hot path does not build a new std::string for every event.
+        p.cmd.assign(e.cmd, strnlen(e.cmd, sizeof(e.cmd)));
+    }
     p.uid = e.uid;
     p.ops++;
     p.per_file[path]++;
