@@ -101,6 +101,10 @@ uint64_t TraceStats::now_ms()
 std::string TraceStats::event_path(const struct event &e)
 {
     std::string fullpath;
+    // dirs + filename are fixed-size arrays; one reservation avoids
+    // repeated reallocation while appending
+    fullpath.reserve(sizeof(e.dir4) + sizeof(e.dir3) + sizeof(e.dir2) +
+                     sizeof(e.dir1) + sizeof(e.filename) + 4);
     const char *parts[] = {e.dir4, e.dir3, e.dir2, e.dir1, e.filename};
     for (const char *part : parts) {
         if (part[0] == '\0' || (part[0] == '/' && part[1] == '\0')) {
@@ -131,6 +135,7 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
             norm.pop_back();
         }
         paths_.push_back(norm);
+        monitor_paths_.insert(norm);
         devices_[norm].path = norm;
     }
 }
@@ -163,6 +168,10 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
         size_t len = strnlen(e.cmd, sizeof(e.cmd));
         if (len != p.cmd.size() || memcmp(p.cmd.data(), e.cmd, len) != 0) {
             p.cmd.assign(e.cmd, len);
+            // a new name under the same pid is a new program (exec or
+            // pid reuse): start its per-process counters from zero
+            p.ops = 0;
+            p.per_file.clear();
         }
     }
     p.uid = e.uid;
@@ -171,7 +180,7 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
         p.per_file.find(path) == p.per_file.end()) {
         // configured monitor paths are never trimmed from per_file
         evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES, [this](const auto &kv) {
-            return std::find(paths_.begin(), paths_.end(), kv.first) == paths_.end();
+            return monitor_paths_.count(kv.first) == 0;
         });
     }
     p.per_file[path]++;
@@ -181,7 +190,7 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     // device aggregate; configured monitor paths are never evicted
     if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(path) == devices_.end()) {
         evict_lru(devices_, MAX_DEVICE_ENTRIES, [this](const auto &kv) {
-            return std::find(paths_.begin(), paths_.end(), kv.first) == paths_.end();
+            return monitor_paths_.count(kv.first) == 0;
         });
     }
     DeviceStat &d = devices_[path];

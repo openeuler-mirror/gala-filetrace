@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -62,7 +63,10 @@ public:
     // their own devices_ entry, and an empty path counts as dropped.
     void on_event(const struct event &e, const std::string &path);
 
-    // Copy the current aggregate state under lock.
+    // Copy the current aggregate state. The deep copy runs under the same
+    // mutex producers use: bounded by the caps above, fine for the low
+    // TUI refresh rate; revisit (double-buffered publish) when wiring the
+    // ring-buffer consumer if the stall ever shows up in practice.
     StatsSnapshot snapshot() const;
 
     // Full monitored path list (normalized), used for path matching.
@@ -80,6 +84,7 @@ public:
 private:
     mutable std::mutex mutex_;
     std::vector<std::string> paths_;       // configured monitor paths
+    std::set<std::string> monitor_paths_;  // same as paths_, set for O(logP) lookups
     std::map<unsigned int, ProcStat> procs_; // keyed by pid
     std::map<std::string, DeviceStat> devices_; // keyed by rebuilt event path;
                                                 // seeded with configured paths
