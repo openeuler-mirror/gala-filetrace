@@ -90,6 +90,8 @@ filetrace: $(filter-out $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/tui_main.o,$(CXX_OBJS)
 
 TUILDFLAGS = -lncurses -ltinfo -lpthread
 
+filetrace-tui: $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o
+	@echo "Linking tui.o stats.o to filetrace-tui ..."
 filetrace-tui: $(OUTPUT_DIR)/tui_main.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o
 	@echo "Linking tui_main.o tui.o stats.o to filetrace-tui ..."
 	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $(OUTPUT_DIR)/tui_main.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o $(LDFLAGS) $(TUILDFLAGS)
