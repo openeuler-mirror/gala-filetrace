@@ -11,9 +11,11 @@
 #include "filetrace.h"
 
 // Hard caps on aggregate table size; when exceeded the least recently
-// active entry is evicted so long-running sessions stay bounded.
+// active entries are evicted (batch-wise) so long-running sessions stay
+// bounded.
 static const size_t MAX_PROC_ENTRIES = 4096;
 static const size_t MAX_DEVICE_ENTRIES = 4096;
+static const size_t MAX_PER_FILE_ENTRIES = 1024;
 
 // Aggregated statistics for one monitored file (device/file panel).
 struct DeviceStat {
@@ -25,6 +27,7 @@ struct DeviceStat {
     uint64_t renames = 0;
     uint64_t others = 0;
     uint64_t last_active_ms = 0;             // wall clock ms of last event
+    uint64_t last_seq = 0;                   // monotonic event seq for LRU
 };
 
 // Aggregated statistics for one process touching monitored files.
@@ -36,6 +39,7 @@ struct ProcStat {
     uint64_t ops = 0;                       // total operations by this process
     std::map<std::string, uint64_t> per_file; // ops per monitored path
     uint64_t last_active_ms = 0;            // wall clock ms of last event
+    uint64_t last_seq = 0;                  // monotonic event seq for LRU
 };
 
 // Snapshot of the aggregated state, handed to the TUI each refresh.
@@ -51,7 +55,9 @@ class TraceStats {
 public:
     explicit TraceStats(std::vector<std::string> monitor_paths);
 
-    // Feed one BPF event; path must be a normalized monitored path.
+    // Feed one BPF event. path is the rebuilt event path (see event_path());
+    // any path is accepted: paths outside the configured monitor set get
+    // their own devices_ entry, and an empty path counts as dropped.
     void on_event(const struct event &e, const std::string &path);
 
     // Copy the current aggregate state under lock.
@@ -76,6 +82,7 @@ private:
     std::map<std::string, DeviceStat> devices_; // keyed by configured path
     uint64_t total_events_ = 0;
     uint64_t dropped_events_ = 0;
+    uint64_t seq_ = 0;                     // monotonic counter for LRU order
 };
 
 #endif // STATS_HPP

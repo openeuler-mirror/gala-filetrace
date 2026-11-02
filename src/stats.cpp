@@ -3,26 +3,70 @@
 #include <sys/time.h>
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
-// Evict the least recently active entry when the table hits its cap.
-// Probe happens before inserting a NEW key, so an existing entry is
-// never displaced by the event being processed.
-template <typename Map, typename TimeOf>
-static void evict_lru(Map &m, TimeOf time_of)
+// Batch-evict the least recently active entries (by monotonic last_seq)
+// when a table hits its cap, trimming down to 7/8 of the cap. One O(n)
+// selection pass per batch instead of a scan per event, and no dependence
+// on wall clock (ties / clock rollback cannot misorder). `evictable`
+// may veto individual victims (e.g. configured monitor paths).
+// Probe happens before inserting a NEW key, so the key being processed
+// is never displaced.
+static const size_t EVICT_TARGET_FRAC = 8; // trim back to 7/8 of cap
+
+template <typename Map, typename Evictable>
+static void evict_lru(Map &m, size_t cap, Evictable evictable)
 {
-    if (m.empty()) {
+    size_t target = cap - cap / EVICT_TARGET_FRAC;
+    if (m.size() <= target) {
         return;
     }
-    auto victim = m.begin();
-    uint64_t oldest = time_of(victim->second);
-    for (auto it = std::next(victim); it != m.end(); ++it) {
-        uint64_t t = time_of(it->second);
-        if (t < oldest) {
-            oldest = t;
-            victim = it;
+    std::vector<uint64_t> seqs;
+    seqs.reserve(m.size());
+    for (const auto &kv : m) {
+        if (evictable(kv)) {
+            seqs.push_back(kv.second.last_seq);
         }
     }
-    m.erase(victim);
+    if (seqs.empty()) {
+        return;
+    }
+    size_t excess = std::min(m.size() - target, seqs.size());
+    std::nth_element(seqs.begin(), seqs.begin() + excess - 1, seqs.end());
+    uint64_t threshold = seqs[excess - 1];
+    for (auto it = m.begin(); it != m.end() && excess > 0;) {
+        if (it->second.last_seq <= threshold && evictable(*it)) {
+            it = m.erase(it);
+            excess--;
+        } else {
+            ++it;
+        }
+    }
+}
+
+// per_file entries carry no seq; trim the least-touched ones instead.
+static void evict_cold_files(std::map<std::string, uint64_t> &m, size_t cap)
+{
+    size_t target = cap - cap / EVICT_TARGET_FRAC;
+    if (m.size() <= target) {
+        return;
+    }
+    std::vector<uint64_t> counts;
+    counts.reserve(m.size());
+    for (const auto &kv : m) {
+        counts.push_back(kv.second);
+    }
+    size_t excess = m.size() - target;
+    std::nth_element(counts.begin(), counts.begin() + excess - 1, counts.end());
+    uint64_t threshold = counts[excess - 1];
+    for (auto it = m.begin(); it != m.end() && excess > 0;) {
+        if (it->second <= threshold) {
+            it = m.erase(it);
+            excess--;
+        } else {
+            ++it;
+        }
+    }
 }
 
 static uint64_t classify_flag(int flag)
@@ -99,30 +143,42 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
 
     // process aggregate
     if (procs_.size() >= MAX_PROC_ENTRIES && procs_.find(e.pid) == procs_.end()) {
-        evict_lru(procs_, [](const ProcStat &p) { return p.last_active_ms; });
+        evict_lru(procs_, MAX_PROC_ENTRIES,
+                  [](const auto &kv) { return true; });
     }
     ProcStat &p = procs_[e.pid];
     p.pid = e.pid;
     p.ppid = e.ppid;
-    if (p.cmd.empty()) {
-        // cmd is fixed per pid; assign only on first sight of the process
-        // so the hot path does not build a new std::string for every event.
-        p.cmd.assign(e.cmd, strnlen(e.cmd, sizeof(e.cmd)));
+    {
+        // refresh cmd on change (pid reuse / exec) without allocating on
+        // the hot path when the name is unchanged
+        size_t len = strnlen(e.cmd, sizeof(e.cmd));
+        if (len != p.cmd.size() || memcmp(p.cmd.data(), e.cmd, len) != 0) {
+            p.cmd.assign(e.cmd, len);
+        }
     }
     p.uid = e.uid;
     p.ops++;
+    if (p.per_file.size() >= MAX_PER_FILE_ENTRIES &&
+        p.per_file.find(path) == p.per_file.end()) {
+        evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES);
+    }
     p.per_file[path]++;
     p.last_active_ms = now;
+    p.last_seq = ++seq_;
 
-    // device aggregate
+    // device aggregate; configured monitor paths are never evicted
     if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(path) == devices_.end()) {
-        evict_lru(devices_, [](const DeviceStat &d) { return d.last_active_ms; });
+        evict_lru(devices_, MAX_DEVICE_ENTRIES, [this](const auto &kv) {
+            return std::find(paths_.begin(), paths_.end(), kv.first) == paths_.end();
+        });
     }
     DeviceStat &d = devices_[path];
     if (d.path.empty()) {
         d.path = path;
     }
     d.last_active_ms = now;
+    d.last_seq = ++seq_;
     d.ops++;
     if (kind & (1 << 0)) d.writes++;
     else if (kind & (1 << 1)) d.opens++;

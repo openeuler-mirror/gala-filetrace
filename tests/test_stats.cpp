@@ -104,6 +104,52 @@ static void test_copy_file_range_is_write()
     std::cout << "test_copy_file_range_is_write passed" << std::endl;
 }
 
+static void test_cmd_refresh_on_exec()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    struct event e = make_event(100, "bash", "hosts", SYS_write);
+    stats.on_event(e, "/etc/hosts");
+    stats.on_event(e, "/etc/hosts");
+
+    // same pid re-executes into a new name; snapshot must not go stale
+    struct event e2 = make_event(100, "python", "hosts", SYS_openat);
+    stats.on_event(e2, "/etc/hosts");
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.procs.size() == 1);
+    assert(snap.procs[0].cmd == "python");
+    assert(snap.procs[0].ops == 3);
+    std::cout << "test_cmd_refresh_on_exec passed" << std::endl;
+}
+
+static void test_per_file_capped()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    struct event e = make_event(100, "walk", "hosts", SYS_write);
+    for (int i = 0; i < 1100; i++) {
+        stats.on_event(e, "/wander/path" + std::to_string(i));
+    }
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.procs.size() == 1);
+    assert(snap.procs[0].per_file.size() <= MAX_PER_FILE_ENTRIES);
+    std::cout << "test_per_file_capped passed" << std::endl;
+}
+
+static void test_event_path_multi_dir()
+{
+    struct event e = make_event(1, "test", "file.txt", SYS_write);
+    snprintf(e.dir4, sizeof(e.dir4), "dir4");
+    snprintf(e.dir3, sizeof(e.dir3), "dir3");
+    snprintf(e.dir2, sizeof(e.dir2), "dir2");
+    snprintf(e.dir1, sizeof(e.dir1), "dir1");
+    // parts must join outermost-first: dir4/dir3/dir2/dir1/filename
+    assert(TraceStats::event_path(e) == "/dir4/dir3/dir2/dir1/file.txt");
+    std::cout << "test_event_path_multi_dir passed" << std::endl;
+}
+
 static void test_table_eviction()
 {
     TraceStats stats({"/etc/hosts"});
@@ -120,16 +166,21 @@ static void test_table_eviction()
     }
 
     StatsSnapshot snap = stats.snapshot();
-    assert(snap.procs.size() == MAX_PROC_ENTRIES);
-    assert(snap.devices.size() == MAX_DEVICE_ENTRIES);
+    assert(snap.procs.size() <= MAX_PROC_ENTRIES);
+    assert(snap.devices.size() <= MAX_DEVICE_ENTRIES + 1);
 
-    // pid 1 and "/etc/hosts" were the oldest and must have been evicted
+    // pid 1 was the oldest and must have been evicted
     for (const auto &p : snap.procs) {
         assert(p.pid != 1);
     }
+    // the configured monitor path is protected from eviction
+    bool found = false;
     for (const auto &d : snap.devices) {
-        assert(d.path != "/etc/hosts");
+        if (d.path == "/etc/hosts") {
+            found = true;
+        }
     }
+    assert(found);
     std::cout << "test_table_eviction passed" << std::endl;
 }
 
@@ -137,9 +188,12 @@ int main()
 {
     test_event_path_rebuild();
     test_event_path_root();
+    test_event_path_multi_dir();
     test_aggregation();
     test_trailing_slash_normalized();
     test_copy_file_range_is_write();
+    test_cmd_refresh_on_exec();
+    test_per_file_capped();
     test_table_eviction();
     std::cout << "All TraceStats tests passed" << std::endl;
     return 0;
