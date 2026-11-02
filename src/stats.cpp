@@ -238,17 +238,7 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     ProcStat &p = procs_[e.pid];
     p.pid = e.pid;
     p.ppid = e.ppid;
-    {
-        // refresh cmd on change (exec / pid reuse) without allocating on
-        // the hot path when the name is unchanged. Note: cmd is a thread
-        // comm while the key is tgid, and the event carries no process
-        // start identity, so counters stay accumulated across exec/pid
-        // reuse under the same pid (display shows the latest name).
-        size_t len = strnlen(e.cmd, sizeof(e.cmd));
-        if (len != p.cmd.size() || memcmp(p.cmd.data(), e.cmd, len) != 0) {
-            p.cmd.assign(e.cmd, len);
-        }
-    }
+    p.cmd = std::string(e.cmd, strnlen(e.cmd, sizeof(e.cmd)));
     p.uid = e.uid;
     p.ops++;
 
