@@ -278,7 +278,7 @@ void TuiApp::sort_rows()
 void TuiApp::clamp_cursors()
 {
     int n = (int)proc_rows_.size();
-    int visible = proc_height_ > 1 ? proc_height_ - 1 : 1;
+    int visible = proc_height_ - 1;
     if (proc_cursor_ >= n) {
         proc_cursor_ = n - 1;
     }
