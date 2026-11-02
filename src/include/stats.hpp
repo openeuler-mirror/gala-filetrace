@@ -33,7 +33,7 @@ struct ProcStat {
 
 // Snapshot of the aggregated state, handed to the TUI each refresh.
 struct StatsSnapshot {
-    std::vector<ProcStat> procs;    // sorted by caller
+    std::vector<ProcStat> procs;    // sorted by pid (map key order)
     std::vector<DeviceStat> devices;
     uint64_t total_events = 0;
     uint64_t dropped_events = 0;
@@ -53,9 +53,11 @@ public:
     // Full monitored path list (normalized), used for path matching.
     const std::vector<std::string> &monitor_paths() const { return paths_; }
 
-    // Build the full path "dir4/dir3/dir2/dir1/filename" from an event,
-    // then match it against the configured monitor paths. Returns the
-    // matched configured path, or "" when the event is not monitored.
+    // Build the full path "dir4/dir3/dir2/dir1/filename" from an event.
+    // Pure path reconstruction: the result is NOT matched against the
+    // configured monitor paths here. The caller decides whether the
+    // event is monitored; on_event() counts non-matching paths under
+    // their own key, and empty-path events are counted as dropped.
     static std::string event_path(const struct event &e);
 
     static uint64_t now_ms();
