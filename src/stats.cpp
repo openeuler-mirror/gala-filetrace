@@ -87,6 +87,10 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
 
     // device aggregate
     DeviceStat &d = devices_[path];
+    DeviceStat &d = devices_[path];
+    if (d.path.empty()) {
+        d.path = path;
+    }
     d.ops++;
     if (kind & (1 << 0)) d.writes++;
     else if (kind & (1 << 1)) d.opens++;
