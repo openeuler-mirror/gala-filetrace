@@ -140,6 +140,9 @@ ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
 
     if (have_prev && total_mem_kb > 0) {
         u.mem = 100.0 * (double)rss_pages * 4.0 / total_mem_kb;
+    if (have_prev && total_mem_kb > 0) {
+        static const double page_kb = sysconf(_SC_PAGESIZE) / 1024.0;
+        u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
     }
     if (have_prev && hz > 0) {
         unsigned long long dt = (utime - *last_utime) + (stime - *last_stime);
