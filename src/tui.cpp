@@ -151,16 +151,12 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     }
 
     if (have_prev && hz > 0) {
-        // clamp each delta at zero: utime/stime move backwards when a pid
-        // is reused by a new process, and unsigned wrap-around would
-        // otherwise inflate dt and pin %CPU at the 999 ceiling
-        unsigned long long dt =
-            (utime >= *last_utime ? utime - *last_utime : 0) +
-            (stime >= *last_stime ? stime - *last_stime : 0);
-        out->cpu = 100.0 * (double)dt / hz *
-                 (1000.0 / (double)opts_.refresh_ms);
-        if (out->cpu < 0) {
-            out->cpu = 0;
+        unsigned long long dt = (utime >= *last_utime ? utime - *last_utime : 0) +
+                                (stime >= *last_stime ? stime - *last_stime : 0);
+        u.cpu = 100.0 * (double)dt / hz *
+                (1000.0 / (double)opts_.refresh_ms);
+        if (u.cpu < 0) {
+            u.cpu = 0;
         }
         if (out->cpu > 999) {
             out->cpu = 999;
