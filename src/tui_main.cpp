@@ -17,7 +17,9 @@
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
-#include <thread>
+#include <getopt.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include "stats.hpp"
 #include "tui.hpp"
