@@ -79,7 +79,7 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     ProcStat &p = procs_[e.pid];
     p.pid = e.pid;
     p.ppid = e.ppid;
-    p.cmd = std::string(e.cmd, strnlen(e.cmd, MAX_CMD_LEN));
+    p.cmd = std::string(e.cmd, strnlen(e.cmd, sizeof(e.cmd)));
     p.uid = e.uid;
     p.ops++;
     p.per_file[path]++;
