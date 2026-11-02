@@ -4,10 +4,32 @@
 #include <algorithm>
 #include <cstring>
 
+// Evict the least recently active entry when the table hits its cap.
+// Probe happens before inserting a NEW key, so an existing entry is
+// never displaced by the event being processed.
+template <typename Map, typename TimeOf>
+static void evict_lru(Map &m, TimeOf time_of)
+{
+    if (m.empty()) {
+        return;
+    }
+    auto victim = m.begin();
+    uint64_t oldest = time_of(victim->second);
+    for (auto it = std::next(victim); it != m.end(); ++it) {
+        uint64_t t = time_of(it->second);
+        if (t < oldest) {
+            oldest = t;
+            victim = it;
+        }
+    }
+    m.erase(victim);
+}
+
 static uint64_t classify_flag(int flag)
 {
     switch (flag) {
-        case SYS_write:      return 1 << 0;
+        case SYS_write:            return 1 << 0;
+        case SYS_copy_file_range:  return 1 << 0;
         case SYS_openat:     return 1 << 1;
         case SYS_unlinkat:   return 1 << 2;
         case SYS_rename:
@@ -76,6 +98,9 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     total_events_++;
 
     // process aggregate
+    if (procs_.size() >= MAX_PROC_ENTRIES && procs_.find(e.pid) == procs_.end()) {
+        evict_lru(procs_, [](const ProcStat &p) { return p.last_active_ms; });
+    }
     ProcStat &p = procs_[e.pid];
     p.pid = e.pid;
     p.ppid = e.ppid;
@@ -90,10 +115,14 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.last_active_ms = now;
 
     // device aggregate
+    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(path) == devices_.end()) {
+        evict_lru(devices_, [](const DeviceStat &d) { return d.last_active_ms; });
+    }
     DeviceStat &d = devices_[path];
     if (d.path.empty()) {
         d.path = path;
     }
+    d.last_active_ms = now;
     d.ops++;
     if (kind & (1 << 0)) d.writes++;
     else if (kind & (1 << 1)) d.opens++;

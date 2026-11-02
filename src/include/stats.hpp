@@ -1,6 +1,7 @@
 #ifndef STATS_HPP
 #define STATS_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -8,6 +9,11 @@
 #include <vector>
 
 #include "filetrace.h"
+
+// Hard caps on aggregate table size; when exceeded the least recently
+// active entry is evicted so long-running sessions stay bounded.
+static const size_t MAX_PROC_ENTRIES = 4096;
+static const size_t MAX_DEVICE_ENTRIES = 4096;
 
 // Aggregated statistics for one monitored file (device/file panel).
 struct DeviceStat {
@@ -18,6 +24,7 @@ struct DeviceStat {
     uint64_t unlinks = 0;
     uint64_t renames = 0;
     uint64_t others = 0;
+    uint64_t last_active_ms = 0;             // wall clock ms of last event
 };
 
 // Aggregated statistics for one process touching monitored files.

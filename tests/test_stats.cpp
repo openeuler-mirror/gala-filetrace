@@ -90,12 +90,57 @@ static void test_trailing_slash_normalized()
     std::cout << "test_trailing_slash_normalized passed" << std::endl;
 }
 
+static void test_copy_file_range_is_write()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    struct event e = make_event(100, "cp", "hosts", SYS_copy_file_range);
+    stats.on_event(e, "/etc/hosts");
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.devices.size() == 1);
+    assert(snap.devices[0].writes == 1);
+    assert(snap.devices[0].others == 0);
+    std::cout << "test_copy_file_range_is_write passed" << std::endl;
+}
+
+static void test_table_eviction()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    struct event e = make_event(1, "init", "hosts", SYS_write);
+    stats.on_event(e, "/etc/hosts");
+
+    // flood with fresh pids/paths to overflow both tables; the pre-seeded
+    // least recently active entries must be evicted, not the current one
+    for (unsigned int pid = 2; pid < 10 + MAX_PROC_ENTRIES; pid++) {
+        struct event e2 = make_event(pid, "p", "hosts", SYS_write);
+        std::string path = "/path" + std::to_string(pid);
+        stats.on_event(e2, path);
+    }
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.procs.size() == MAX_PROC_ENTRIES);
+    assert(snap.devices.size() == MAX_DEVICE_ENTRIES);
+
+    // pid 1 and "/etc/hosts" were the oldest and must have been evicted
+    for (const auto &p : snap.procs) {
+        assert(p.pid != 1);
+    }
+    for (const auto &d : snap.devices) {
+        assert(d.path != "/etc/hosts");
+    }
+    std::cout << "test_table_eviction passed" << std::endl;
+}
+
 int main()
 {
     test_event_path_rebuild();
     test_event_path_root();
     test_aggregation();
     test_trailing_slash_normalized();
+    test_copy_file_range_is_write();
+    test_table_eviction();
     std::cout << "All TraceStats tests passed" << std::endl;
     return 0;
 }
