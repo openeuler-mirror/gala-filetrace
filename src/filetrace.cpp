@@ -227,6 +227,14 @@ int main(int argc, char **argv)
                 int rc = ring_buffer__poll(ringbuf, 100);
                 (void)rc;
             }
+        std::thread poller([ringbuf]() {
+            while (tui_running) {
+                int rc = ring_buffer__poll(ringbuf, 100);
+                if (rc < 0 && rc != -EINTR) {
+                    std::cerr << "ring_buffer__poll error: " << strerror(-rc) << std::endl;
+                    tui_running = false;
+                }
+            }
         });
 
         TuiOptions topts;
