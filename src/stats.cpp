@@ -242,76 +242,11 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.uid = e.uid;
     p.ops++;
 
-    // per_file is copy-on-write: a published snapshot shares this table,
-    // so clone it before the in-place update while a snapshot still holds
-    // a reference (use_count() > 1). Exactly one clone per process per
-    // published generation at most, and the cost is paid here by the
-    // producer instead of a deep copy of every process inside snapshot().
-    if (!p.per_file || p.per_file.use_count() > 1) {
-        p.per_file = p.per_file
-                         ? std::make_shared<std::map<std::string, uint64_t>>(*p.per_file)
-                         : std::make_shared<std::map<std::string, uint64_t>>();
-    }
-    std::map<std::string, uint64_t> &files = *p.per_file;
-
-    if (files.size() >= MAX_PER_FILE_ENTRIES && files.find(norm) == files.end()) {
-        const size_t keep =
-            MAX_PER_FILE_ENTRIES - MAX_PER_FILE_ENTRIES / EVICT_TARGET_FRAC;
-        // configured monitor paths normally survive the trim
-        size_t removed = trim_cold_files(
-            files, keep, [this](const auto &kv) { return monitor_paths_.count(kv.first) == 0; });
-        if (removed == 0) {
-            // every entry is a protected monitor path: the cap still has
-            // to hold, or the table grows with the configured path set
-            removed = trim_cold_files(files, keep, [](const auto &) { return true; });
-        }
-        per_file_entries_ -= removed;
-    }
-    auto ins = files.emplace(norm, uint64_t{0});
-    if (ins.second) {
-        per_file_entries_++;
-    }
-    ins.first->second++;
-    // the per-process cap alone still allows MAX_PROC_ENTRIES x
-    // MAX_PER_FILE_ENTRIES entries; keep the global footprint bounded
-    enforce_per_file_budget(e.pid);
-    p.last_active_ms = now;
-    p.last_seq = ++seq_;
-
-    // device aggregate. Configured monitor paths are vetoed as eviction
-    // victims, but the veto is a preference, not immunity (see the header
-    // comment in stats.hpp): when the configured set alone fills the
-    // table, a veto-respecting sweep can never free anything and the cap
-    // would be defeated, so a second pass degrades to plain LRU eviction.
-    // The devices_.size() > monitor_paths_.size() check is kept as a
-    // fast path for pass 1: more entries than configured paths implies at
-    // least one unconfigured entry, so the scan cannot come up empty.
-    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
-        if (devices_.size() > monitor_paths_.size()) {
-            // pass 1: the table holds an unconfigured entry, honor the veto
-            evict_lru(devices_, MAX_DEVICE_ENTRIES,
-                      [this](const auto &kv) {
-                          return monitor_paths_.count(kv.first) == 0;
-                      },
-                      [](const DeviceStat &) {});
-        }
-        if (devices_.size() >= MAX_DEVICE_ENTRIES) {
-            // pass 2: only configured paths remain (or the configured set
-            // itself is larger than the cap), so pass 1 freed nothing (or
-            // not enough). Evict from the LRU end regardless of the veto:
-            // the cap must hold. An evicted configured path re-enters on
-            // its next event.
-            evict_lru(devices_, MAX_DEVICE_ENTRIES,
-                      [](const auto &) { return true; },
-                      [](const DeviceStat &) {});
-        }
-    }
-    DeviceStat &d = devices_[norm];
+    // device aggregate
+    DeviceStat &d = devices_[path];
     if (d.path.empty()) {
-        d.path = norm;
+        d.path = path;
     }
-    d.last_active_ms = now;
-    d.last_seq = ++seq_;
     d.ops++;
     if (kind & (1 << 0)) d.writes++;
     else if (kind & (1 << 1)) d.opens++;

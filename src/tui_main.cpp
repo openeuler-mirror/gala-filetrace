@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <nlohmann/json.hpp>
 #include <getopt.h>
 #include <signal.h>

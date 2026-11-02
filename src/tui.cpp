@@ -135,16 +135,11 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     long rss_pages = 0;
     // fields: state(3) ppid(4) ... utime(14) stime(15) ... vsize(23) rss(24)
     if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*u %lu",
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*llu %lu",
                &utime, &stime, &rss_pages) < 3) {
         return false;
     }
 
-    if (have_prev && total_mem_kb > 0) {
-    if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*llu %lu",
-               &utime, &stime, &rss_pages) < 3) {
-    }
     if (have_prev && hz > 0) {
         // clamp each delta at zero before subtracting: utime/stime move
         // backwards when a pid is reused by a new process, and the plain
@@ -160,9 +155,21 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
             u.cpu = 999;
         }
     }
-    // hand the result back: the values above are computed from this
-    // frame's sample, and nothing else can observe them otherwise
-    *out = u;
+
+    if (total_mem_kb > 0) {
+        long page_kb = sysconf(_SC_PAGESIZE) / 1024;
+        if (page_kb <= 0) {
+            page_kb = 4;
+        }
+        u.mem = 100.0 * ((double)rss_pages * (double)page_kb) / total_mem_kb;
+        if (u.mem < 0) {
+            u.mem = 0;
+        }
+        if (u.mem > 100) {
+            u.mem = 100;
+        }
+    }
+
     *last_utime = utime;
     *last_stime = stime;
     return true;
@@ -709,7 +716,7 @@ void TuiApp::scroll_list(int delta)
 {
     if (focus_ == Focus::Devices) {
         int n = (int)snap_.devices.size();
-        int visible = dev_height_ - DEV_HEADER;
+        int visible = dev_height_ - DEV_HEADER - 1;
         if (visible <= 0) {
             return;
         }
@@ -799,11 +806,19 @@ void TuiApp::handle_key(int ch)
             break;
         case KEY_UP:
         case 'k':
-            move_proc_cursor(-1);
+            if (focus_ == Focus::Devices) {
+                scroll_list(-1);
+            } else {
+                move_proc_cursor(-1);
+            }
             break;
         case KEY_DOWN:
         case 'j':
-            move_proc_cursor(1);
+            if (focus_ == Focus::Devices) {
+                scroll_list(1);
+            } else {
+                move_proc_cursor(1);
+            }
             break;
         case KEY_PPAGE:
             scroll_list(-std::max(proc_height_ - 1, 1));

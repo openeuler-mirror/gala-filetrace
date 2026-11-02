@@ -48,8 +48,9 @@ static void test_event_path_root()
     struct event e = make_event(1, "test", "", SYS_write);
     snprintf(e.dir1, sizeof(e.dir1), "/");
     // no path information at all: "" (same as exporter's get_full_path),
-    // so on_event() can count it as dropped
-    assert(TraceStats::event_path(e) == "");
+    // so on_event() counts such events as dropped
+    std::string path = TraceStats::event_path(e);
+    assert(path == "");
     std::cout << "test_event_path_root passed" << std::endl;
 }
 
