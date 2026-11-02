@@ -303,10 +303,7 @@ void TuiApp::sort_rows()
 void TuiApp::clamp_cursors()
 {
     int n = (int)proc_rows_.size();
-    // one line of the process panel is the column header, so only
-    // proc_height_ - 1 body rows are visible; counting the header row
-    // lets the selected row scroll one line past the screen
-    int visible = proc_height_ - 1;
+    int visible = proc_height_ > 1 ? proc_height_ - 1 : 1;
     if (proc_cursor_ >= n) {
         proc_cursor_ = n - 1;
     }
