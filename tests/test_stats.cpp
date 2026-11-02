@@ -141,10 +141,11 @@ static void test_cmd_refresh_on_exec()
 
     StatsSnapshot snap = stats.snapshot();
     assert(snap.procs.size() == 1);
+    // display shows the latest name; counters stay accumulated (cmd is a
+    // thread comm, the key is tgid — no process identity to reset on)
     assert(snap.procs[0].cmd == "python");
-    // exec/pid-reuse resets per-process counters: only the python event counts
-    assert(snap.procs[0].ops == 1);
-    assert(snap.procs[0].per_file.at("/etc/hosts") == 1);
+    assert(snap.procs[0].ops == 3);
+    assert(snap.procs[0].per_file.at("/etc/hosts") == 3);
     std::cout << "test_cmd_refresh_on_exec passed" << std::endl;
 }
 

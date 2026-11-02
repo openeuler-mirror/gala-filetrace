@@ -135,7 +135,11 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
             norm.pop_back();
         }
         paths_.push_back(norm);
-        monitor_paths_.insert(norm);
+        if (!monitor_paths_.insert(norm).second) {
+            // duplicate configured path: one devices_ entry is enough
+            paths_.pop_back();
+            continue;
+        }
         devices_[norm].path = norm;
     }
 }
@@ -163,15 +167,14 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.pid = e.pid;
     p.ppid = e.ppid;
     {
-        // refresh cmd on change (pid reuse / exec) without allocating on
-        // the hot path when the name is unchanged
+        // refresh cmd on change (exec / pid reuse) without allocating on
+        // the hot path when the name is unchanged. Note: cmd is a thread
+        // comm while the key is tgid, and the event carries no process
+        // start identity, so counters stay accumulated across exec/pid
+        // reuse under the same pid (display shows the latest name).
         size_t len = strnlen(e.cmd, sizeof(e.cmd));
         if (len != p.cmd.size() || memcmp(p.cmd.data(), e.cmd, len) != 0) {
             p.cmd.assign(e.cmd, len);
-            // a new name under the same pid is a new program (exec or
-            // pid reuse): start its per-process counters from zero
-            p.ops = 0;
-            p.per_file.clear();
         }
     }
     p.uid = e.uid;
