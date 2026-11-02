@@ -179,6 +179,20 @@ static void test_event_path_multi_dir()
     std::cout << "test_event_path_multi_dir passed" << std::endl;
 }
 
+static void test_empty_monitor_path_ignored()
+{
+    // an empty configured path is skipped, not normalized to "/"
+    TraceStats stats({""});
+    assert(stats.monitor_paths().empty());
+
+    struct event e = make_event(1, "t", "hosts", SYS_write);
+    stats.on_event(e, "/etc/hosts");
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.devices.size() == 1);
+    assert(snap.devices[0].path == "/etc/hosts");
+    std::cout << "test_empty_monitor_path_ignored passed" << std::endl;
+}
+
 static void test_table_eviction()
 {
     TraceStats stats({"/etc/hosts"});
@@ -196,7 +210,7 @@ static void test_table_eviction()
 
     StatsSnapshot snap = stats.snapshot();
     assert(snap.procs.size() <= MAX_PROC_ENTRIES);
-    assert(snap.devices.size() <= MAX_DEVICE_ENTRIES + 1);
+    assert(snap.devices.size() <= MAX_DEVICE_ENTRIES);
 
     // pid 1 was the oldest and must have been evicted
     for (const auto &p : snap.procs) {
@@ -273,6 +287,7 @@ int main()
     test_trailing_slash_normalized();
     test_copy_file_range_is_write();
     test_classification();
+    test_empty_monitor_path_ignored();
     test_cmd_refresh_on_exec();
     test_per_file_capped();
     test_table_eviction();

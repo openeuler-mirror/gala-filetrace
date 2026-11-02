@@ -122,12 +122,13 @@ std::string TraceStats::event_path(const struct event &e)
 TraceStats::TraceStats(std::vector<std::string> monitor_paths)
 {
     for (auto &p : monitor_paths) {
+        if (p.empty()) {
+            // an empty configured path is meaningless input, not "/"
+            continue;
+        }
         std::string norm = p;
         while (norm.size() > 1 && norm.back() == '/') {
             norm.pop_back();
-        }
-        if (norm.empty()) {
-            norm = "/";
         }
         paths_.push_back(norm);
         devices_[norm].path = norm;

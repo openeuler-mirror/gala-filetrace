@@ -174,5 +174,5 @@ test: all
 	@./tests/test_exporter
 
 	@echo "Building and running TraceStats unit tests"
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_stats tests/test_stats.cpp $(OUTPUT_DIR)/stats.o
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_stats tests/test_stats.cpp $(OUTPUT_DIR)/stats.o -pthread
 	@./tests/test_stats
