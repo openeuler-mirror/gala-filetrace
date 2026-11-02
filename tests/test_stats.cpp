@@ -1,7 +1,11 @@
+#undef NDEBUG  // keep every assert active even if built with -DNDEBUG
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <atomic>
+#include <thread>
+#include <vector>
 
 #include "stats.hpp"
 
@@ -184,6 +188,57 @@ static void test_table_eviction()
     std::cout << "test_table_eviction passed" << std::endl;
 }
 
+static void test_concurrent_access()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    const int kThreads = 4;
+    const int kEvents = 2000;
+
+    std::atomic<bool> stop{false};
+    std::thread reader([&]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            StatsSnapshot snap = stats.snapshot();
+            uint64_t ops_sum = 0;
+            for (const auto &p : snap.procs) {
+                ops_sum += p.ops;
+            }
+            // snapshot internal consistency: per-process ops can never
+            // exceed the total events counted so far
+            assert(ops_sum <= snap.total_events);
+            uint64_t dev_ops = 0;
+            for (const auto &d : snap.devices) {
+                dev_ops += d.ops;
+            }
+            assert(dev_ops <= snap.total_events);
+        }
+    });
+
+    std::vector<std::thread> writers;
+    for (int t = 0; t < kThreads; t++) {
+        writers.emplace_back([&stats, t]() {
+            unsigned int pid = 1000 + (unsigned int)t;
+            for (int i = 0; i < kEvents; i++) {
+                struct event e = make_event(pid, "worker", "hosts", SYS_write);
+                stats.on_event(e, "/etc/hosts");
+            }
+        });
+    }
+    for (auto &th : writers) {
+        th.join();
+    }
+    stop = true;
+    reader.join();
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.total_events == (uint64_t)kThreads * kEvents);
+    assert(snap.dropped_events == 0);
+    assert(snap.procs.size() == (size_t)kThreads);
+    assert(snap.devices.size() == 1);
+    assert(snap.devices[0].ops == (uint64_t)kThreads * kEvents);
+    std::cout << "test_concurrent_access passed" << std::endl;
+}
+
 int main()
 {
     test_event_path_rebuild();
@@ -195,6 +250,7 @@ int main()
     test_cmd_refresh_on_exec();
     test_per_file_capped();
     test_table_eviction();
+    test_concurrent_access();
     std::cout << "All TraceStats tests passed" << std::endl;
     return 0;
 }
