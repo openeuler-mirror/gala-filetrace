@@ -621,7 +621,7 @@ void TuiApp::render_help()
         "  h / ?            toggle this help (sampling continues)  ",
         "  q                quit from main view                    ",
         "  Tab              switch focus: devices <-> processes    ",
-        "  Up / Down, j / k move selection (process focus)         ",
+        "  Up / Down, j / k move selection (procs) / scroll (devs) ",
         "  PageUp/PageDown  page up / page down                    ",
         "  Home / End       jump to first / last row               ",
         "  Left / Right     scroll long command lines horizontally ",
@@ -837,7 +837,7 @@ void TuiApp::handle_key(int ch)
         case KEY_END:
             if (focus_ == Focus::Devices) {
                 int n = (int)snap_.devices.size();
-                int visible = dev_height_ - DEV_HEADER;
+                int visible = dev_height_ - DEV_HEADER - 1;
                 device_scroll_ = visible > 0 ? std::max(n - visible, 0) : 0;
             } else if (!proc_rows_.empty()) {
                 proc_cursor_ = (int)proc_rows_.size() - 1;
