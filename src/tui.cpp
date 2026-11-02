@@ -140,9 +140,10 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
         return false;
     }
 
-    if (total_mem_kb > 0) {
-        static const double page_kb = sysconf(_SC_PAGESIZE) / 1024.0;
-        u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
+    if (have_prev && total_mem_kb > 0) {
+    if (sscanf(p + 2,
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*llu %lu",
+               &utime, &stime, &rss_pages) < 3) {
     }
     if (have_prev && hz > 0) {
         // clamp each delta at zero before subtracting: utime/stime move
