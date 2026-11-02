@@ -109,6 +109,24 @@ static void test_copy_file_range_is_write()
     std::cout << "test_copy_file_range_is_write passed" << std::endl;
 }
 
+static void test_classification()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    struct event e = make_event(100, "mv", "hosts", SYS_rename);
+    stats.on_event(e, "/etc/hosts");
+    struct event e2 = make_event(100, "mv", "hosts", SYS_renameat2);
+    stats.on_event(e2, "/etc/hosts");
+    struct event e3 = make_event(100, "sh", "hosts", SYS_dup2);
+    stats.on_event(e3, "/etc/hosts");
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.devices.size() == 1);
+    assert(snap.devices[0].renames == 2);
+    assert(snap.devices[0].others == 1);
+    std::cout << "test_classification passed" << std::endl;
+}
+
 static void test_cmd_refresh_on_exec()
 {
     TraceStats stats({"/etc/hosts"});
@@ -133,6 +151,9 @@ static void test_per_file_capped()
     TraceStats stats({"/etc/hosts"});
 
     struct event e = make_event(100, "walk", "hosts", SYS_write);
+    // monitored path gets a single hit; without the protection veto the
+    // flood below (all count 1) would trim it away first
+    stats.on_event(e, "/etc/hosts");
     for (int i = 0; i < 1100; i++) {
         stats.on_event(e, "/wander/path" + std::to_string(i));
     }
@@ -140,6 +161,9 @@ static void test_per_file_capped()
     StatsSnapshot snap = stats.snapshot();
     assert(snap.procs.size() == 1);
     assert(snap.procs[0].per_file.size() <= MAX_PER_FILE_ENTRIES);
+    // the configured monitor path must survive the trim with its count
+    assert(snap.procs[0].per_file.count("/etc/hosts") == 1);
+    assert(snap.procs[0].per_file.at("/etc/hosts") == 1);
     std::cout << "test_per_file_capped passed" << std::endl;
 }
 
@@ -248,6 +272,7 @@ int main()
     test_aggregation();
     test_trailing_slash_normalized();
     test_copy_file_range_is_write();
+    test_classification();
     test_cmd_refresh_on_exec();
     test_per_file_capped();
     test_table_eviction();

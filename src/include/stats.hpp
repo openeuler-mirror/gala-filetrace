@@ -10,9 +10,11 @@
 
 #include "filetrace.h"
 
-// Hard caps on aggregate table size; when exceeded the least recently
-// active entries are evicted (batch-wise) so long-running sessions stay
-// bounded.
+// Hard caps on aggregate table entry counts; when exceeded the least
+// recently active entries are evicted (batch-wise). Worst-case memory
+// is the product of the caps (MAX_PROC_ENTRIES x MAX_PER_FILE_ENTRIES
+// per-path strings) plus the devices_ table, so lower MAX_PER_FILE_
+// ENTRIES if resident size matters more than per-path detail.
 static const size_t MAX_PROC_ENTRIES = 4096;
 static const size_t MAX_DEVICE_ENTRIES = 4096;
 static const size_t MAX_PER_FILE_ENTRIES = 1024;
