@@ -239,6 +239,11 @@ int main(int argc, char **argv)
                 if (rc < 0 && rc != -EINTR) {
                     std::cerr << "ring_buffer__poll error: " << strerror(-rc) << std::endl;
                     tui_running = false;
+                    // stop the UI too: leaving it running would freeze on
+                    // stale data until the user quits
+                    if (g_tui) {
+                        g_tui->request_stop();
+                    }
                 }
             }
         });

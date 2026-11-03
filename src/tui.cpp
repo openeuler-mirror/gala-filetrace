@@ -138,7 +138,14 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     }
 
     if (total_mem_kb > 0) {
-        u.mem = 100.0 * (double)rss_pages * 4.0 / total_mem_kb;
+        // /proc/<pid>/stat rss (field 24) is reported in pages of
+        // PAGE_SIZE (same units procps uses), so convert with the
+        // runtime page size instead of assuming 4 KiB
+        long page_kb = sysconf(_SC_PAGESIZE) / 1024;
+        if (page_kb <= 0) {
+            page_kb = 4;
+        }
+        u.mem = 100.0 * ((double)rss_pages * (double)page_kb) / total_mem_kb;
     }
     if (have_prev && hz > 0) {
         // clamp each delta at zero before subtracting: utime/stime move
@@ -229,8 +236,25 @@ void TuiApp::sample_once()
 {
     snap_ = stats_.snapshot();
     proc_rows_ = snap_.procs;
-    // %CPU/%MEM must be sampled for this frame's rows BEFORE sorting,
-    // otherwise the sort keys come from the previous frame's usage data
+    sort_rows();
+    // the selection tracks a pid, but the cursor is an index into
+    // proc_rows_: re-sorting (new events, changed order) moves rows, so
+    // re-locate the selected process after every refresh; if it exited,
+    // clear the selection instead of pointing at an unrelated row
+    if (selection_active_ && selected_pid_ != 0) {
+        bool found = false;
+        for (int idx = 0; idx < (int)proc_rows_.size(); idx++) {
+            if (proc_rows_[idx].pid == selected_pid_) {
+                proc_cursor_ = idx;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            selection_active_ = false;
+            selected_pid_ = 0;
+        }
+    }
     sample_proc_usage();
     sort_rows();
     clamp_cursors();
@@ -776,11 +800,13 @@ void TuiApp::handle_mouse(const MouseEvent &ev)
         int idx = proc_scroll_ + row;
         if (idx < (int)proc_rows_.size()) {
             proc_cursor_ = idx;
+            selected_pid_ = proc_rows_[idx].pid;
             selection_active_ = true;
         }
         return;
     }
     selection_active_ = false;
+    selected_pid_ = 0;
 }
 
 
@@ -790,6 +816,7 @@ void TuiApp::move_proc_cursor(int delta)
         return;
     }
     selection_active_ = true;
+    selected_pid_ = proc_rows_[proc_cursor_].pid;
     proc_cursor_ += delta;
     if (proc_cursor_ < 0) {
         proc_cursor_ = 0;
@@ -845,6 +872,7 @@ void TuiApp::escape()
         default:
             if (selection_active_) {
                 selection_active_ = false;
+                selected_pid_ = 0;
             } else {
                 running_ = false;
             }

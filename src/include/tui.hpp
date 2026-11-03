@@ -140,6 +140,7 @@ private:
     int h_scroll_ = 0;                     // horizontal command-line scroll
     unsigned int detail_pid_ = 0;
     bool selection_active_ = false;
+    unsigned int selected_pid_ = 0;   // pid behind the active selection
 
     // cached screen geometry
     int rows_ = 0, cols_ = 0;
