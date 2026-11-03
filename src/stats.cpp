@@ -152,7 +152,14 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
 
 void TraceStats::on_event(const struct event &e, const std::string &path)
 {
-    if (path.empty()) {
+    // normalize the incoming path the same way the constructor normalizes
+    // configured paths, so both build identical devices_ keys (a configured
+    // "/var/log/" and events on it must not create two entries)
+    std::string norm = path;
+    while (norm.size() > 1 && norm.back() == '/') {
+        norm.pop_back();
+    }
+    if (norm.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
         dropped_events_++;
         return;
@@ -186,25 +193,25 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.uid = e.uid;
     p.ops++;
     if (p.per_file.size() >= MAX_PER_FILE_ENTRIES &&
-        p.per_file.find(path) == p.per_file.end()) {
+        p.per_file.find(norm) == p.per_file.end()) {
         // configured monitor paths are never trimmed from per_file
         evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES, [this](const auto &kv) {
             return monitor_paths_.count(kv.first) == 0;
         });
     }
-    p.per_file[path]++;
+    p.per_file[norm]++;
     p.last_active_ms = now;
     p.last_seq = ++seq_;
 
     // device aggregate; configured monitor paths are never evicted
-    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(path) == devices_.end()) {
+    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
         evict_lru(devices_, MAX_DEVICE_ENTRIES, [this](const auto &kv) {
             return monitor_paths_.count(kv.first) == 0;
         });
     }
-    DeviceStat &d = devices_[path];
+    DeviceStat &d = devices_[norm];
     if (d.path.empty()) {
-        d.path = path;
+        d.path = norm;
     }
     d.last_active_ms = now;
     d.last_seq = ++seq_;
