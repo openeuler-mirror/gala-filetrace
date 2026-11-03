@@ -551,8 +551,8 @@ void TuiApp::render_procs()
         x += w;
     }
 
-    // rows
-    int visible = proc_height_;
+    // rows: the column header occupies one line, matching clamp_cursors
+    int visible = proc_height_ - 1;
     for (int row = 0; row < visible; row++) {
         int idx = proc_scroll_ + row;
         y++;
