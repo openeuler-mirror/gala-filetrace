@@ -100,6 +100,12 @@ uint64_t TraceStats::now_ms()
 
 std::string TraceStats::event_path(const struct event &e)
 {
+    // rename/renameat events carry the absolute destination in filename;
+    // when it is already absolute, it IS the path and the dir chain
+    // (which describes the source directory) must not be prepended
+    if (e.filename[0] == '/') {
+        return std::string(e.filename);
+    }
     std::string fullpath;
     // dirs + filename are fixed-size arrays; one reservation avoids
     // repeated reallocation while appending

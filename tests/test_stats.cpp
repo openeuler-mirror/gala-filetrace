@@ -32,6 +32,17 @@ static void test_event_path_rebuild()
     std::cout << "test_event_path_rebuild passed" << std::endl;
 }
 
+static void test_event_path_absolute_filename()
+{
+    // rename events carry the absolute destination in filename: it IS
+    // the path and the dir chain must not be prepended
+    struct event e = make_event(1, "test", "/tmp/newname", SYS_rename);
+    snprintf(e.dir1, sizeof(e.dir1), "etc");
+    snprintf(e.dir2, sizeof(e.dir2), "log");
+    assert(TraceStats::event_path(e) == "/tmp/newname");
+    std::cout << "test_event_path_absolute_filename passed" << std::endl;
+}
+
 static void test_event_path_root()
 {
     struct event e = make_event(1, "test", "", SYS_write);
@@ -284,6 +295,7 @@ static void test_concurrent_access()
 int main()
 {
     test_event_path_rebuild();
+    test_event_path_absolute_filename();
     test_event_path_root();
     test_event_path_multi_dir();
     test_aggregation();

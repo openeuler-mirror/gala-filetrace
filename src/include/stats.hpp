@@ -40,7 +40,10 @@ struct ProcStat {
     std::string cmd;
     unsigned int uid = 0;
     uint64_t ops = 0;                       // total operations by this process
-    std::map<std::string, uint64_t> per_file; // ops per monitored path
+    std::map<std::string, uint64_t> per_file; // ops per path seen by this
+                                              // process (monitor path for
+                                              // matched events, rebuilt
+                                              // event path otherwise)
     uint64_t last_active_ms = 0;            // wall clock ms of last event
     uint64_t last_seq = 0;                  // monotonic event seq for LRU
 };
