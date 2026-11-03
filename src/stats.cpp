@@ -152,7 +152,16 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
 
 void TraceStats::on_event(const struct event &e, const std::string &path)
 {
-    if (path.empty() || monitor_paths_.count(path) == 0) {
+    // normalize the incoming path the same way the constructor normalizes
+    // configured paths, so both build identical devices_ keys. Events on
+    // paths outside the configured monitor set still aggregate under
+    // their own key (the snapshot shows them as unconfigured entries);
+    // only events with no path information at all are dropped.
+    std::string norm = path;
+    while (norm.size() > 1 && norm.back() == '/') {
+        norm.pop_back();
+    }
+    if (norm.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
         dropped_events_++;
         gen_.fetch_add(1, std::memory_order_release);
@@ -187,25 +196,25 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.uid = e.uid;
     p.ops++;
     if (p.per_file.size() >= MAX_PER_FILE_ENTRIES &&
-        p.per_file.find(path) == p.per_file.end()) {
+        p.per_file.find(norm) == p.per_file.end()) {
         // configured monitor paths are never trimmed from per_file
         evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES, [this](const auto &kv) {
             return monitor_paths_.count(kv.first) == 0;
         });
     }
-    p.per_file[path]++;
+    p.per_file[norm]++;
     p.last_active_ms = now;
     p.last_seq = ++seq_;
 
     // device aggregate; configured monitor paths are never evicted
-    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(path) == devices_.end()) {
+    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
         evict_lru(devices_, MAX_DEVICE_ENTRIES, [this](const auto &kv) {
             return monitor_paths_.count(kv.first) == 0;
         });
     }
-    DeviceStat &d = devices_[path];
+    DeviceStat &d = devices_[norm];
     if (d.path.empty()) {
-        d.path = path;
+        d.path = norm;
     }
     d.last_active_ms = now;
     d.last_seq = ++seq_;
