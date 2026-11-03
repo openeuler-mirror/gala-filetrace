@@ -158,6 +158,9 @@ int main(int argc, char **argv)
 
     std::atomic<bool> running{true};
     std::thread feeder;
+    // Safe to share TraceStats across threads: on_event() and snapshot()
+    // serialize on TraceStats' internal mutex, so the demo feeder writing
+    // here and the UI thread taking snapshots cannot race.
     if (demo) {
         feeder = std::thread(demo_feed, std::ref(stats), paths, std::ref(running));
     }

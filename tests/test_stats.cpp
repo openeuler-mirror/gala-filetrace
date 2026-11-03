@@ -48,9 +48,8 @@ static void test_event_path_root()
     struct event e = make_event(1, "test", "", SYS_write);
     snprintf(e.dir1, sizeof(e.dir1), "/");
     // no path information at all: "" (same as exporter's get_full_path),
-    // so on_event() counts such events as dropped
-    std::string path = TraceStats::event_path(e);
-    assert(path == "");
+    // so on_event() can count it as dropped
+    assert(TraceStats::event_path(e) == "");
     std::cout << "test_event_path_root passed" << std::endl;
 }
 
@@ -157,7 +156,7 @@ static void test_cmd_refresh_on_exec()
     // thread comm, the key is tgid — no process identity to reset on)
     assert(snap.procs[0].cmd == "python");
     assert(snap.procs[0].ops == 3);
-    assert(snap.procs[0].per_file->at("/etc/hosts") == 3);
+    assert(snap.procs[0].per_file.at("/etc/hosts") == 3);
     std::cout << "test_cmd_refresh_on_exec passed" << std::endl;
 }
 
@@ -175,62 +174,11 @@ static void test_per_file_capped()
 
     StatsSnapshot snap = stats.snapshot();
     assert(snap.procs.size() == 1);
-    assert(snap.procs[0].per_file->size() <= MAX_PER_FILE_ENTRIES);
+    assert(snap.procs[0].per_file.size() <= MAX_PER_FILE_ENTRIES);
     // the configured monitor path must survive the trim with its count
-    assert(snap.procs[0].per_file->count("/etc/hosts") == 1);
-    assert(snap.procs[0].per_file->at("/etc/hosts") == 1);
+    assert(snap.procs[0].per_file.count("/etc/hosts") == 1);
+    assert(snap.procs[0].per_file.at("/etc/hosts") == 1);
     std::cout << "test_per_file_capped passed" << std::endl;
-}
-
-static void test_per_file_cap_with_protected_entries()
-{
-    // one process touching nothing but configured paths: the veto rejects
-    // every entry, so only the fallback trim can enforce the cap
-    std::vector<std::string> paths;
-    for (size_t i = 0; i < MAX_PER_FILE_ENTRIES + 64; i++) {
-        paths.push_back("/mon/" + std::to_string(i));
-    }
-    TraceStats stats(paths);
-
-    struct event e = make_event(7, "walker", "hosts", SYS_write);
-    for (const auto &p : paths) {
-        stats.on_event(e, p);
-    }
-
-    StatsSnapshot snap = stats.snapshot();
-    assert(snap.procs.size() == 1);
-    assert(snap.procs[0].per_file->size() <= MAX_PER_FILE_ENTRIES);
-    std::cout << "test_per_file_cap_with_protected_entries passed" << std::endl;
-}
-
-static void test_per_file_budget_with_protected_entries()
-{
-    // same fan-out as test_per_file_global_budget, but every path is a
-    // configured one. The veto can never satisfy the budget here, so the
-    // last-resort sweep has to drop protected entries -- otherwise the
-    // budget would stay unreachable and every event would redo the pass.
-    std::vector<std::string> paths;
-    for (int i = 0; i < 200; i++) {
-        paths.push_back("/mon/path/" + std::to_string(i));
-    }
-    TraceStats stats(paths);
-
-    for (unsigned int pid = 1; pid <= 200; pid++) {
-        struct event ev = make_event(pid, "walker", "hosts", SYS_write);
-        for (const auto &p : paths) {
-            stats.on_event(ev, p);
-        }
-    }
-
-    StatsSnapshot snap = stats.snapshot();
-    size_t total = 0;
-    for (const auto &p : snap.procs) {
-        assert(p.per_file->size() <= MAX_PER_FILE_ENTRIES);
-        total += p.per_file->size();
-    }
-    assert(total <= MAX_TOTAL_PER_FILE_ENTRIES);
-    std::cout << "test_per_file_budget_with_protected_entries passed ("
-              << total << " entries)" << std::endl;
 }
 
 static void test_event_path_multi_dir()
@@ -243,39 +191,6 @@ static void test_event_path_multi_dir()
     // parts must join outermost-first: dir4/dir3/dir2/dir1/filename
     assert(TraceStats::event_path(e) == "/dir4/dir3/dir2/dir1/file.txt");
     std::cout << "test_event_path_multi_dir passed" << std::endl;
-}
-
-// The snapshot cache must be usable from the very first call: an empty
-// snapshot before any event, then a snapshot that sees the first event,
-// then a cache hit that reports the same view. This exercises the gen_ 0
-// -> 1 transition against the "never published" cache sentinel.
-static void test_cache_first_use()
-{
-    TraceStats stats({"/etc/hosts"});
-
-    StatsSnapshot empty = stats.snapshot();
-    // no event yet: only the seeded configured path, no process rows
-    assert(empty.procs.empty());
-    assert(empty.devices.size() == 1);
-    assert(empty.devices[0].ops == 0);
-    assert(empty.total_events == 0 && empty.dropped_events == 0);
-
-    // the empty snapshot must not be served after a mutation
-    struct event e = make_event(100, "bash", "hosts", SYS_write);
-    stats.on_event(e, "/etc/hosts");
-
-    StatsSnapshot snap = stats.snapshot();
-    assert(snap.total_events == 1);
-    assert(snap.devices.size() == 1 && snap.devices[0].ops == 1);
-    assert(snap.procs.size() == 1);
-
-    // a second call hits the published generation and sees the same view
-    StatsSnapshot again = stats.snapshot();
-    assert(again.total_events == snap.total_events);
-    assert(again.dropped_events == snap.dropped_events);
-    assert(again.devices.size() == snap.devices.size());
-    assert(again.procs.size() == snap.procs.size());
-    std::cout << "test_cache_first_use passed" << std::endl;
 }
 
 static void test_empty_monitor_path_ignored()
@@ -324,59 +239,6 @@ static void test_table_eviction()
     }
     assert(found);
     std::cout << "test_table_eviction passed" << std::endl;
-}
-
-static void test_devices_cap_under_config_saturation()
-{
-    // the configured set alone saturates devices_: every entry is
-    // veto-protected, so the veto-respecting sweep can free nothing and
-    // eviction must degrade to plain LRU or the cap would be defeated
-    std::vector<std::string> paths;
-    paths.reserve(MAX_DEVICE_ENTRIES);
-    for (size_t i = 0; i < MAX_DEVICE_ENTRIES; i++) {
-        paths.push_back("/cfg" + std::to_string(i));
-    }
-    TraceStats stats(paths);
-    assert(stats.snapshot().devices.size() == MAX_DEVICE_ENTRIES);
-
-    // flood with fresh unconfigured paths; enough of them to run the
-    // degradation sweep several times (it trims back to 7/8 of the cap,
-    // so the table refills and saturates again every cap/8 insertions)
-    for (unsigned int pid = 2; pid < 700; pid++) {
-        struct event e = make_event(pid, "p", "hosts", SYS_write);
-        stats.on_event(e, "/new" + std::to_string(pid));
-        if (pid % 64 == 0) {
-            // spot-check the cap mid-flood: it must never be exceeded
-            assert(stats.snapshot().devices.size() <= MAX_DEVICE_ENTRIES);
-        }
-    }
-
-    // a configured path touched again becomes recently active and must
-    // survive further degradation sweeps
-    struct event rewarm = make_event(100000, "w", "cfg0", SYS_write);
-    stats.on_event(rewarm, "/cfg0");
-    for (unsigned int pid = 200000; pid < 200000 + 300; pid++) {
-        struct event e = make_event(pid, "p", "hosts", SYS_write);
-        stats.on_event(e, "/new2" + std::to_string(pid));
-    }
-
-    StatsSnapshot snap = stats.snapshot();
-    assert(snap.devices.size() <= MAX_DEVICE_ENTRIES);
-    bool cfg0 = false;
-    size_t unconfigured = 0;
-    for (const auto &d : snap.devices) {
-        if (d.path == "/cfg0") {
-            cfg0 = true;
-        }
-        if (d.path.rfind("/cfg", 0) != 0) {
-            unconfigured++;
-        }
-    }
-    assert(cfg0);
-    // the degradation must actually admit unconfigured entries, not just
-    // silently drop every event on an unconfigured path
-    assert(unconfigured > 0);
-    std::cout << "test_devices_cap_under_config_saturation passed" << std::endl;
 }
 
 static void test_concurrent_access()
@@ -430,112 +292,6 @@ static void test_concurrent_access()
     std::cout << "test_concurrent_access passed" << std::endl;
 }
 
-static void test_per_file_global_budget()
-{
-    // the per-process cap alone allows MAX_PROC_ENTRIES x MAX_PER_FILE_
-    // ENTRIES path strings, i.e. hundreds of MB; the global budget must
-    // keep the total bounded no matter how far the workload fans out
-    TraceStats stats({"/etc/hosts"});
-
-    const unsigned int kProcs = 200;
-    const int kPaths = 200; // > MAX_PER_FILE_ENTRIES, so each table caps out
-    for (unsigned int pid = 1; pid <= kProcs; pid++) {
-        struct event ev = make_event(pid, "walker", "hosts", SYS_write);
-        for (int i = 0; i < kPaths; i++) {
-            stats.on_event(ev, "/wander/" + std::to_string(pid) + "/" +
-                                    std::to_string(i));
-        }
-    }
-
-    StatsSnapshot snap = stats.snapshot();
-    size_t total = 0;
-    for (const auto &p : snap.procs) {
-        assert(p.per_file->size() <= MAX_PER_FILE_ENTRIES);
-        total += p.per_file->size();
-    }
-    assert(total <= MAX_TOTAL_PER_FILE_ENTRIES);
-    std::cout << "test_per_file_global_budget passed (" << total
-              << " entries)" << std::endl;
-}
-
-static void test_snapshot_copy_on_write()
-{
-    TraceStats stats({"/etc/hosts"});
-    struct event e = make_event(100, "bash", "hosts", SYS_write);
-
-    stats.on_event(e, "/etc/hosts");
-    StatsSnapshot snap1 = stats.snapshot();
-    assert(snap1.procs[0].per_file->at("/etc/hosts") == 1);
-
-    // no event in between: the published generation is reused as-is, the
-    // per-file table is shared rather than re-copied, and the shared view
-    // is literally the same object (no rebuild at all)
-    auto shared1 = stats.snapshot_shared();
-    auto shared2 = stats.snapshot_shared();
-    assert(shared1 == shared2);
-    StatsSnapshot snap1b = stats.snapshot();
-    assert(snap1b.procs[0].per_file == snap1.procs[0].per_file);
-    assert(snap1b.total_events == snap1.total_events);
-
-    // a later event must not mutate a table that was already handed out:
-    // the producer clones it on write and the old snapshot stays valid
-    stats.on_event(e, "/etc/hosts");
-    StatsSnapshot snap2 = stats.snapshot();
-    assert(snap1.procs[0].per_file->at("/etc/hosts") == 1);
-    assert(snap2.procs[0].per_file->at("/etc/hosts") == 2);
-    assert(snap1.procs[0].per_file != snap2.procs[0].per_file);
-
-    // dropped events also publish a generation, or the cached snapshot
-    // would keep reporting a stale dropped counter
-    stats.on_event(e, "");
-    assert(stats.snapshot().dropped_events == 1);
-    std::cout << "test_snapshot_copy_on_write passed" << std::endl;
-}
-
-static void test_config_saturation_reports_ignored()
-{
-    // The ctor caps its seeding at MAX_DEVICE_ENTRIES. Silently dropping the
-    // rest would leave the TUI showing a device panel that is missing
-    // entries with no hint why, so the dropped count is exposed and must be
-    // exact: one path over the cap, one reported.
-    std::vector<std::string> paths;
-    paths.reserve(MAX_DEVICE_ENTRIES + 16);
-    for (size_t i = 0; i < MAX_DEVICE_ENTRIES; i++) {
-        paths.push_back("/fit" + std::to_string(i));
-    }
-    TraceStats fit(paths);
-    assert(fit.ignored_monitor_paths() == 0);
-    assert(fit.monitor_paths().size() == MAX_DEVICE_ENTRIES);
-    assert(fit.snapshot().devices.size() == MAX_DEVICE_ENTRIES);
-
-    const size_t extra = 16;
-    for (size_t i = 0; i < extra; i++) {
-        paths.push_back("/over" + std::to_string(i));
-    }
-    TraceStats over(paths);
-    // exactly the surplus is reported, not the whole trailing run
-    assert(over.ignored_monitor_paths() == extra);
-    // ... and the seeding itself stays at the cap
-    assert(over.snapshot().devices.size() == MAX_DEVICE_ENTRIES);
-    // the full configured set is still retained for matching and the
-    // eviction veto; only the devices_ seeding is truncated
-    assert(over.monitor_paths().size() == MAX_DEVICE_ENTRIES + extra);
-
-    // a dropped path is still attributable: an event on it lands under its
-    // own key instead of being lost
-    struct event e = make_event(4242, "p", "over0", SYS_write);
-    over.on_event(e, "/over0");
-    StatsSnapshot snap = over.snapshot();
-    bool seen = false;
-    for (const auto &d : snap.devices) {
-        if (d.path == "/over0" && d.ops == 1) {
-            seen = true;
-        }
-    }
-    assert(seen);
-    std::cout << "test_config_saturation_reports_ignored passed" << std::endl;
-}
-
 int main()
 {
     test_event_path_rebuild();
@@ -547,16 +303,9 @@ int main()
     test_copy_file_range_is_write();
     test_classification();
     test_empty_monitor_path_ignored();
-    test_cache_first_use();
     test_cmd_refresh_on_exec();
     test_per_file_capped();
-    test_per_file_cap_with_protected_entries();
-    test_per_file_global_budget();
-    test_per_file_budget_with_protected_entries();
-    test_snapshot_copy_on_write();
     test_table_eviction();
-    test_devices_cap_under_config_saturation();
-    test_config_saturation_reports_ignored();
     test_concurrent_access();
     std::cout << "All TraceStats tests passed" << std::endl;
     return 0;

@@ -104,13 +104,20 @@ static double read_total_mem_kb()
     return kb;
 }
 
-// Returns true and fills *out / *last_* on a successful /proc/<pid>/stat
-// read; on failure leaves both untouched so the caller keeps its previous
-// baseline and can carry the last good sample forward.
+static unsigned long long read_boot_ms_since()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+    return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Returns true and fills *u / *last_* on a successful /proc/<pid>/stat
+// read; on failure leaves *last_* untouched so the caller keeps its
+// previous baseline.
 bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
                              unsigned long long *last_utime,
                              unsigned long long *last_stime,
-                             double hz, bool have_prev, ProcUsage *out)
+                             double hz, bool have_prev)
 {
     ProcUsage u;
     char path[64];
@@ -203,7 +210,7 @@ void TuiApp::sample_proc_usage()
         unsigned long long stime = have_prev ? prev[row.pid].stime : 0;
         ProcUsage u;
         bool ok = read_proc_usage(row.pid, total_mem_kb,
-                                  &utime, &stime, hz, have_prev, &u);
+                                  &utime, &stime, hz, have_prev);
         if (ok) {
             s.utime = utime;
             s.stime = stime;
@@ -249,9 +256,9 @@ void TuiApp::sample_once()
 // sorting / view helpers
 // ---------------------------------------------------------------------------
 
-// Sort the process rows by the current sort column/direction.
-// (Column cycling and direction toggling are wired up in a later stage;
-// this keeps the default view: OPS descending.)
+// Sort the process rows by the current sort column/direction. The
+// column is cycled with s/S and the direction flipped with / (both in
+// handle_key); default view is OPS descending.
 void TuiApp::sort_rows()
 {
     std::sort(proc_rows_.begin(), proc_rows_.end(),
@@ -584,11 +591,14 @@ void TuiApp::render_procs()
         std::string view = cmd;
         if (h_scroll_ < 0 && (int)cmd.size() > cmd_w) {
             int start = -h_scroll_;
-            if (start < (int)cmd.size()) {
-                view = cmd.substr(start);
-            } else {
-                view = "";
+            int max_start = (int)cmd.size() - cmd_w;
+            if (start > max_start) {
+                start = max_start;   // never scroll past the line tail
             }
+            if (start < 0) {
+                start = 0;
+            }
+            view = cmd.substr(start);
         }
         mvprintw(y, x, "%-*s", cmd_w, trim_to_width(view, cmd_w).c_str());
         if (selected || (focus_ == Focus::Procs && idx == proc_cursor_)) {
@@ -821,10 +831,18 @@ void TuiApp::handle_key(int ch)
             }
             break;
         case KEY_PPAGE:
-            scroll_list(-std::max(proc_height_ - 1, 1));
+            if (focus_ == Focus::Devices) {
+                scroll_list(-std::max(dev_height_ - DEV_HEADER - 1, 1));
+            } else {
+                scroll_list(-std::max(proc_height_ - 1, 1));
+            }
             break;
         case KEY_NPAGE:
-            scroll_list(std::max(proc_height_ - 1, 1));
+            if (focus_ == Focus::Devices) {
+                scroll_list(std::max(dev_height_ - DEV_HEADER - 1, 1));
+            } else {
+                scroll_list(std::max(proc_height_ - 1, 1));
+            }
             break;
         case KEY_HOME:
             if (focus_ == Focus::Devices) {
@@ -855,6 +873,24 @@ void TuiApp::handle_key(int ch)
             if (h_scroll_ > 0) {
                 h_scroll_ = 0;
             }
+            break;
+        case 's':
+        case 'S':
+            // cycle sort column: OPS -> %MEM -> %CPU -> PID -> COMMAND
+            switch (sort_col_) {
+                case SortColumn::Ops: sort_col_ = SortColumn::Mem; break;
+                case SortColumn::Mem: sort_col_ = SortColumn::Cpu; break;
+                case SortColumn::Cpu: sort_col_ = SortColumn::Pid; break;
+                case SortColumn::Pid: sort_col_ = SortColumn::Cmd; break;
+                case SortColumn::Cmd: sort_col_ = SortColumn::Ops; break;
+            }
+            sort_rows();
+            clamp_cursors();
+            break;
+        case '/':
+            sort_desc_ = !sort_desc_;
+            sort_rows();
+            clamp_cursors();
             break;
         case '\n':
         case '\r':

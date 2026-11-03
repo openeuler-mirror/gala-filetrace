@@ -64,8 +64,6 @@ private:
     // --- one sampling tick ---
     void sample_once();
     void sample_proc_usage();
-    // Reads /proc/<pid>/stat and hands the computed usage back through
-    // *out; *last_utime/*last_stime are updated on success only.
     bool read_proc_usage(unsigned int pid, double total_mem_kb,
                                      unsigned long long *last_utime,
                                      unsigned long long *last_stime,
