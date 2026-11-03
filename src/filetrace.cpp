@@ -27,6 +27,7 @@ static struct filetrace_bpf *skel;
 PostData *postdata_i = nullptr;
 static TraceStats *tui_stats = nullptr;   // set in TUI mode
 static std::atomic<bool> tui_running{true};
+static TuiApp *g_tui = nullptr;           // set while the TUI runs
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     //trace libbpf messages to stderr
@@ -65,10 +66,13 @@ static void select_copy_file_range_probe(struct filetrace_bpf *skel)
 static void sig_handler(int sig)
 {
     std::cout << "Signal received: Exiting BPF program." << std::endl;
-    if (skel) {
-        filetrace_bpf__destroy(skel); 
+    // Only stop the loops here. Destroying skel from the signal handler
+    // would race ring_buffer__poll on the poller thread (UAF) and leak
+    // the ringbuf; cleanup happens on the main thread after the join.
+    tui_running = false;
+    if (g_tui) {
+        g_tui->request_stop();
     }
-    exit(0);
 }
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
@@ -102,7 +106,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 break;
             }
         }
-        tui_stats->on_event(*e, matched);
+        // matched events aggregate under their configured monitor path;
+        // unmatched ones count under their own rebuilt path (never "",
+        // which on_event treats as dropped)
+        tui_stats->on_event(*e, matched.empty() ? full : matched);
         return 0;
     }
 
@@ -225,11 +232,6 @@ int main(int argc, char **argv)
         std::thread poller([ringbuf]() {
             while (tui_running) {
                 int rc = ring_buffer__poll(ringbuf, 100);
-                (void)rc;
-            }
-        std::thread poller([ringbuf]() {
-            while (tui_running) {
-                int rc = ring_buffer__poll(ringbuf, 100);
                 if (rc < 0 && rc != -EINTR) {
                     std::cerr << "ring_buffer__poll error: " << strerror(-rc) << std::endl;
                     tui_running = false;
@@ -239,7 +241,9 @@ int main(int argc, char **argv)
 
         TuiOptions topts;
         TuiApp tui(stats, topts);
+        g_tui = &tui;
         tui.run();                    // blocks until the user quits
+        g_tui = nullptr;
 
         tui_running = false;
         poller.join();
@@ -250,7 +254,7 @@ int main(int argc, char **argv)
     }
 
     // Poll the ring buffer for events
-    while (true)
+    while (tui_running)
     {
         err = ring_buffer__poll(ringbuf, 100);
         if (err < 0) {

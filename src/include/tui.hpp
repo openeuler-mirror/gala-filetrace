@@ -8,7 +8,15 @@
 
 #include "stats.hpp"
 
-#include <ncurses.h>   // MEVENT, KEY_MOUSE, key macros
+// Minimal mouse event snapshot, mirroring the MEVENT fields the UI
+// needs. Defined here instead of ncurses' MEVENT so this public header
+// does not leak <ncurses.h> macros (move/clear/erase/OK...) into every
+// includer; tui.cpp converts from MEVENT at the getch() call site.
+struct MouseEvent {
+    short id = 0;
+    int x = 0, y = 0, z = 0;
+    unsigned long bstate = 0;
+};
 
 // Which panel the keyboard focus is on.
 enum class Focus { Devices, Procs };
@@ -94,7 +102,7 @@ private:
     void cycle_sort();
     void reverse_sort();
     void set_sort_column(SortColumn col);
-    void handle_mouse(const MEVENT &ev);
+    void handle_mouse(const MouseEvent &ev);
 
     // x offset of each process-table column (recomputed each render)
     int col_x_[8] = {0};

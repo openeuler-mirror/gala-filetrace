@@ -130,33 +130,15 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     }
     unsigned long long utime = 0, stime = 0;
     long rss_pages = 0;
-    // fields: state(3) ppid(4) ... utime(14) stime(15) ...
-    //         starttime(22) vsize(23) rss(24)
-    if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %lu",
+    // fields: state(3) ppid(4) ... utime(14) stime(15) ... vsize(23) rss(24)
     if (sscanf(p + 2,
                "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*u %lu",
                &utime, &stime, &rss_pages) < 3) {
         return false;
     }
 
-    // rss is reported in pages; the page size is 4 KB on x86-64 but 16 or
-    // 64 KB on other kernels, so query it once instead of assuming. Doing
-    // it per process per tick would put a sysconf() call in the hot path
-    // of a sweep that runs over every row.
-    static const double page_kb = [] {
-        long psz = sysconf(_SC_PAGESIZE);
-        return psz > 0 ? (double)psz / 1024.0 : 4.0;
-    }();
-
     if (total_mem_kb > 0) {
-        u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
-        if (u.mem < 0) {
-            u.mem = 0;
-        }
-        if (u.mem > 100) {
-            u.mem = 100;
-        }
+        u.mem = 100.0 * (double)rss_pages * 4.0 / total_mem_kb;
     }
     if (have_prev && hz > 0) {
         // clamp each delta at zero before subtracting: utime/stime move
@@ -356,25 +338,13 @@ void TuiApp::run()
     render();
     auto last_sample = std::chrono::steady_clock::now();
 
-    while (running_) {
-        // getch() blocks up to one refresh interval, so a key press or a
-        // click is handled the moment it arrives instead of waiting out a
-        // full sleep'ed tick first.
-        int ch = getch();
-        if (ch != ERR) {
-            // Drain the whole typeahead buffer before drawing: a burst of
-            // keys must be handled immediately, but one full-screen render
-            // per event is wasted work. The drain itself uses a zero
-            // timeout so the batch ends as soon as the buffer is empty.
-            timeout(0);
-            do {
-                if (ch == KEY_MOUSE) {
-                    MEVENT ev;
-                    if (getmouse(&ev) == OK) {
-                        handle_mouse(ev);
-                    }
-                } else {
-                    handle_key(ch);
+        int ch;
+        while ((ch = getch()) != ERR) {
+            if (ch == KEY_MOUSE) {
+                MEVENT ev;
+                if (getmouse(&ev) == OK) {
+                    handle_mouse(MouseEvent{ev.id, ev.x, ev.y, ev.z,
+                                            (unsigned long)ev.bstate});
                 }
                 if (!running_) {
                     break;
@@ -776,7 +746,7 @@ static SortColumn column_to_sort(const char *title)
 // mouse
 // ---------------------------------------------------------------------------
 
-void TuiApp::handle_mouse(const MEVENT &ev)
+void TuiApp::handle_mouse(const MouseEvent &ev)
 {
     int mx = ev.x, my = ev.y;
 
@@ -802,6 +772,8 @@ void TuiApp::handle_mouse(const MEVENT &ev)
     // process row click selects; click below the table (footer/blank)
     // clears the selection
     int row = my - proc_top_ - 1;    // -1 for column header
+    // only proc_height_ - 1 rows are drawn (last panel line is the
+    // separator), matching render_procs and clamp_cursors
     if (row >= 0 && row < proc_height_ - 1) {
         int idx = proc_scroll_ + row;
         if (idx < (int)proc_rows_.size()) {

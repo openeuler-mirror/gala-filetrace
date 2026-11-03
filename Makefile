@@ -82,16 +82,14 @@ $(CXX_OBJS): $(OUTPUT_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OUTPUT_DIR)
 	@echo "Compiling $< to $@ ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -MMD -MP -o $@ $<
 
-# the daemon must not link the TUI translation units: tui_main.o has
-# its own main() and tui.o pulls in the ncurses dependency
-filetrace: $(filter-out $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/tui_main.o,$(CXX_OBJS))
+# the standalone tui_main.o has its own main() and must not be linked
+# into the daemon; tui.o stays because -t mode embeds the TUI
+filetrace: $(filter-out $(OUTPUT_DIR)/tui_main.o,$(CXX_OBJS))
 	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
 	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS)
 
 TUILDFLAGS = -lncurses -ltinfo -lpthread
 
-filetrace-tui: $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o
-	@echo "Linking tui.o stats.o to filetrace-tui ..."
 filetrace-tui: $(OUTPUT_DIR)/tui_main.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o
 	@echo "Linking tui_main.o tui.o stats.o to filetrace-tui ..."
 	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $(OUTPUT_DIR)/tui_main.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o $(LDFLAGS) $(TUILDFLAGS)
@@ -173,7 +171,7 @@ rpm:
 .PHONY: test
 test: all
 	@echo "Building and running PostData unit tests"
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_postdata tests/test_postdata.cpp $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(LDFLAGS)
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_postdata tests/test_postdata.cpp $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/tui.o $(LDFLAGS) $(TUILDFLAGS)
 	@./tests/test_postdata
 
 	@echo "Building and running Logger unit tests"
