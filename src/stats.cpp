@@ -146,14 +146,13 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
             paths_.pop_back();
             continue;
         }
-        devices_[norm].path = norm;
     }
 }
 
 void TraceStats::on_event(const struct event &e, const std::string &path)
 {
     // normalize the incoming path the same way the constructor normalizes
-    // configured paths, so both build identical devices_ keys. Events on
+    // configured paths, so both build identical aggregate keys. Events on
     // paths outside the configured monitor set still aggregate under
     // their own key (the snapshot shows them as unconfigured entries);
     // only events with no path information at all are dropped.
@@ -163,23 +162,42 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     }
     if (norm.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
-        dropped_events_++;
-        gen_.fetch_add(1, std::memory_order_release);
+        pending_dropped_events_++;
         return;
     }
 
-    uint64_t now = now_ms();
+    // Keep the producer critical section O(1): just enqueue the event.
+    // The actual aggregation runs on the snapshot() builder thread.
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pending_.size() >= kMaxPendingEvents) {
+        // bounded queue: drop the oldest event rather than grow without
+        // limit when the consumer stalls; it counts as dropped.
+        pending_.pop_front();
+        pending_dropped_events_++;
+    }
+    PendingEvent pe;
+    pe.e = e;
+    pe.path = std::move(norm);
+    pending_.push_back(std::move(pe));
+    pending_total_events_++;
+}
+
+// Fold one queued feed event into the aggregate. Runs on the snapshot()
+// builder thread, never under the producer mutex. `monitor_paths` is
+// immutable after construction, so it is read without locking.
+void TraceStats::apply_event(TraceStats::Aggregate &agg, const struct event &e,
+                        const std::string &norm,
+                        const std::set<std::string> &monitor_paths,
+                        uint64_t now)
+{
     uint64_t kind = classify_flag(e.flag);
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    total_events_++;
-
     // process aggregate
-    if (procs_.size() >= MAX_PROC_ENTRIES && procs_.find(e.pid) == procs_.end()) {
-        evict_lru(procs_, MAX_PROC_ENTRIES,
+    if (agg.procs.size() >= MAX_PROC_ENTRIES && agg.procs.find(e.pid) == agg.procs.end()) {
+        evict_lru(agg.procs, MAX_PROC_ENTRIES,
                   [](const auto &kv) { return true; });
     }
-    ProcStat &p = procs_[e.pid];
+    ProcStat &p = agg.procs[e.pid];
     p.pid = e.pid;
     p.ppid = e.ppid;
     {
@@ -198,26 +216,26 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     if (p.per_file.size() >= MAX_PER_FILE_ENTRIES &&
         p.per_file.find(norm) == p.per_file.end()) {
         // configured monitor paths are never trimmed from per_file
-        evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES, [this](const auto &kv) {
-            return monitor_paths_.count(kv.first) == 0;
+        evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES, [&monitor_paths](const auto &kv) {
+            return monitor_paths.count(kv.first) == 0;
         });
     }
     p.per_file[norm]++;
     p.last_active_ms = now;
-    p.last_seq = ++seq_;
+    p.last_seq = ++agg.seq;
 
     // device aggregate; configured monitor paths are never evicted
-    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
-        evict_lru(devices_, MAX_DEVICE_ENTRIES, [this](const auto &kv) {
-            return monitor_paths_.count(kv.first) == 0;
+    if (agg.devices.size() >= MAX_DEVICE_ENTRIES && agg.devices.find(norm) == agg.devices.end()) {
+        evict_lru(agg.devices, MAX_DEVICE_ENTRIES, [&monitor_paths](const auto &kv) {
+            return monitor_paths.count(kv.first) == 0;
         });
     }
-    DeviceStat &d = devices_[norm];
+    DeviceStat &d = agg.devices[norm];
     if (d.path.empty()) {
         d.path = norm;
     }
     d.last_active_ms = now;
-    d.last_seq = ++seq_;
+    d.last_seq = ++agg.seq;
     d.ops++;
     if (kind & (1 << 0)) d.writes++;
     else if (kind & (1 << 1)) d.opens++;
@@ -332,6 +350,67 @@ std::shared_ptr<const StatsSnapshot> TraceStats::snapshot_shared() const
 
 StatsSnapshot TraceStats::snapshot() const
 {
-    // convenience wrapper: same view, handed out as a value
-    return *snapshot_shared();
+    // One builder at a time: the drain/build/publish sequence below takes
+    // sole ownership of the published state, so concurrent builders would
+    // otherwise base their copy on a detached aggregate.
+    std::lock_guard<std::mutex> build(build_mutex_);
+
+    std::deque<PendingEvent> batch;
+    uint64_t ev = 0, dr = 0;
+    {
+        // short critical section: swap out the queue, take the deltas
+        std::lock_guard<std::mutex> lock(mutex_);
+        batch.swap(pending_);
+        ev = pending_total_events_;
+        dr = pending_dropped_events_;
+        pending_total_events_ = pending_dropped_events_ = 0;
+    }
+
+    // Take sole ownership of the published aggregate (O(1)); producers
+    // never touch it, so everything from here on runs lock-free.
+    std::shared_ptr<Aggregate> owned;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        owned = std::const_pointer_cast<Aggregate>(last_);
+        last_.reset();
+    }
+    if (!owned) {
+        owned = std::make_shared<Aggregate>();
+    }
+    // configured paths always appear in the snapshot, even before their
+    // first event (the aggregate is created once and reused, so seeding
+    // here covers every later snapshot as well)
+    for (const auto &p : paths_) {
+        DeviceStat &d = owned->devices[p];
+        if (d.path.empty()) {
+            d.path = p;
+        }
+    }
+    owned->total_events += ev;
+    owned->dropped_events += dr;
+    uint64_t now = now_ms();
+    for (auto &pe : batch) {
+        apply_event(*owned, pe.e, pe.path, monitor_paths_, now);
+    }
+
+    // Build the TUI-facing vectors off the producer path.
+    StatsSnapshot snap;
+    snap.total_events = owned->total_events;
+    snap.dropped_events = owned->dropped_events;
+    snap.devices.reserve(owned->devices.size());
+    for (const auto &kv : owned->devices) {
+        snap.devices.push_back(kv.second);
+    }
+    snap.procs.reserve(owned->procs.size());
+    for (const auto &kv : owned->procs) {
+        snap.procs.push_back(kv.second);
+    }
+
+    // Publish via an O(1) pointer swap.
+    std::shared_ptr<const Aggregate> published = owned;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_ = published;
+    }
+    return snap;
 }

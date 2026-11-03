@@ -3,7 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -74,14 +74,15 @@ public:
     explicit TraceStats(std::vector<std::string> monitor_paths);
 
     // Feed one BPF event. path is the rebuilt event path (see event_path());
-    // only paths in the configured monitor set are aggregated. Events whose
-    // path is empty or outside the monitor set count only as dropped.
+    // every non-empty path aggregates (configured or not, so per-file
+    // counters stay meaningful); empty paths count only as dropped.
     void on_event(const struct event &e, const std::string &path);
 
-    // Copy the current aggregate state. The deep copy runs under the same
-    // mutex producers use: bounded by the caps above, fine for the low
-    // TUI refresh rate; revisit (double-buffered publish) when wiring the
-    // ring-buffer consumer if the stall ever shows up in practice.
+    // Copy the current aggregate state. Producers only enqueue the event
+    // under a short critical section; the heavy aggregation and deep copy
+    // run here, outside the producer mutex (drain-and-build, published via
+    // an O(1) pointer swap), so the ring-buffer consumer is never stalled
+    // by a snapshot.
     StatsSnapshot snapshot() const;
 
     // Full monitored path list (normalized), used for path matching.
@@ -92,29 +93,50 @@ public:
     // results, so configured absolute paths can be prefix-matched).
     // Pure path reconstruction: the result is NOT matched against the
     // configured monitor paths here. The caller decides whether the
-    // event is monitored; on_event() aggregates only paths in the
-    // monitor set, and everything else (including empty paths) is
-    // counted as dropped.
+    // event is monitored; on_event() aggregates every non-empty path
+    // (configured or not), and empty paths count only as dropped.
     static std::string event_path(const struct event &e);
 
     static uint64_t now_ms();
 
 private:
-    // Trim per_file tables, least recently active process first, until the
-    // global entry budget (MAX_TOTAL_PER_FILE_ENTRIES) is met again.
-    // keep_pid is never trimmed: the caller is inserting into it. Caller
-    // holds mutex_.
-    void enforce_per_file_budget(unsigned int keep_pid);
+    // Aggregated state, built off the producer path and published via an
+    // O(1) shared_ptr swap; producers never touch a published instance.
+    struct Aggregate {
+        std::map<unsigned int, ProcStat> procs; // keyed by pid
+        std::map<std::string, DeviceStat> devices; // keyed by rebuilt path
+        uint64_t seq = 0;                      // monotonic counter for LRU
+        uint64_t total_events = 0;
+        uint64_t dropped_events = 0;
+    };
 
-    mutable std::mutex mutex_;
+    // Feed event queued by on_event(), aggregated by snapshot() off the
+    // producer path.
+    struct PendingEvent {
+        struct event e;
+        std::string path;   // normalized feed path (never empty)
+    };
+
+    // Cap on queued events: past this the oldest events are dropped (and
+    // counted as dropped) so the queue cannot grow without bound when the
+    // consumer stalls.
+    static const size_t kMaxPendingEvents = 65536;
+
+    mutable std::mutex mutex_;             // guards the queue + deltas below
+    mutable std::mutex build_mutex_;       // serializes snapshot() builders
+    mutable std::deque<PendingEvent> pending_;
+    mutable uint64_t pending_total_events_ = 0;    // deltas not yet folded into last_
+    mutable uint64_t pending_dropped_events_ = 0;
+    mutable std::shared_ptr<const Aggregate> last_; // latest published state
     std::vector<std::string> paths_;       // configured monitor paths
     std::set<std::string> monitor_paths_;  // same as paths_, set for O(logP) lookups
-    std::map<unsigned int, ProcStat> procs_; // keyed by pid
-    std::map<std::string, DeviceStat> devices_; // keyed by rebuilt event path;
-                                                // seeded with configured paths
-    uint64_t total_events_ = 0;
-    uint64_t dropped_events_ = 0;
-    uint64_t seq_ = 0;                     // monotonic counter for LRU order
+
+    // Fold one queued feed event into the aggregate. Runs on the
+    // snapshot() builder thread, never under the producer mutex.
+    static void apply_event(Aggregate &agg, const struct event &e,
+                            const std::string &norm,
+                            const std::set<std::string> &monitor_paths,
+                            uint64_t now);
 };
 
 #endif // STATS_HPP
