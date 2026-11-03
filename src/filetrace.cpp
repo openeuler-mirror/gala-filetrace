@@ -107,8 +107,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             }
         }
         // matched events aggregate under their configured monitor path;
-        // unmatched ones count under their own rebuilt path (never "",
-        // which on_event treats as dropped)
+        // unmatched (or unrebuildable) paths count as dropped in on_event
         tui_stats->on_event(*e, matched.empty() ? full : matched);
         return 0;
     }

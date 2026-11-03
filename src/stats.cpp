@@ -152,14 +152,7 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
 
 void TraceStats::on_event(const struct event &e, const std::string &path)
 {
-    // normalize the incoming path the same way the constructor normalizes
-    // configured paths, so both build identical devices_ keys (a configured
-    // "/var/log/" and events on it must not create two entries)
-    std::string norm = path;
-    while (norm.size() > 1 && norm.back() == '/') {
-        norm.pop_back();
-    }
-    if (norm.empty()) {
+    if (path.empty() || monitor_paths_.count(path) == 0) {
         std::lock_guard<std::mutex> lock(mutex_);
         dropped_events_++;
         gen_.fetch_add(1, std::memory_order_release);
