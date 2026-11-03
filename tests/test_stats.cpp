@@ -221,6 +221,10 @@ static void test_table_eviction()
         struct event e2 = make_event(pid, "p", "hosts", SYS_write);
         std::string path = "/path" + std::to_string(pid);
         stats.on_event(e2, path);
+    for (unsigned int pid = 2; pid < 2 + MAX_PROC_ENTRIES + MAX_DEVICE_ENTRIES; pid++) {
+        struct event e2 = make_event(pid, "p", "hosts", SYS_write);
+        std::string path = "/path" + std::to_string(pid);
+        stats.on_event(e2, path);
     }
 
     StatsSnapshot snap = stats.snapshot();
