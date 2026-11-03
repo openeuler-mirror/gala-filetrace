@@ -177,6 +177,11 @@ int main(int argc, char **argv)
         return err;
     }
     //init PostData instance
+    // Note on BPF-side configuration: the BPF program carries no
+    // monitor-path config (its only rodata is self_tgid, written above
+    // before load). Path filtering is entirely user-space: PostData's
+    // handler for daemon mode, TraceStats via tui_stats for TUI mode.
+    // TUI mode therefore needs no PostData-equivalent setup here.
     if (!tui_mode) {
         postdata_i = new PostData(skel, config_file, verbose, file_path);
         if (!postdata_i)
@@ -257,10 +262,17 @@ int main(int argc, char **argv)
     while (tui_running)
     {
         err = ring_buffer__poll(ringbuf, 100);
+        if (err == -EINTR) {
+            continue;   // signal-interrupted: just re-check the stop flag
+        }
         if (err < 0) {
             std::cerr << "Error: " << strerror(errno) << "("<< errno <<")"<< std::endl;
             break;
         }
+    }
+    if (!tui_running) {
+        // graceful signal shutdown, not a polling failure
+        err = 0;
     }
 
     if (ringbuf)

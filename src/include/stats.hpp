@@ -87,7 +87,9 @@ public:
     // Full monitored path list (normalized), used for path matching.
     const std::vector<std::string> &monitor_paths() const { return paths_; }
 
-    // Build the full path "dir4/dir3/dir2/dir1/filename" from an event.
+    // Build the absolute event path "/dir4/dir3/dir2/dir1/filename"
+    // from an event (the leading '/' is always present for non-empty
+    // results, so configured absolute paths can be prefix-matched).
     // Pure path reconstruction: the result is NOT matched against the
     // configured monitor paths here. The caller decides whether the
     // event is monitored; on_event() counts non-matching paths under

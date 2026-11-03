@@ -464,9 +464,7 @@ void TuiApp::render_devices()
         x += w;
     }
 
-    // rows, honoring device_scroll_. The panel's last line is the panel
-    // separator drawn below, so it must be reserved here: counting it as
-    // a data row makes the separator overwrite the last visible device.
+    // rows, honoring device_scroll_
     int visible = dev_height_ - DEV_HEADER - 1;
     for (int row = 0; row < visible; row++) {
         int idx = device_scroll_ + row;
@@ -808,7 +806,6 @@ void TuiApp::scroll_list(int delta)
 {
     if (focus_ == Focus::Devices) {
         int n = (int)snap_.devices.size();
-        // one line each for the panel separator (see render_devices)
         int visible = dev_height_ - DEV_HEADER - 1;
         if (visible <= 0) {
             return;
