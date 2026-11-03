@@ -216,7 +216,8 @@ static void test_table_eviction()
 
     // flood with fresh pids/paths to overflow both tables; the pre-seeded
     // least recently active entries must be evicted, not the current one
-    for (unsigned int pid = 2; pid < 10 + MAX_PROC_ENTRIES; pid++) {
+    constexpr unsigned int kLastFloodPid = 10 + MAX_PROC_ENTRIES;
+    for (unsigned int pid = 2; pid <= kLastFloodPid; pid++) {
         struct event e2 = make_event(pid, "p", "hosts", SYS_write);
         std::string path = "/path" + std::to_string(pid);
         stats.on_event(e2, path);
