@@ -1,5 +1,5 @@
 REQUIRED_TOOLS := clang bpftool
-REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
+REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm ncurses-devel
 REQUIRED_FILES := /usr/include/httplib.h
 
 SRC_DIR := src
@@ -82,15 +82,17 @@ $(CXX_OBJS): $(OUTPUT_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OUTPUT_DIR)
 	@echo "Compiling $< to $@ ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -MMD -MP -o $@ $<
 
-filetrace: $(CXX_OBJS)
+# the daemon must not link the TUI translation units: tui_main.o has
+# its own main() and tui.o pulls in the ncurses dependency
+filetrace: $(filter-out $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/tui_main.o,$(CXX_OBJS))
 	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS) $(TUILDFLAGS)
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS)
 
 TUILDFLAGS = -lncurses -ltinfo -lpthread
 
-filetrace-tui: $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o
-	@echo "Linking tui.o stats.o to filetrace-tui ..."
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o $(LDFLAGS) $(TUILDFLAGS)
+filetrace-tui: $(OUTPUT_DIR)/tui_main.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o
+	@echo "Linking tui_main.o tui.o stats.o to filetrace-tui ..."
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $(OUTPUT_DIR)/tui_main.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o $(LDFLAGS) $(TUILDFLAGS)
 
 $(OUTPUT_DIR):
 	@mkdir -p $@

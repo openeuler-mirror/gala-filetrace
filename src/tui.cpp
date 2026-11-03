@@ -94,53 +94,43 @@ static double read_total_mem_kb()
     return kb;
 }
 
-static unsigned long long read_boot_ms_since()
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_BOOTTIME, &ts);
-    return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
-                                  unsigned long long *last_utime,
-                                  unsigned long long *last_stime,
-                                  double hz, bool have_prev)
+// Returns true and fills *u / *last_* on a successful /proc/<pid>/stat
+// read; on failure leaves *last_* untouched so the caller keeps its
+// previous baseline.
+bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
+                             unsigned long long *last_utime,
+                             unsigned long long *last_stime,
+                             double hz, bool have_prev)
 {
     ProcUsage u;
     char path[64];
     snprintf(path, sizeof(path), "/proc/%u/stat", pid);
     FILE *f = fopen(path, "r");
     if (!f) {
-        return u;
+        return false;
     }
     char line[512];
     if (!fgets(line, sizeof(line), f)) {
         fclose(f);
-        return u;
+        return false;
     }
     fclose(f);
 
     // fields after the comm in parentheses
     char *p = strrchr(line, ')');
     if (!p) {
-        return u;
+        return false;
     }
     unsigned long long utime = 0, stime = 0;
     long rss_pages = 0;
-    // fields: state(3) ppid(4) ... utime(14) stime(15) ... rss(24)
-    if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %lu",
-               &utime, &stime, &rss_pages) < 3) {
-        return u;
+    // fields: state(3) ppid(4) ... utime(14) stime(15) ... vsize(23) rss(24)
     if (sscanf(p + 2,
                "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*u %lu",
                &utime, &stime, &rss_pages) < 3) {
-        return u;
+        return false;
     }
 
-    if (have_prev && total_mem_kb > 0) {
-        u.mem = 100.0 * (double)rss_pages * 4.0 / total_mem_kb;
-    if (have_prev && total_mem_kb > 0) {
+    if (total_mem_kb > 0) {
         static const double page_kb = sysconf(_SC_PAGESIZE) / 1024.0;
         u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
     }
@@ -157,7 +147,7 @@ ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     }
     *last_utime = utime;
     *last_stime = stime;
-    return u;
+    return true;
 }
 
 struct UsageSample {
@@ -181,21 +171,28 @@ void TuiApp::sample_proc_usage()
     std::swap(prev, cur);
     cur.clear();
 
-    double boot_ms = (double)read_boot_ms_since();
-
     for (auto &row : proc_rows_) {
         UsageSample s;
-        ProcUsage u = read_proc_usage(row.pid, total_mem_kb,
-                                      &s.utime, &s.stime, hz,
-                                      prev.count(row.pid) &&
-                                          prev[row.pid].have);
-        if (prev.count(row.pid)) {
+        bool have_prev = prev.count(row.pid) && prev[row.pid].have;
+        unsigned long long utime = have_prev ? prev[row.pid].utime : 0;
+        unsigned long long stime = have_prev ? prev[row.pid].stime : 0;
+        ProcUsage u;
+        bool ok = read_proc_usage(row.pid, total_mem_kb,
+                                  &utime, &stime, hz, have_prev);
+        if (ok) {
+            s.utime = utime;
+            s.stime = stime;
+            s.have = true;
+            usage_[row.pid] = u;
+        } else if (have_prev) {
+            // carry the last good sample forward so the delta baseline
+            // survives transient read failures (e.g. pid vanished mid-tick)
+            s.utime = prev[row.pid].utime;
+            s.stime = prev[row.pid].stime;
             s.have = true;
         }
         cur[row.pid] = s;
-        usage_[row.pid] = u;
     }
-    (void)boot_ms;
 }
 
 void TuiApp::sample_once()
@@ -248,7 +245,7 @@ void TuiApp::sort_rows()
 void TuiApp::clamp_cursors()
 {
     int n = (int)proc_rows_.size();
-    int visible = proc_height_;
+    int visible = proc_height_ > 1 ? proc_height_ - 1 : 1;
     if (proc_cursor_ >= n) {
         proc_cursor_ = n - 1;
     }
@@ -403,8 +400,8 @@ void TuiApp::render_devices()
         x += w;
     }
 
-    // rows, honoring device_scroll_
-    int visible = dev_height_ - DEV_HEADER;
+    // rows, honoring device_scroll_; the bottom line is the separator
+    int visible = dev_height_ - DEV_HEADER - 1;
     for (int row = 0; row < visible; row++) {
         int idx = device_scroll_ + row;
         y++;

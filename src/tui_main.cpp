@@ -7,8 +7,11 @@
 
 #include <getopt.h>
 #include <signal.h>
+#include <unistd.h>
 
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>

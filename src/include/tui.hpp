@@ -45,7 +45,7 @@ private:
     // --- one sampling tick ---
     void sample_once();
     void sample_proc_usage();
-    ProcUsage read_proc_usage(unsigned int pid, double total_mem_kb,
+    bool read_proc_usage(unsigned int pid, double total_mem_kb,
                                      unsigned long long *last_utime,
                                      unsigned long long *last_stime,
                                      double hz, bool have_prev);
