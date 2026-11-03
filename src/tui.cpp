@@ -193,6 +193,16 @@ void TuiApp::sample_proc_usage()
         }
         cur[row.pid] = s;
     }
+
+    // drop usage for pids that left the table so the map cannot grow
+    // without bound across long sessions
+    for (auto it = usage_.begin(); it != usage_.end();) {
+        if (cur.count(it->first) == 0) {
+            it = usage_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void TuiApp::sample_once()
