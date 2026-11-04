@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -327,26 +328,44 @@ void TuiApp::run()
     // blank for up to a whole refresh interval at startup
     sample_once();
     render();
+    auto last_sample = std::chrono::steady_clock::now();
 
     while (running_) {
-        // getch() blocks up to one refresh interval: a key press is
-        // handled and the screen redrawn the moment it arrives, instead
-        // of waiting out a full sleep'ed tick first (with the 60 s upper
-        // bound on refresh_ms that wait made the UI feel dead). ERR means
-        // the interval elapsed without input, which is the time to
-        // resample and redraw. Background pages keep sampling the same
-        // way: their key presses just re-render instead of sampling.
+        // getch() blocks up to one refresh interval, so a key press is
+        // handled the moment it arrives instead of waiting out a full
+        // sleep'ed tick first (with the 60 s upper bound on refresh_ms
+        // that wait made the UI feel dead).
         int ch = getch();
-        if (ch == ERR) {
-            sample_once();
-            render();
-        } else {
-            handle_key(ch);
+        if (ch != ERR) {
+            // Drain the whole typeahead buffer before drawing: a burst of
+            // keys must be handled immediately, but one full-screen render
+            // per key is wasted work. The drain itself uses a zero timeout
+            // so the batch ends as soon as the buffer is empty.
+            timeout(0);
+            do {
+                handle_key(ch);
+                if (!running_) {
+                    break;
+                }
+            } while ((ch = getch()) != ERR);
+            timeout(opts_.refresh_ms);
             if (!running_) {
                 break;
             }
-            render();
         }
+        // ERR is not a reliable sampling tick: while keys keep arriving
+        // faster than refresh_ms, getch() keeps returning early, ERR never
+        // fires and sampling would starve (the data freezes while the UI
+        // keeps redrawing). Track the interval on the wall clock instead,
+        // so a sample runs at least every refresh_ms no matter how busy
+        // the input is. Background pages sample the same way.
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_sample)
+                .count() >= opts_.refresh_ms) {
+            sample_once();
+            last_sample = now;
+        }
+        render();
     }
 
     endwin();
