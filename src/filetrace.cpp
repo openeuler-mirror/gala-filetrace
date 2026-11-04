@@ -1,5 +1,7 @@
 #include <iostream>
 #include <cstdio>
+#include <cerrno>
+#include <cstdlib>
 #include <vector>
 #include <linux/bpf.h>
 #include <getopt.h>
@@ -111,8 +113,9 @@ int main(int argc, char **argv)
     std::string file_path;
     bool verbose = false;
     bool tui_mode = false;
+    int refresh_ms = 1000;
     int opt;
-    while ((opt = getopt(argc, argv, "c:f:t")) != -1) {
+    while ((opt = getopt(argc, argv, "c:f:tr:")) != -1) {
         switch (opt) {
             case 'c':
                 config_file = optarg;
@@ -120,6 +123,31 @@ int main(int argc, char **argv)
             case 't':
                 tui_mode = true;
                 break;
+            case 'r': {
+                // same strict parse as filetrace-tui: reject junk and
+                // overflow instead of letting atoi() truncate, then clamp
+                // into the documented range so the value is safe to use
+                // as a divisor and as the getch() timeout
+                char *end = nullptr;
+                errno = 0;
+                long val = strtol(optarg, &end, 10);
+                if (errno == ERANGE || end == optarg || *end != '\0' ||
+                    val <= 0) {
+                    std::cerr << "Warning: invalid refresh interval '"
+                              << optarg << "', using 1000ms" << std::endl;
+                    val = 1000;
+                } else if (val < MIN_REFRESH_MS || val > MAX_REFRESH_MS) {
+                    long clamped = val < MIN_REFRESH_MS ? MIN_REFRESH_MS
+                                                        : MAX_REFRESH_MS;
+                    std::cerr << "Warning: refresh interval " << val
+                              << "ms out of range [" << MIN_REFRESH_MS << ", "
+                              << MAX_REFRESH_MS << "], using " << clamped
+                              << "ms" << std::endl;
+                    val = clamped;
+                }
+                refresh_ms = (int)val;
+                break;
+            }
             case 'f':
                 file_path = optarg;
                 if (file_path.length() > 0 && file_path[0] != '/') {
@@ -134,7 +162,8 @@ int main(int argc, char **argv)
                 break;
             default:
                 std::cerr << "Usage: " << argv[0]
-                          << " [-c <config_file>] [-f <file_path>] [-t]" << std::endl;
+                          << " [-c <config_file>] [-f <file_path>] [-t [-r refresh_ms]]"
+                          << std::endl;
                 return 1;
         }
     }
@@ -224,6 +253,7 @@ int main(int argc, char **argv)
         // the poller reads g_tui on error, so it must observe a fully
         // constructed object (release store pairs with the acquire loads).
         TuiOptions topts;
+        topts.refresh_ms = refresh_ms;
         TuiApp tui(stats, topts);
         g_tui.store(&tui, std::memory_order_release);
 

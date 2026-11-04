@@ -16,7 +16,6 @@ BuildRequires:  zlib-devel
 BuildRequires:  nlohmann-json-devel
 BuildRequires:  ncurses-devel
 BuildRequires:  cpp-httplib-devel
-BuildRequires:  ncurses-devel
 
 Requires:       libcurl
 Requires:       libbpf

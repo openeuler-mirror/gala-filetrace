@@ -85,8 +85,8 @@ $(CXX_OBJS): $(OUTPUT_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OUTPUT_DIR)
 # the standalone tui_main.o has its own main() and must not be linked
 # into the daemon; tui.o stays because -t mode embeds the TUI
 filetrace: $(filter-out $(OUTPUT_DIR)/tui_main.o,$(CXX_OBJS))
-	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS)
+	@echo "Linking filetrace.o exporter.o post.o tui.o to filetrace ..."
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS) $(TUILDFLAGS)
 
 TUILDFLAGS = -lncurses -ltinfo -lpthread
 
@@ -171,7 +171,7 @@ rpm:
 .PHONY: test
 test: all
 	@echo "Building and running PostData unit tests"
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_postdata tests/test_postdata.cpp $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/tui.o $(LDFLAGS) $(TUILDFLAGS)
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_postdata tests/test_postdata.cpp $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(LDFLAGS)
 	@./tests/test_postdata
 
 	@echo "Building and running Logger unit tests"

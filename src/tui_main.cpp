@@ -102,6 +102,17 @@ int main(int argc, char **argv)
                     std::cerr << "Warning: invalid refresh interval '"
                               << optarg << "', using 1000ms" << std::endl;
                     val = 1000;
+                } else if (val < MIN_REFRESH_MS || val > MAX_REFRESH_MS) {
+                    // The TuiApp constructor clamps as well, but silently:
+                    // say so here, otherwise a -r 3600000 the user asked for
+                    // looks like a 60 s refresh that never happened.
+                    long clamped = val < MIN_REFRESH_MS ? MIN_REFRESH_MS
+                                                        : MAX_REFRESH_MS;
+                    std::cerr << "Warning: refresh interval " << val
+                              << "ms out of range [" << MIN_REFRESH_MS << ", "
+                              << MAX_REFRESH_MS << "], using " << clamped
+                              << "ms" << std::endl;
+                    val = clamped;
                 }
                 refresh_ms = (int)val;
                 break;
