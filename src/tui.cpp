@@ -119,7 +119,7 @@ static unsigned long long read_boot_ms_since()
 bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
                              unsigned long long *last_utime,
                              unsigned long long *last_stime,
-                             double hz, bool have_prev, ProcUsage *u)
+                             double hz, bool have_prev, ProcUsage *out)
 {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%u/stat", pid);
@@ -143,7 +143,7 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     long rss_pages = 0;
     // fields: state(3) ppid(4) ... utime(14) stime(15) ... vsize(23) rss(24)
     if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*llu %lu",
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*u %lu",
                &utime, &stime, &rss_pages) < 3) {
         return false;
     }
@@ -155,13 +155,13 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
         unsigned long long dt =
             (utime >= *last_utime ? utime - *last_utime : 0) +
             (stime >= *last_stime ? stime - *last_stime : 0);
-        u->cpu = 100.0 * (double)dt / hz *
+        out->cpu = 100.0 * (double)dt / hz *
                  (1000.0 / (double)opts_.refresh_ms);
-        if (u->cpu < 0) {
-            u->cpu = 0;
+        if (out->cpu < 0) {
+            out->cpu = 0;
         }
-        if (u->cpu > 999) {
-            u->cpu = 999;
+        if (out->cpu > 999) {
+            out->cpu = 999;
         }
     }
 
@@ -170,12 +170,12 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
         if (page_kb <= 0) {
             page_kb = 4;
         }
-        u->mem = 100.0 * ((double)rss_pages * (double)page_kb) / total_mem_kb;
-        if (u->mem < 0) {
-            u->mem = 0;
+        out->mem = 100.0 * ((double)rss_pages * (double)page_kb) / total_mem_kb;
+        if (out->mem < 0) {
+            out->mem = 0;
         }
-        if (u->mem > 100) {
-            u->mem = 100;
+        if (out->mem > 100) {
+            out->mem = 100;
         }
     }
 
