@@ -1,9 +1,11 @@
 #ifndef STATS_HPP
 #define STATS_HPP
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -12,13 +14,27 @@
 #include "filetrace.h"
 
 // Hard caps on aggregate table entry counts; when exceeded the least
-// recently active entries are evicted (batch-wise). Worst-case memory
-// is the product of the caps (MAX_PROC_ENTRIES x MAX_PER_FILE_ENTRIES
-// per-path strings) plus the devices_ table, so lower MAX_PER_FILE_
-// ENTRIES if resident size matters more than per-path detail.
-static const size_t MAX_PROC_ENTRIES = 4096;
-static const size_t MAX_DEVICE_ENTRIES = 4096;
-static const size_t MAX_PER_FILE_ENTRIES = 1024;
+// recently active entries are evicted (batch-wise). The per-file tables
+// are NOT bounded by MAX_PROC_ENTRIES x MAX_PER_FILE_ENTRIES alone: that
+// product (4096 x 1024 at the previous caps) is up to ~4M std::map nodes,
+// i.e. hundreds of MB of resident memory, which is far too much for a
+// monitor that is expected to stay loaded. A global budget is enforced on
+// top of the per-process cap, so total memory stays bounded regardless of
+// how many processes the workload fans out to (sizes measured on x86-64):
+//   procs_   2048 x 88 B                                 ~ 180 KB
+//   devices_ 2048 x 96 B + path strings                  ~ 250 KB
+//   per_file 16384 x (map node + key string, ~160 B)     ~ 2.6 MB
+// Worst case is therefore ~3 MB, not hundreds, and is independent of the
+// event rate (measured: 120k events over 600 processes x 200 distinct long
+// paths -> 2.7 MB). Protected entries (configured monitor paths) may push
+// a single table slightly past its share, bounded by the configured path
+// count, which is small. A published snapshot shares the tables instead of
+// copying them, so while one generation is published the live aggregate
+// can hold a second copy of a table it is writing to: peak ≈ 2x.
+static const size_t MAX_PROC_ENTRIES = 2048;
+static const size_t MAX_DEVICE_ENTRIES = 2048;
+static const size_t MAX_PER_FILE_ENTRIES = 128;          // per process
+static const size_t MAX_TOTAL_PER_FILE_ENTRIES = 16384;  // all processes
 
 // Aggregated statistics for one monitored file (device/file panel).
 struct DeviceStat {
@@ -40,10 +56,17 @@ struct ProcStat {
     std::string cmd;
     unsigned int uid = 0;
     uint64_t ops = 0;                       // total operations by this process
-    std::map<std::string, uint64_t> per_file; // ops per path seen by this
-                                              // process (monitor path for
-                                              // matched events, rebuilt
-                                              // event path otherwise)
+    // Per-path op counts: monitor path for matched events, rebuilt event
+    // path otherwise. Copy-on-write: a published snapshot shares the table
+    // with the live aggregate, and on_event() clones it before an in-place
+    // update only when a snapshot still holds a reference. Publishing a
+    // snapshot therefore copies this pointer, never the table.
+    //
+    // Never null for entries produced by on_event(). The pointee is
+    // deliberately NOT const-qualified: writing through a pointer that was
+    // de-consted from a const-declared object is UB, so the "read only"
+    // contract for snapshot holders is by convention instead.
+    std::shared_ptr<std::map<std::string, uint64_t>> per_file;
     uint64_t last_active_ms = 0;            // wall clock ms of last event
     uint64_t last_seq = 0;                  // monotonic event seq for LRU
 };
@@ -66,10 +89,19 @@ public:
     // their own devices_ entry, and an empty path counts as dropped.
     void on_event(const struct event &e, const std::string &path);
 
-    // Copy the current aggregate state. The deep copy runs under the same
-    // mutex producers use: bounded by the caps above, fine for the low
-    // TUI refresh rate; revisit (double-buffered publish) when wiring the
-    // ring-buffer consumer if the stall ever shows up in practice.
+    // Publish the current aggregate state.
+    //
+    // The published view is cached per mutation generation: consecutive
+    // calls with no intervening event return a copy of the cached snapshot
+    // and never touch the producer mutex at all. On a miss the copy is
+    // taken while holding the producer mutex, but it copies only the small
+    // per-process/per-device shells (a few scalars, one short string and
+    // one shared pointer) — never a per-file map, which the snapshot shares
+    // and the producer clones lazily on its next write. The ring-buffer
+    // consumer is therefore never held up by a deep copy of the aggregate
+    // tables: the worst case is a few thousand shell copies, well under a
+    // millisecond, and only once per published generation — not per event,
+    // and independent of how many paths are tracked.
     StatsSnapshot snapshot() const;
 
     // Full monitored path list (normalized), used for path matching.
@@ -85,15 +117,32 @@ public:
     static uint64_t now_ms();
 
 private:
+    // Trim per_file tables, least recently active process first, until the
+    // global entry budget (MAX_TOTAL_PER_FILE_ENTRIES) is met again.
+    // keep_pid is never trimmed: the caller is inserting into it. Caller
+    // holds mutex_.
+    void enforce_per_file_budget(unsigned int keep_pid);
+
     mutable std::mutex mutex_;
     std::vector<std::string> paths_;       // configured monitor paths
     std::set<std::string> monitor_paths_;  // same as paths_, set for O(logP) lookups
     std::map<unsigned int, ProcStat> procs_; // keyed by pid
     std::map<std::string, DeviceStat> devices_; // keyed by rebuilt event path;
                                                 // seeded with configured paths
+    size_t per_file_entries_ = 0;          // sum of per_file sizes, budgeted
     uint64_t total_events_ = 0;
     uint64_t dropped_events_ = 0;
     uint64_t seq_ = 0;                     // monotonic counter for LRU order
+    std::atomic<uint64_t> gen_{0};         // bumped on every mutation
+
+    // Last published snapshot, keyed by the generation it captured. Holds
+    // shared ownership of the per-file tables, which is what makes the
+    // producer's next update copy-on-write instead of in-place.
+    // Publish ordering is cache_mutex_ -> mutex_; producers only ever take
+    // mutex_, so the two can never deadlock.
+    mutable std::mutex cache_mutex_;
+    mutable std::shared_ptr<StatsSnapshot> cache_;
+    mutable uint64_t cache_gen_ = 0;
 };
 
 #endif // STATS_HPP

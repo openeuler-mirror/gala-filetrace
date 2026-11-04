@@ -79,7 +79,7 @@ static void test_aggregation()
     assert(snap.procs[0].pid == 100);
     assert(snap.procs[0].ops == 3);
     assert(snap.procs[0].cmd == "bash");
-    assert(snap.procs[0].per_file.at("/etc/hosts") == 3);
+    assert(snap.procs[0].per_file->at("/etc/hosts") == 3);
     assert(snap.procs[1].pid == 200);
     assert(snap.procs[1].ops == 1);
 
@@ -156,7 +156,7 @@ static void test_cmd_refresh_on_exec()
     // thread comm, the key is tgid — no process identity to reset on)
     assert(snap.procs[0].cmd == "python");
     assert(snap.procs[0].ops == 3);
-    assert(snap.procs[0].per_file.at("/etc/hosts") == 3);
+    assert(snap.procs[0].per_file->at("/etc/hosts") == 3);
     std::cout << "test_cmd_refresh_on_exec passed" << std::endl;
 }
 
@@ -174,10 +174,10 @@ static void test_per_file_capped()
 
     StatsSnapshot snap = stats.snapshot();
     assert(snap.procs.size() == 1);
-    assert(snap.procs[0].per_file.size() <= MAX_PER_FILE_ENTRIES);
+    assert(snap.procs[0].per_file->size() <= MAX_PER_FILE_ENTRIES);
     // the configured monitor path must survive the trim with its count
-    assert(snap.procs[0].per_file.count("/etc/hosts") == 1);
-    assert(snap.procs[0].per_file.at("/etc/hosts") == 1);
+    assert(snap.procs[0].per_file->count("/etc/hosts") == 1);
+    assert(snap.procs[0].per_file->at("/etc/hosts") == 1);
     std::cout << "test_per_file_capped passed" << std::endl;
 }
 
@@ -292,6 +292,64 @@ static void test_concurrent_access()
     std::cout << "test_concurrent_access passed" << std::endl;
 }
 
+static void test_per_file_global_budget()
+{
+    // the per-process cap alone allows MAX_PROC_ENTRIES x MAX_PER_FILE_
+    // ENTRIES path strings, i.e. hundreds of MB; the global budget must
+    // keep the total bounded no matter how far the workload fans out
+    TraceStats stats({"/etc/hosts"});
+
+    const unsigned int kProcs = 200;
+    const int kPaths = 200; // > MAX_PER_FILE_ENTRIES, so each table caps out
+    for (unsigned int pid = 1; pid <= kProcs; pid++) {
+        struct event ev = make_event(pid, "walker", "hosts", SYS_write);
+        for (int i = 0; i < kPaths; i++) {
+            stats.on_event(ev, "/wander/" + std::to_string(pid) + "/" +
+                                    std::to_string(i));
+        }
+    }
+
+    StatsSnapshot snap = stats.snapshot();
+    size_t total = 0;
+    for (const auto &p : snap.procs) {
+        assert(p.per_file->size() <= MAX_PER_FILE_ENTRIES);
+        total += p.per_file->size();
+    }
+    assert(total <= MAX_TOTAL_PER_FILE_ENTRIES);
+    std::cout << "test_per_file_global_budget passed (" << total
+              << " entries)" << std::endl;
+}
+
+static void test_snapshot_copy_on_write()
+{
+    TraceStats stats({"/etc/hosts"});
+    struct event e = make_event(100, "bash", "hosts", SYS_write);
+
+    stats.on_event(e, "/etc/hosts");
+    StatsSnapshot snap1 = stats.snapshot();
+    assert(snap1.procs[0].per_file->at("/etc/hosts") == 1);
+
+    // no event in between: the published generation is reused as-is, the
+    // per-file table is shared rather than re-copied
+    StatsSnapshot snap1b = stats.snapshot();
+    assert(snap1b.procs[0].per_file == snap1.procs[0].per_file);
+    assert(snap1b.total_events == snap1.total_events);
+
+    // a later event must not mutate a table that was already handed out:
+    // the producer clones it on write and the old snapshot stays valid
+    stats.on_event(e, "/etc/hosts");
+    StatsSnapshot snap2 = stats.snapshot();
+    assert(snap1.procs[0].per_file->at("/etc/hosts") == 1);
+    assert(snap2.procs[0].per_file->at("/etc/hosts") == 2);
+    assert(snap1.procs[0].per_file != snap2.procs[0].per_file);
+
+    // dropped events also publish a generation, or the cached snapshot
+    // would keep reporting a stale dropped counter
+    stats.on_event(e, "");
+    assert(stats.snapshot().dropped_events == 1);
+    std::cout << "test_snapshot_copy_on_write passed" << std::endl;
+}
+
 int main()
 {
     test_event_path_rebuild();
@@ -305,6 +363,8 @@ int main()
     test_empty_monitor_path_ignored();
     test_cmd_refresh_on_exec();
     test_per_file_capped();
+    test_per_file_global_budget();
+    test_snapshot_copy_on_write();
     test_table_eviction();
     test_concurrent_access();
     std::cout << "All TraceStats tests passed" << std::endl;
