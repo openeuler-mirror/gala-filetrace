@@ -42,11 +42,14 @@ struct ProcStat {
     std::string cmd;
     unsigned int uid = 0;
     uint64_t ops = 0;                       // total operations by this process
-    // Immutable per-file table shared with published snapshots
-    // (copy-on-write). on_event() clones it only when a snapshot still
-    // holds a reference, so snapshot() never deep-copies per-file tables
-    // under the producer mutex. Treat it as read-only outside TraceStats.
-    std::shared_ptr<const std::map<std::string, uint64_t>> per_file;
+    // Per-file table shared with published snapshots (copy-on-write).
+    // on_event() clones it only when a snapshot still holds a reference,
+    // so snapshot() never deep-copies per-file tables under the producer
+    // mutex. The pointee is never declared const — writing to a const-
+    // qualified object through a de-consted pointer would be UB — but
+    // snapshots must treat it as read-only: it is only mutated in place
+    // while the reference count is 1, i.e. while no snapshot shares it.
+    std::shared_ptr<std::map<std::string, uint64_t>> per_file;
     uint64_t last_active_ms = 0;            // wall clock ms of last event
     uint64_t last_seq = 0;                  // monotonic event seq for LRU
 };
@@ -71,8 +74,8 @@ public:
 
     // Copy the current aggregate state. Runs under the same mutex the
     // producers use, but the copies are now cheap: ProcStat entries share
-    // their immutable per_file table (copy-on-write in on_event), so only
-    // the small scalar/string shells are copied while the lock is held.
+    // their per_file table (copy-on-write in on_event), so only the small
+    // scalar/string shells are copied while the lock is held.
     StatsSnapshot snapshot() const;
 
     // Full monitored path list (normalized), used for path matching.

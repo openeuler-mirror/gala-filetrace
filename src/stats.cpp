@@ -197,20 +197,22 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     // still holds a reference (use_count() > 1). This keeps the table
     // mutation off any shared copy and bounds the clone work to one
     // process per refresh interval, instead of snapshot() deep-copying
-    // every process under the producer mutex.
+    // every process under the producer mutex. The map is never declared
+    // const, so in-place mutation at refcount 1 is well-defined; all
+    // copies are made and dropped under this same mutex.
     if (!p.per_file || p.per_file.use_count() > 1) {
-        p.per_file = std::make_shared<const std::map<std::string, uint64_t>>(
+        p.per_file = std::make_shared<std::map<std::string, uint64_t>>(
             p.per_file ? *p.per_file : std::map<std::string, uint64_t>());
     }
-    auto files = std::const_pointer_cast<std::map<std::string, uint64_t>>(p.per_file);
-    if (files->size() >= MAX_PER_FILE_ENTRIES &&
-        files->find(path) == files->end()) {
+    std::map<std::string, uint64_t> &files = *p.per_file;
+    if (files.size() >= MAX_PER_FILE_ENTRIES &&
+        files.find(path) == files.end()) {
         // configured monitor paths are never trimmed from per_file
-        evict_cold_files(*files, MAX_PER_FILE_ENTRIES, [this](const auto &kv) {
+        evict_cold_files(files, MAX_PER_FILE_ENTRIES, [this](const auto &kv) {
             return monitor_paths_.count(kv.first) == 0;
         });
     }
-    (*files)[path]++;
+    files[path]++;
     p.last_active_ms = now;
     p.last_seq = ++seq_;
 
