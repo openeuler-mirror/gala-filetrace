@@ -204,6 +204,59 @@ static void test_event_path_multi_dir()
     std::cout << "test_event_path_multi_dir passed" << std::endl;
 }
 
+// Overlapping monitor paths are resolved by specificity, not by config
+// order: an event below /etc/nginx belongs to /etc/nginx even when /etc is
+// configured first, and the other way round.
+static void test_match_monitor_path_overlap()
+{
+    const std::vector<std::string> shallow_first = {"/etc", "/etc/nginx", "/var/log"};
+    assert(TraceStats::match_monitor_path(shallow_first, "/etc/nginx/nginx.conf") == "/etc/nginx");
+    assert(TraceStats::match_monitor_path(shallow_first, "/etc/nginx") == "/etc/nginx");
+    assert(TraceStats::match_monitor_path(shallow_first, "/etc/hosts") == "/etc");
+    assert(TraceStats::match_monitor_path(shallow_first, "/var/log/syslog") == "/var/log");
+
+    // config order must not matter
+    const std::vector<std::string> deep_first = {"/etc/nginx", "/etc"};
+    assert(TraceStats::match_monitor_path(deep_first, "/etc/nginx/nginx.conf") == "/etc/nginx");
+    assert(TraceStats::match_monitor_path(deep_first, "/etc/passwd") == "/etc");
+
+    // deeper nesting still wins
+    const std::vector<std::string> nested = {"/etc/nginx", "/etc/nginx/conf.d"};
+    assert(TraceStats::match_monitor_path(nested, "/etc/nginx/conf.d/site.conf") == "/etc/nginx/conf.d");
+
+    // matches sit on a component boundary: /etc must not swallow /etcetera
+    assert(TraceStats::match_monitor_path({"/etc"}, "/etcetera/hosts") == "");
+    assert(TraceStats::match_monitor_path({"/etc"}, "/etc") == "/etc");
+    std::cout << "test_match_monitor_path_overlap passed" << std::endl;
+}
+
+static void test_match_monitor_path_catch_all()
+{
+    // "/" is the catch-all: it only wins when nothing more specific matches
+    const std::vector<std::string> paths = {"/", "/var/log"};
+    assert(TraceStats::match_monitor_path(paths, "/var/log/syslog") == "/var/log");
+    assert(TraceStats::match_monitor_path(paths, "/tmp/x") == "/");
+
+    // without a catch-all an unmonitored path is attributed to nothing
+    assert(TraceStats::match_monitor_path({"/var/log"}, "/tmp/x") == "");
+    assert(TraceStats::match_monitor_path({}, "/tmp/x") == "");
+    assert(TraceStats::match_monitor_path(paths, "") == "");
+    std::cout << "test_match_monitor_path_catch_all passed" << std::endl;
+}
+
+static void test_match_monitor_path_basename()
+{
+    // write/copy_file_range events may rebuild to a bare "/name": accepted
+    // only when exactly one configured path ends with that suffix
+    assert(TraceStats::match_monitor_path({"/etc/nginx/nginx.conf"}, "/nginx.conf") ==
+           "/etc/nginx/nginx.conf");
+    assert(TraceStats::match_monitor_path({"/etc/a/x.conf", "/srv/b/x.conf"}, "/x.conf") == "");
+
+    // the fallback only applies to single-component paths
+    assert(TraceStats::match_monitor_path({"/a/b/hosts"}, "/b/hosts") == "");
+    std::cout << "test_match_monitor_path_basename passed" << std::endl;
+}
+
 static void test_empty_monitor_path_ignored()
 {
     // an empty configured path is skipped, not normalized to "/"
@@ -315,6 +368,9 @@ int main()
     test_copy_file_range_is_write();
     test_classification();
     test_empty_monitor_path_ignored();
+    test_match_monitor_path_overlap();
+    test_match_monitor_path_catch_all();
+    test_match_monitor_path_basename();
     test_cmd_refresh_on_exec();
     test_per_file_capped();
     test_table_eviction();

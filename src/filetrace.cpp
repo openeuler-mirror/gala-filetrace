@@ -89,41 +89,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     struct event *e = (struct event *)data;
 
     if (tui_stats) {
-        // TUI mode: aggregate into the stats layer; the path is matched
-        // against the configured monitor paths first.
-        std::string full = TraceStats::event_path(*e);
-        std::string matched;
-        for (const auto &p : tui_stats->monitor_paths()) {
-            if (p == "/" || full == p || full.rfind(p + "/", 0) == 0) {
-                matched = p;
-                break;
-            }
-        }
-        if (matched.empty()) {
-            // write/copy_file_range events may only carry the basename:
-            // the rebuilt path is then "/name" (single component). Accept
-            // it only when EXACTLY ONE configured monitor path ends with
-            // that suffix — with several candidates the event could be
-            // attributed to the wrong monitored file, so it is dropped
-            // instead (the leading '/' in the suffix already guarantees a
-            // component boundary, no extra separator check is needed).
-            int hits = 0;
-            std::string candidate;
-            for (const auto &p : tui_stats->monitor_paths()) {
-                if (full.size() > 1 && full.find('/', 1) == std::string::npos &&
-                    p.size() > full.size() &&
-                    p.compare(p.size() - full.size(), full.size(), full) == 0) {
-                    hits++;
-                    candidate = p;
-                }
-            }
-            if (hits == 1) {
-                matched = candidate;
-            }
-        }
-        // matched events aggregate under their configured monitor path;
-        // unmatched (or unrebuildable) paths count as dropped in on_event
-        tui_stats->on_event(*e, matched);
+        // TUI mode: aggregate into the stats layer. The rebuilt path is
+        // mapped onto the most specific configured monitor path, so
+        // overlapping configs (/etc and /etc/nginx) attribute the event to
+        // the deepest match rather than to the first entry in config order.
+        // Unmatched (or unrebuildable) paths count as dropped in on_event.
+        tui_stats->on_event(*e, TraceStats::match_monitor_path(tui_stats->monitor_paths(),
+                                                              TraceStats::event_path(*e)));
         return 0;
     }
 

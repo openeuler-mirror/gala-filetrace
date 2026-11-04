@@ -96,6 +96,7 @@ private:
     void sort_rows();
     void clamp_cursors();
     void move_proc_cursor(int delta);
+    void move_cursor(int delta);
     void scroll_list(int delta);
     void open_detail();
     void escape();

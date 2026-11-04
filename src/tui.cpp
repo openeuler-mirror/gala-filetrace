@@ -657,11 +657,13 @@ void TuiApp::render_help()
         "  h / ?            toggle this help (sampling continues)  ",
         "  q                quit from main view                    ",
         "  Tab              switch focus: devices <-> processes    ",
-        "  Up / Down, j / k move selection (procs) / scroll (devs) ",
-        "  PageUp/PageDown  page up / page down                    ",
-        "  Home / End       jump to first / last row               ",
-        "  Left / Right     scroll long command lines horizontally ",
-        "  s / S            cycle sort: OPS->%MEM->%CPU->PID->CMD  ",
+        "  Up / Down, j / k move cursor / scroll list (focused)    ",
+        "  PageUp/PageDown  page up / page down (focused)          ",
+        "  Home / End       jump to first / last row (focused)     ",
+        "  Left / Right     scroll command lines (process focus)   ",
+        "  mouse click on   OPS / %MEM / %CPU header: sort by that ",
+        "    %MEM %CPU OPS  column (desc first, click again flips) ",
+        "  s / S            cycle sort: OPS -> %MEM -> %CPU (desc) ",
         "  /                reverse current sort direction         ",
         "  Enter            open detail page of selected process   ",
         "  Esc              back / clear selection / quit          ",
@@ -840,6 +842,20 @@ void TuiApp::move_proc_cursor(int delta)
     clamp_cursors();
 }
 
+// One-line move of the FOCUSED list. Devices have no selection cursor, so
+// moving there means scrolling the list, exactly like PageUp/PageDown do
+// through scroll_list(); the process panel moves its cursor. Keeping both
+// paths on the same focus dispatch is what stops the arrow keys from
+// silently moving the unfocused list.
+void TuiApp::move_cursor(int delta)
+{
+    if (focus_ == Focus::Devices) {
+        scroll_list(delta);
+    } else {
+        move_proc_cursor(delta);
+    }
+}
+
 // Scroll the focused list by delta lines (devices when device-focused,
 // processes otherwise).
 void TuiApp::scroll_list(int delta)
@@ -937,19 +953,11 @@ void TuiApp::handle_key(int ch)
             break;
         case KEY_UP:
         case 'k':
-            if (focus_ == Focus::Devices) {
-                scroll_list(-1);
-            } else {
-                move_proc_cursor(-1);
-            }
+            move_cursor(-1);
             break;
         case KEY_DOWN:
         case 'j':
-            if (focus_ == Focus::Devices) {
-                scroll_list(1);
-            } else {
-                move_proc_cursor(1);
-            }
+            move_cursor(1);
             break;
         case KEY_PPAGE:
             if (focus_ == Focus::Devices) {
@@ -991,15 +999,22 @@ void TuiApp::handle_key(int ch)
             }
             break;
         case KEY_LEFT:
-            h_scroll_ -= 8;      // reveal later part of long command lines
-            if (h_scroll_ < -(1 << 16)) {
-                h_scroll_ = -(1 << 16);
+            // the device panel has nothing to scroll horizontally: acting on
+            // the process table while it is not focused would shift the
+            // command column behind the user's back
+            if (focus_ == Focus::Procs) {
+                h_scroll_ -= 8;      // reveal later part of long command lines
+                if (h_scroll_ < -(1 << 16)) {
+                    h_scroll_ = -(1 << 16);
+                }
             }
             break;
         case KEY_RIGHT:
-            h_scroll_ += 8;
-            if (h_scroll_ > 0) {
-                h_scroll_ = 0;
+            if (focus_ == Focus::Procs) {
+                h_scroll_ += 8;
+                if (h_scroll_ > 0) {
+                    h_scroll_ = 0;
+                }
             }
             break;
         case 's':
