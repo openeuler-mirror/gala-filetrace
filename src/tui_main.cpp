@@ -26,12 +26,13 @@
 
 using json = nlohmann::json;
 
-static TuiApp *g_tui = nullptr;
+static std::atomic<TuiApp *> g_tui{nullptr}; // published while the TUI runs
 
 static void tui_sig_handler(int)
 {
-    if (g_tui) {
-        g_tui->request_stop();
+    TuiApp *tui = g_tui.load(std::memory_order_acquire);
+    if (tui) {
+        tui->request_stop();
     }
 }
 
@@ -141,7 +142,10 @@ int main(int argc, char **argv)
     TuiOptions opts;
     opts.refresh_ms = refresh_ms;
     TuiApp tui(stats, opts);
-    g_tui = &tui;
+    // publish before registering the handlers: a signal may arrive the
+    // instant the handler is installed (release store pairs with the
+    // acquire load in the handler)
+    g_tui.store(&tui, std::memory_order_release);
     signal(SIGINT, tui_sig_handler);
     signal(SIGTERM, tui_sig_handler);
 
@@ -159,5 +163,14 @@ int main(int argc, char **argv)
     if (feeder.joinable()) {
         feeder.join();
     }
+    // Undo the handler and the published pointer BEFORE the locals unwind:
+    // TuiApp is destroyed before TraceStats, so a SIGTERM/SIGINT delivered
+    // between run() returning and process exit would otherwise call
+    // request_stop() on an already-destructed object (UAF). Restoring
+    // SIG_DFL also gives systemd/operator a second stop signal the usual
+    // "force-kill on repeat signal" semantics.
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTERM, SIG_DFL);
+    g_tui.store(nullptr, std::memory_order_release);
     return 0;
 }
