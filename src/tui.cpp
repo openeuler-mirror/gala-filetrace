@@ -668,9 +668,14 @@ void TuiApp::render_detail()
     attron(A_BOLD | COLOR_PAIR(1));
     mvprintw(y++, 2, "per monitored file ops:");
     attroff(A_BOLD | COLOR_PAIR(1));
-    for (auto &kv : p->per_file) {
-        mvprintw(y++, 4, "%-40s %8s", trim_to_width(kv.first, 40).c_str(),
-                 fmt_uint64(kv.second).c_str());
+    // per_file is a copy-on-write shared table; a snapshot may hold the
+    // same pointer the producer is about to clone, so read it through the
+    // pointer and tolerate a null table (entries seeded outside on_event).
+    if (p->per_file) {
+        for (const auto &kv : *p->per_file) {
+            mvprintw(y++, 4, "%-40s %8s", trim_to_width(kv.first, 40).c_str(),
+                     fmt_uint64(kv.second).c_str());
+        }
     }
     y++;
     mvprintw(y, 2, "press Esc or Enter to go back");

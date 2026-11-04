@@ -2,14 +2,6 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-#include <cassert>
-#include <cstdio>
-#include <cstring>
-#include <sys/syscall.h>
-#include <cassert>
-#include <cstdio>
-#include <cstring>
-#include <sys/syscall.h>
 #include <iostream>
 #include <atomic>
 #include <thread>
@@ -499,6 +491,50 @@ static void test_snapshot_copy_on_write()
     std::cout << "test_snapshot_copy_on_write passed" << std::endl;
 }
 
+static void test_config_saturation_reports_ignored()
+{
+    // The ctor caps its seeding at MAX_DEVICE_ENTRIES. Silently dropping the
+    // rest would leave the TUI showing a device panel that is missing
+    // entries with no hint why, so the dropped count is exposed and must be
+    // exact: one path over the cap, one reported.
+    std::vector<std::string> paths;
+    paths.reserve(MAX_DEVICE_ENTRIES + 16);
+    for (size_t i = 0; i < MAX_DEVICE_ENTRIES; i++) {
+        paths.push_back("/fit" + std::to_string(i));
+    }
+    TraceStats fit(paths);
+    assert(fit.ignored_monitor_paths() == 0);
+    assert(fit.monitor_paths().size() == MAX_DEVICE_ENTRIES);
+    assert(fit.snapshot().devices.size() == MAX_DEVICE_ENTRIES);
+
+    const size_t extra = 16;
+    for (size_t i = 0; i < extra; i++) {
+        paths.push_back("/over" + std::to_string(i));
+    }
+    TraceStats over(paths);
+    // exactly the surplus is reported, not the whole trailing run
+    assert(over.ignored_monitor_paths() == extra);
+    // ... and the seeding itself stays at the cap
+    assert(over.snapshot().devices.size() == MAX_DEVICE_ENTRIES);
+    // the full configured set is still retained for matching and the
+    // eviction veto; only the devices_ seeding is truncated
+    assert(over.monitor_paths().size() == MAX_DEVICE_ENTRIES + extra);
+
+    // a dropped path is still attributable: an event on it lands under its
+    // own key instead of being lost
+    struct event e = make_event(4242, "p", "over0", SYS_write);
+    over.on_event(e, "/over0");
+    StatsSnapshot snap = over.snapshot();
+    bool seen = false;
+    for (const auto &d : snap.devices) {
+        if (d.path == "/over0" && d.ops == 1) {
+            seen = true;
+        }
+    }
+    assert(seen);
+    std::cout << "test_config_saturation_reports_ignored passed" << std::endl;
+}
+
 int main()
 {
     test_event_path_rebuild();
@@ -519,6 +555,7 @@ int main()
     test_snapshot_copy_on_write();
     test_table_eviction();
     test_devices_cap_under_config_saturation();
+    test_config_saturation_reports_ignored();
     test_concurrent_access();
     std::cout << "All TraceStats tests passed" << std::endl;
     return 0;

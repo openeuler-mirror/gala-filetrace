@@ -137,6 +137,13 @@ public:
     // Full monitored path list (normalized), used for path matching.
     const std::vector<std::string> &monitor_paths() const { return paths_; }
 
+    // How many configured paths were dropped at construction because the
+    // device table already held MAX_DEVICE_ENTRIES of them. Non-zero means
+    // the config is larger than the aggregate can represent; the caller is
+    // expected to surface it (the TUI warns at startup). Final once the
+    // constructor returns, so it needs no lock.
+    size_t ignored_monitor_paths() const { return ignored_monitor_paths_; }
+
     // Build the full path "dir4/dir3/dir2/dir1/filename" from an event.
     // Pure path reconstruction: the result is NOT matched against the
     // configured monitor paths here. The caller decides whether the
@@ -158,7 +165,9 @@ private:
     std::set<std::string> monitor_paths_;  // same as paths_, set for O(logP) lookups
     std::map<unsigned int, ProcStat> procs_; // keyed by pid
     std::map<std::string, DeviceStat> devices_; // keyed by rebuilt event path;
-                                                // seeded with configured paths
+                                                // seeded with configured paths,
+                                                // never above MAX_DEVICE_ENTRIES
+    size_t ignored_monitor_paths_ = 0;     // configured paths dropped at ctor
     size_t per_file_entries_ = 0;          // sum of per_file sizes, budgeted
     uint64_t total_events_ = 0;
     uint64_t dropped_events_ = 0;
