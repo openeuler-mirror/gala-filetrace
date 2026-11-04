@@ -16,8 +16,6 @@ BuildRequires:  zlib-devel
 BuildRequires:  nlohmann-json-devel
 BuildRequires:  ncurses-devel
 BuildRequires:  cpp-httplib-devel
-# filetrace-tui (ncurses TUI) added in stage 4
-BuildRequires:  ncurses-devel
 
 Requires:       libcurl
 Requires:       libbpf

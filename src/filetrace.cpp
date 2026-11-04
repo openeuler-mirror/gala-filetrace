@@ -1,5 +1,7 @@
 #include <iostream>
 #include <cstdio>
+#include <cerrno>
+#include <cstdlib>
 #include <vector>
 #include <linux/bpf.h>
 #include <getopt.h>
@@ -10,14 +12,24 @@
 #include <signal.h>
 #include <sys/utsname.h>
 
-#include "filetrace.skel.h" 
+#include "filetrace.skel.h"
 #include "filetrace.h"
 #include "post.hpp"
+#include "stats.hpp"
+#include "tui.hpp"
+
+#include <atomic>
+#include <memory>
+#include <nlohmann/json.hpp>
+#include <thread>
 
 using namespace std;
 
 static struct filetrace_bpf *skel;
 PostData *postdata_i = nullptr;
+static TraceStats *tui_stats = nullptr;   // set in TUI mode
+static std::atomic<bool> tui_running{true};
+static std::atomic<TuiApp *> g_tui{nullptr}; // published before the poller starts
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     //trace libbpf messages to stderr
@@ -56,15 +68,19 @@ static void select_copy_file_range_probe(struct filetrace_bpf *skel)
 static void sig_handler(int sig)
 {
     std::cout << "Signal received: Exiting BPF program." << std::endl;
-    if (skel) {
-        filetrace_bpf__destroy(skel); 
+    // Only stop the loops here. Destroying skel from the signal handler
+    // would race ring_buffer__poll on the poller thread (UAF) and leak
+    // the ringbuf; cleanup happens on the main thread after the join.
+    tui_running = false;
+    TuiApp *tui = g_tui.load(std::memory_order_acquire);
+    if (tui) {
+        tui->request_stop();
     }
-    exit(0);
 }
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-    if(data == nullptr || postdata_i == nullptr) {
+    if(data == nullptr || (postdata_i == nullptr && tui_stats == nullptr)) {
         std::cerr << "Received null data or PostData instance is null, skipping event." << std::endl;
         return -1;
     }
@@ -73,6 +89,18 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return -1;
     }
     struct event *e = (struct event *)data;
+
+    if (tui_stats) {
+        // TUI mode: aggregate into the stats layer. The rebuilt path is
+        // mapped onto the most specific configured monitor path, so
+        // overlapping configs (/etc and /etc/nginx) attribute the event to
+        // the deepest match rather than to the first entry in config order.
+        // Unmatched (or unrebuildable) paths count as dropped in on_event.
+        tui_stats->on_event(*e, TraceStats::match_monitor_path(tui_stats->monitor_paths(),
+                                                              TraceStats::event_path(*e)));
+        return 0;
+    }
+
     postdata_i->process_event(*e);
     return 0;
 }
@@ -84,12 +112,42 @@ int main(int argc, char **argv)
     std::string config_file = "/etc/gala-filetrace/gala-filetrace.json";
     std::string file_path;
     bool verbose = false;
+    bool tui_mode = false;
+    int refresh_ms = 1000;
     int opt;
-    while ((opt = getopt(argc, argv, "c:f:")) != -1) {
+    while ((opt = getopt(argc, argv, "c:f:tr:")) != -1) {
         switch (opt) {
             case 'c':
                 config_file = optarg;
                 break;
+            case 't':
+                tui_mode = true;
+                break;
+            case 'r': {
+                // same strict parse as filetrace-tui: reject junk and
+                // overflow instead of letting atoi() truncate, then clamp
+                // into the documented range so the value is safe to use
+                // as a divisor and as the getch() timeout
+                char *end = nullptr;
+                errno = 0;
+                long val = strtol(optarg, &end, 10);
+                if (errno == ERANGE || end == optarg || *end != '\0' ||
+                    val <= 0) {
+                    std::cerr << "Warning: invalid refresh interval '"
+                              << optarg << "', using 1000ms" << std::endl;
+                    val = 1000;
+                } else if (val < MIN_REFRESH_MS || val > MAX_REFRESH_MS) {
+                    long clamped = val < MIN_REFRESH_MS ? MIN_REFRESH_MS
+                                                        : MAX_REFRESH_MS;
+                    std::cerr << "Warning: refresh interval " << val
+                              << "ms out of range [" << MIN_REFRESH_MS << ", "
+                              << MAX_REFRESH_MS << "], using " << clamped
+                              << "ms" << std::endl;
+                    val = clamped;
+                }
+                refresh_ms = (int)val;
+                break;
+            }
             case 'f':
                 file_path = optarg;
                 if (file_path.length() > 0 && file_path[0] != '/') {
@@ -103,7 +161,9 @@ int main(int argc, char **argv)
                 verbose = true;
                 break;
             default:
-                std::cerr << "Usage: " << argv[0] << " [-c <config_file>] [-f <file_path>]" << std::endl;
+                std::cerr << "Usage: " << argv[0]
+                          << " [-c <config_file>] [-f <file_path>] [-t [-r refresh_ms]]"
+                          << std::endl;
                 return 1;
         }
     }
@@ -132,12 +192,19 @@ int main(int argc, char **argv)
         return err;
     }
     //init PostData instance
-    postdata_i = new PostData(skel, config_file, verbose, file_path); 
-    if (!postdata_i) 
-    {
-        std::cerr << "Failed to create PostData instance!" << std::endl;
-        filetrace_bpf__destroy(skel);
-        return -ENOMEM;
+    // Note on BPF-side configuration: the BPF program carries no
+    // monitor-path config (its only rodata is self_tgid, written above
+    // before load). Path filtering is entirely user-space: PostData's
+    // handler for daemon mode, TraceStats via tui_stats for TUI mode.
+    // TUI mode therefore needs no PostData-equivalent setup here.
+    if (!tui_mode) {
+        postdata_i = new PostData(skel, config_file, verbose, file_path);
+        if (!postdata_i)
+        {
+            std::cerr << "Failed to create PostData instance!" << std::endl;
+            filetrace_bpf__destroy(skel);
+            return -ENOMEM;
+        }
     }
     // Attach the eBPF program to its hook
     err = filetrace_bpf__attach(skel);
@@ -159,14 +226,84 @@ int main(int argc, char **argv)
     }
 
     std::cout << "eBPF program attached, press Ctrl+C to exit." << std::endl;
+
+    if (tui_mode) {
+        // TUI mode: load config_list, feed stats from a polling thread
+        // and run the UI on the main thread.
+        std::vector<std::string> paths;
+        try {
+            std::ifstream f(config_file);
+            json cfg = json::parse(f);
+            if (cfg.contains("config_list") && cfg["config_list"].is_array()) {
+                paths = cfg["config_list"].get<std::vector<std::string>>();
+            }
+        } catch (const std::exception &e) {
+            std::cerr << "Failed to parse " << config_file << ": " << e.what() << std::endl;
+        }
+        if (paths.empty()) {
+            std::cerr << "No config_list entries; nothing to monitor." << std::endl;
+            ring_buffer__free(ringbuf);
+            filetrace_bpf__destroy(skel);
+            return 1;
+        }
+        TraceStats stats(paths);
+        tui_stats = &stats;
+
+        // Construct the UI and publish g_tui BEFORE starting the poller:
+        // the poller reads g_tui on error, so it must observe a fully
+        // constructed object (release store pairs with the acquire loads).
+        TuiOptions topts;
+        topts.refresh_ms = refresh_ms;
+        TuiApp tui(stats, topts);
+        g_tui.store(&tui, std::memory_order_release);
+
+        std::thread poller([ringbuf]() {
+            while (tui_running) {
+                int rc = ring_buffer__poll(ringbuf, 100);
+                if (rc < 0 && rc != -EINTR) {
+                    std::cerr << "ring_buffer__poll error: " << strerror(-rc) << std::endl;
+                    tui_running = false;
+                    // stop the UI too: leaving it running would freeze on
+                    // stale data until the user quits
+                    TuiApp *tui = g_tui.load(std::memory_order_acquire);
+                    if (tui) {
+                        tui->request_stop();
+                    }
+                }
+            }
+        });
+
+        // a signal delivered during setup (before the UI existed) only set
+        // tui_running — never call run() in that case, or the UI would
+        // block forever waiting for a stop that has already been consumed
+        if (tui_running.load()) {
+            tui.run();                // blocks until the user quits
+        }
+        g_tui.store(nullptr, std::memory_order_release);
+
+        tui_running = false;
+        poller.join();
+        tui_stats = nullptr;
+        ring_buffer__free(ringbuf);
+        filetrace_bpf__destroy(skel);
+        return 0;
+    }
+
     // Poll the ring buffer for events
-    while (true) 
+    while (tui_running)
     {
-        err = ring_buffer__poll(ringbuf, 100); 
+        err = ring_buffer__poll(ringbuf, 100);
+        if (err == -EINTR) {
+            continue;   // signal-interrupted: just re-check the stop flag
+        }
         if (err < 0) {
             std::cerr << "Error: " << strerror(errno) << "("<< errno <<")"<< std::endl;
             break;
         }
+    }
+    if (!tui_running) {
+        // graceful signal shutdown, not a polling failure
+        err = 0;
     }
 
     if (ringbuf)

@@ -169,6 +169,60 @@ std::string TraceStats::event_path(const struct event &e)
     return fullpath;
 }
 
+std::string TraceStats::match_monitor_path(const std::vector<std::string> &paths,
+                                           const std::string &full_path)
+{
+    if (full_path.empty()) {
+        return std::string();
+    }
+
+    // Most specific configured ancestor wins. Longest match is what makes
+    // nested configs (/etc plus /etc/nginx) attribute an event below
+    // /etc/nginx to /etc/nginx instead of to whatever comes first in the
+    // config file. "/" is the catch-all: it is only ever the match when no
+    // longer path matches.
+    std::string matched;
+    for (const auto &p : paths) {
+        if (p.empty()) {
+            continue;
+        }
+        // component-boundary prefix test: "/etc" matches "/etc" and
+        // "/etc/nginx.conf", not "/etcetera"
+        bool hit = (p == "/") || full_path == p ||
+                   (full_path.size() > p.size() &&
+                    full_path.compare(0, p.size(), p) == 0 &&
+                    full_path[p.size()] == '/');
+        if (hit && p.size() > matched.size()) {
+            matched = p;
+        }
+    }
+    if (!matched.empty()) {
+        return matched;
+    }
+
+    // write/copy_file_range events may only carry the basename: the
+    // rebuilt path is then "/name" (a single component). Accept it only
+    // when EXACTLY ONE configured monitor path ends with that suffix --
+    // with several candidates the event could be attributed to the wrong
+    // monitored file, so it is dropped instead (the leading '/' in the
+    // suffix already guarantees a component boundary).
+    if (full_path.size() > 1 && full_path.find('/', 1) == std::string::npos) {
+        const std::string *candidate = nullptr;
+        int hits = 0;
+        for (const auto &p : paths) {
+            if (p.size() > full_path.size() &&
+                p.compare(p.size() - full_path.size(), full_path.size(), full_path) == 0) {
+                hits++;
+                candidate = &p;
+            }
+        }
+        if (hits == 1) {
+            return *candidate;
+        }
+    }
+    return std::string();
+}
+
 TraceStats::TraceStats(std::vector<std::string> monitor_paths)
 {
     for (auto &p : monitor_paths) {

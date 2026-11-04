@@ -151,6 +151,19 @@ public:
     // their own key, and empty-path events are counted as dropped.
     static std::string event_path(const struct event &e);
 
+    // Map a rebuilt event path onto the configured monitor path it belongs
+    // to. The event is attributed to the MOST SPECIFIC (longest) matching
+    // configured path, not to the first one in config order: with nested
+    // configs such as "/etc" and "/etc/nginx", an event below
+    // "/etc/nginx" belongs to "/etc/nginx". "/" is the catch-all and only
+    // wins when nothing more specific matches. Events that carry nothing
+    // but a basename rebuild to "/name" (see event_path()); such a path is
+    // accepted only when exactly one configured path ends with "/name",
+    // otherwise it is ambiguous and "" is returned. A match must sit on a
+    // path component boundary ("/etc" does not match "/etcetera").
+    static std::string match_monitor_path(const std::vector<std::string> &paths,
+                                          const std::string &full_path);
+
     static uint64_t now_ms();
 
 private:

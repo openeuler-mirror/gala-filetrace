@@ -82,11 +82,11 @@ $(CXX_OBJS): $(OUTPUT_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OUTPUT_DIR)
 	@echo "Compiling $< to $@ ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -MMD -MP -o $@ $<
 
-# the daemon must not link the TUI translation units: tui_main.o has
-# its own main() and tui.o pulls in the ncurses dependency
-filetrace: $(filter-out $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/tui_main.o,$(CXX_OBJS))
-	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS)
+# the standalone tui_main.o has its own main() and must not be linked
+# into the daemon; tui.o stays because -t mode embeds the TUI
+filetrace: $(filter-out $(OUTPUT_DIR)/tui_main.o,$(CXX_OBJS))
+	@echo "Linking filetrace.o exporter.o post.o tui.o to filetrace ..."
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS) $(TUILDFLAGS)
 
 TUILDFLAGS = -lncurses -ltinfo -lpthread
 

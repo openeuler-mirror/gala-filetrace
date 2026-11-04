@@ -8,7 +8,15 @@
 
 #include "stats.hpp"
 
-#include <ncurses.h>   // MEVENT, KEY_MOUSE, key macros
+// Minimal mouse event snapshot, mirroring the MEVENT fields the UI
+// needs. Defined here instead of ncurses' MEVENT so this public header
+// does not leak <ncurses.h> macros (move/clear/erase/OK...) into every
+// includer; tui.cpp converts from MEVENT at the getch() call site.
+struct MouseEvent {
+    short id = 0;
+    int x = 0, y = 0, z = 0;
+    unsigned long bstate = 0;
+};
 
 // Which panel the keyboard focus is on.
 enum class Focus { Devices, Procs };
@@ -68,6 +76,8 @@ private:
     void sample_proc_usage();
     // Reads /proc/<pid>/stat and hands the computed usage back through
     // *out; *last_utime/*last_stime are updated on success only.
+    // Reads /proc/<pid>/stat and hands the computed usage back through
+    // *out; *last_utime/*last_stime are updated on success only.
     bool read_proc_usage(unsigned int pid, double total_mem_kb,
                                      unsigned long long *last_utime,
                                      unsigned long long *last_stime,
@@ -88,13 +98,14 @@ private:
     void sort_rows();
     void clamp_cursors();
     void move_proc_cursor(int delta);
+    void move_cursor(int delta);
     void scroll_list(int delta);
     void open_detail();
     void escape();
     void cycle_sort();
     void reverse_sort();
     void set_sort_column(SortColumn col);
-    void handle_mouse(const MEVENT &ev);
+    void handle_mouse(const MouseEvent &ev);
 
     // x offset of each process-table column (recomputed each render)
     int col_x_[8] = {0};
@@ -132,6 +143,7 @@ private:
     int h_scroll_ = 0;                     // horizontal command-line scroll
     unsigned int detail_pid_ = 0;
     bool selection_active_ = false;
+    unsigned int selected_pid_ = 0;   // pid behind the active selection
 
     // cached screen geometry
     int rows_ = 0, cols_ = 0;

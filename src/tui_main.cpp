@@ -26,12 +26,13 @@
 
 using json = nlohmann::json;
 
-static TuiApp *g_tui = nullptr;
+static std::atomic<TuiApp *> g_tui{nullptr}; // published while the TUI runs
 
 static void tui_sig_handler(int)
 {
-    if (g_tui) {
-        g_tui->request_stop();
+    TuiApp *tui = g_tui.load(std::memory_order_acquire);
+    if (tui) {
+        tui->request_stop();
     }
 }
 
@@ -101,6 +102,17 @@ int main(int argc, char **argv)
                     std::cerr << "Warning: invalid refresh interval '"
                               << optarg << "', using 1000ms" << std::endl;
                     val = 1000;
+                } else if (val < MIN_REFRESH_MS || val > MAX_REFRESH_MS) {
+                    // The TuiApp constructor clamps as well, but silently:
+                    // say so here, otherwise a -r 3600000 the user asked for
+                    // looks like a 60 s refresh that never happened.
+                    long clamped = val < MIN_REFRESH_MS ? MIN_REFRESH_MS
+                                                        : MAX_REFRESH_MS;
+                    std::cerr << "Warning: refresh interval " << val
+                              << "ms out of range [" << MIN_REFRESH_MS << ", "
+                              << MAX_REFRESH_MS << "], using " << clamped
+                              << "ms" << std::endl;
+                    val = clamped;
                 }
                 refresh_ms = (int)val;
                 break;
@@ -122,6 +134,16 @@ int main(int argc, char **argv)
         refresh_ms = 60000;
     }
 
+    // This standalone binary has no live event source (the real ring-buffer
+    // feed lives in the main filetrace binary via -t); without the demo
+    // generator the UI would render forever with no data at all.
+    if (!demo) {
+        std::cerr << "filetrace-tui has no live event source." << std::endl
+                  << "Use -d for the demo feed, or run 'filetrace -t' for live tracing."
+                  << std::endl;
+        return 1;
+    }
+
     auto paths = load_config_list(config_file);
     if (paths.empty()) {
         std::cerr << "No config_list entries in " << config_file
@@ -141,7 +163,10 @@ int main(int argc, char **argv)
     TuiOptions opts;
     opts.refresh_ms = refresh_ms;
     TuiApp tui(stats, opts);
-    g_tui = &tui;
+    // publish before registering the handlers: a signal may arrive the
+    // instant the handler is installed (release store pairs with the
+    // acquire load in the handler)
+    g_tui.store(&tui, std::memory_order_release);
     signal(SIGINT, tui_sig_handler);
     signal(SIGTERM, tui_sig_handler);
 
@@ -159,5 +184,14 @@ int main(int argc, char **argv)
     if (feeder.joinable()) {
         feeder.join();
     }
+    // Undo the handler and the published pointer BEFORE the locals unwind:
+    // TuiApp is destroyed before TraceStats, so a SIGTERM/SIGINT delivered
+    // between run() returning and process exit would otherwise call
+    // request_stop() on an already-destructed object (UAF). Restoring
+    // SIG_DFL also gives systemd/operator a second stop signal the usual
+    // "force-kill on repeat signal" semantics.
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTERM, SIG_DFL);
+    g_tui.store(nullptr, std::memory_order_release);
     return 0;
 }

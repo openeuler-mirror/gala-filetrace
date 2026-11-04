@@ -104,6 +104,13 @@ static double read_total_mem_kb()
     return kb;
 }
 
+static unsigned long long read_boot_ms_since()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+    return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
                              unsigned long long *last_utime,
                              unsigned long long *last_stime,
@@ -246,10 +253,29 @@ void TuiApp::sample_once()
 {
     snap_ = stats_.snapshot();
     proc_rows_ = snap_.procs;
-    // %CPU/%MEM must be sampled for this frame's rows BEFORE sorting,
-    // otherwise the sort keys come from the previous frame's usage data
+    // refresh %CPU/%MEM BEFORE sorting: sort_rows() orders by the usage
+    // values that are rendered, so sampling after the sort would order
+    // the rows by the previous sample's numbers
     sample_proc_usage();
     sort_rows();
+    // the selection tracks a pid, but the cursor is an index into
+    // proc_rows_: re-sorting (new events, changed order) moves rows, so
+    // re-locate the selected process after every refresh; if it exited,
+    // clear the selection instead of pointing at an unrelated row
+    if (selection_active_ && selected_pid_ != 0) {
+        bool found = false;
+        for (int idx = 0; idx < (int)proc_rows_.size(); idx++) {
+            if (proc_rows_[idx].pid == selected_pid_) {
+                proc_cursor_ = idx;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            selection_active_ = false;
+            selected_pid_ = 0;
+        }
+    }
     clamp_cursors();
 }
 
@@ -302,10 +328,7 @@ void TuiApp::sort_rows()
 void TuiApp::clamp_cursors()
 {
     int n = (int)proc_rows_.size();
-    // one line of the process panel is the column header, so only
-    // proc_height_ - 1 body rows are visible; counting the header row
-    // lets the selected row scroll one line past the screen
-    int visible = proc_height_ - 1;
+    int visible = proc_height_ > 1 ? proc_height_ - 1 : 1;
     if (proc_cursor_ >= n) {
         proc_cursor_ = n - 1;
     }
@@ -373,7 +396,8 @@ void TuiApp::run()
                 if (ch == KEY_MOUSE) {
                     MEVENT ev;
                     if (getmouse(&ev) == OK) {
-                        handle_mouse(ev);
+                        handle_mouse(MouseEvent{ev.id, ev.x, ev.y, ev.z,
+                                                (unsigned long)ev.bstate});
                     }
                 } else {
                     handle_key(ch);
@@ -496,9 +520,7 @@ void TuiApp::render_devices()
         x += w;
     }
 
-    // rows, honoring device_scroll_. The panel's last line is the panel
-    // separator drawn below, so it must be reserved here: counting it as
-    // a data row makes the separator overwrite the last visible device.
+    // rows, honoring device_scroll_
     int visible = dev_height_ - DEV_HEADER - 1;
     for (int row = 0; row < visible; row++) {
         int idx = device_scroll_ + row;
@@ -657,11 +679,13 @@ void TuiApp::render_help()
         "  h / ?            toggle this help (sampling continues)  ",
         "  q                quit from main view                    ",
         "  Tab              switch focus: devices <-> processes    ",
-        "  Up / Down, j / k move selection (procs) / scroll (devs) ",
-        "  PageUp/PageDown  page up / page down                    ",
-        "  Home / End       jump to first / last row               ",
-        "  Left / Right     scroll long command lines horizontally ",
-        "  s / S            cycle sort: OPS->%MEM->%CPU->PID->CMD  ",
+        "  Up / Down, j / k move cursor / scroll list (focused)    ",
+        "  PageUp/PageDown  page up / page down (focused)          ",
+        "  Home / End       jump to first / last row (focused)     ",
+        "  Left / Right     scroll command lines (process focus)   ",
+        "  mouse click on   OPS / %MEM / %CPU header: sort by that ",
+        "    %MEM %CPU OPS  column (desc first, click again flips) ",
+        "  s / S            cycle sort: OPS -> %MEM -> %CPU (desc) ",
         "  /                reverse current sort direction         ",
         "  Enter            open detail page of selected process   ",
         "  Esc              back / clear selection / quit          ",
@@ -778,7 +802,7 @@ static SortColumn column_to_sort(const char *title)
 // mouse
 // ---------------------------------------------------------------------------
 
-void TuiApp::handle_mouse(const MEVENT &ev)
+void TuiApp::handle_mouse(const MouseEvent &ev)
 {
     int mx = ev.x, my = ev.y;
 
@@ -804,15 +828,19 @@ void TuiApp::handle_mouse(const MEVENT &ev)
     // process row click selects; click below the table (footer/blank)
     // clears the selection
     int row = my - proc_top_ - 1;    // -1 for column header
+    // only proc_height_ - 1 rows are drawn (last panel line is the
+    // separator), matching render_procs and clamp_cursors
     if (row >= 0 && row < proc_height_ - 1) {
         int idx = proc_scroll_ + row;
         if (idx < (int)proc_rows_.size()) {
             proc_cursor_ = idx;
+            selected_pid_ = proc_rows_[idx].pid;
             selection_active_ = true;
         }
         return;
     }
     selection_active_ = false;
+    selected_pid_ = 0;
 }
 
 
@@ -829,7 +857,25 @@ void TuiApp::move_proc_cursor(int delta)
     if (proc_cursor_ >= (int)proc_rows_.size()) {
         proc_cursor_ = (int)proc_rows_.size() - 1;
     }
+    // record the pid of the NEW row: recording it before the move would
+    // anchor the selection on the previous row and every refresh would
+    // relocate the cursor back there, cancelling the key press
+    selected_pid_ = proc_rows_[proc_cursor_].pid;
     clamp_cursors();
+}
+
+// One-line move of the FOCUSED list. Devices have no selection cursor, so
+// moving there means scrolling the list, exactly like PageUp/PageDown do
+// through scroll_list(); the process panel moves its cursor. Keeping both
+// paths on the same focus dispatch is what stops the arrow keys from
+// silently moving the unfocused list.
+void TuiApp::move_cursor(int delta)
+{
+    if (focus_ == Focus::Devices) {
+        scroll_list(delta);
+    } else {
+        move_proc_cursor(delta);
+    }
 }
 
 // Scroll the focused list by delta lines (devices when device-focused,
@@ -838,7 +884,6 @@ void TuiApp::scroll_list(int delta)
 {
     if (focus_ == Focus::Devices) {
         int n = (int)snap_.devices.size();
-        // one line each for the panel separator (see render_devices)
         int visible = dev_height_ - DEV_HEADER - 1;
         if (visible <= 0) {
             return;
@@ -878,6 +923,7 @@ void TuiApp::escape()
         default:
             if (selection_active_) {
                 selection_active_ = false;
+                selected_pid_ = 0;
             } else {
                 running_ = false;
             }
@@ -929,19 +975,11 @@ void TuiApp::handle_key(int ch)
             break;
         case KEY_UP:
         case 'k':
-            if (focus_ == Focus::Devices) {
-                scroll_list(-1);
-            } else {
-                move_proc_cursor(-1);
-            }
+            move_cursor(-1);
             break;
         case KEY_DOWN:
         case 'j':
-            if (focus_ == Focus::Devices) {
-                scroll_list(1);
-            } else {
-                move_proc_cursor(1);
-            }
+            move_cursor(1);
             break;
         case KEY_PPAGE:
             if (focus_ == Focus::Devices) {
@@ -960,8 +998,12 @@ void TuiApp::handle_key(int ch)
         case KEY_HOME:
             if (focus_ == Focus::Devices) {
                 device_scroll_ = 0;
-            } else {
+            } else if (!proc_rows_.empty()) {
                 proc_cursor_ = 0;
+                // keep the pid anchor in sync, or the next refresh would
+                // relocate the cursor back to the previously selected row
+                selection_active_ = true;
+                selected_pid_ = proc_rows_[proc_cursor_].pid;
                 clamp_cursors();
             }
             break;
@@ -972,19 +1014,29 @@ void TuiApp::handle_key(int ch)
                 device_scroll_ = visible > 0 ? std::max(n - visible, 0) : 0;
             } else if (!proc_rows_.empty()) {
                 proc_cursor_ = (int)proc_rows_.size() - 1;
+                // keep the pid anchor in sync (see KEY_HOME)
+                selection_active_ = true;
+                selected_pid_ = proc_rows_[proc_cursor_].pid;
                 clamp_cursors();
             }
             break;
         case KEY_LEFT:
-            h_scroll_ -= 8;      // reveal later part of long command lines
-            if (h_scroll_ < -(1 << 16)) {
-                h_scroll_ = -(1 << 16);
+            // the device panel has nothing to scroll horizontally: acting on
+            // the process table while it is not focused would shift the
+            // command column behind the user's back
+            if (focus_ == Focus::Procs) {
+                h_scroll_ -= 8;      // reveal later part of long command lines
+                if (h_scroll_ < -(1 << 16)) {
+                    h_scroll_ = -(1 << 16);
+                }
             }
             break;
         case KEY_RIGHT:
-            h_scroll_ += 8;
-            if (h_scroll_ > 0) {
-                h_scroll_ = 0;
+            if (focus_ == Focus::Procs) {
+                h_scroll_ += 8;
+                if (h_scroll_ > 0) {
+                    h_scroll_ = 0;
+                }
             }
             break;
         case 's':
