@@ -203,8 +203,15 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.last_active_ms = now;
     p.last_seq = ++seq_;
 
-    // device aggregate; configured monitor paths are never evicted
-    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
+    // device aggregate; configured monitor paths are never evicted.
+    // Every configured path is seeded into devices_ by the constructor and
+    // survives every eviction (the veto), so when the table holds nothing
+    // but configured paths there is nothing to trim — checking
+    // devices_.size() > monitor_paths_.size() is O(1) and avoids paying a
+    // full evict_lru scan (which would find no victim) for every new-path
+    // event once the configured set alone fills the table.
+    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end() &&
+        devices_.size() > monitor_paths_.size()) {
         evict_lru(devices_, MAX_DEVICE_ENTRIES, [this](const auto &kv) {
             return monitor_paths_.count(kv.first) == 0;
         });
