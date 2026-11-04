@@ -312,7 +312,7 @@ void TuiApp::run()
     keypad(stdscr, TRUE);
     curs_set(0);
     set_escdelay(50);
-    timeout(0);                      // non-blocking input; loop sleeps
+    timeout(opts_.refresh_ms);       // blocking getch() ticks the interval
 
     if (opts_.use_color && has_colors()) {
         start_color();
@@ -323,26 +323,30 @@ void TuiApp::run()
         init_pair(4, COLOR_YELLOW, -1);           // titles / hints
     }
 
-    while (running_) {
-        sample_once();
-        render();
+    // paint once before the first blocking wait, so the screen is not
+    // blank for up to a whole refresh interval at startup
+    sample_once();
+    render();
 
-        int ch;
-        while ((ch = getch()) != ERR) {
+    while (running_) {
+        // getch() blocks up to one refresh interval: a key press is
+        // handled and the screen redrawn the moment it arrives, instead
+        // of waiting out a full sleep'ed tick first (with the 60 s upper
+        // bound on refresh_ms that wait made the UI feel dead). ERR means
+        // the interval elapsed without input, which is the time to
+        // resample and redraw. Background pages keep sampling the same
+        // way: their key presses just re-render instead of sampling.
+        int ch = getch();
+        if (ch == ERR) {
+            sample_once();
+            render();
+        } else {
             handle_key(ch);
             if (!running_) {
                 break;
             }
+            render();
         }
-        if (page_ != Page::Main) {
-            // still sample in background pages, per spec
-        }
-        // widen before scaling: the interval is already clamped to
-        // MAX_REFRESH_MS, but doing the multiply in 64 bits means a future
-        // cap change cannot silently reintroduce signed overflow here
-        const long long tick_us =
-            static_cast<long long>(opts_.refresh_ms) * 1000LL;
-        usleep(static_cast<useconds_t>(tick_us));
     }
 
     endwin();

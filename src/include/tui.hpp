@@ -21,8 +21,8 @@ enum class SortColumn { Ops, Mem, Cpu, Pid, Cmd };
 // sweep costs more than the redraw; above the maximum the UI looks frozen.
 // Both the command-line parser and TuiApp's constructor clamp into this
 // range, so the value is always safe to divide with (read_proc_usage does
-// 1000.0 / refresh_ms) and to convert to microseconds for the tick sleep:
-// MAX_REFRESH_MS * 1000 fits in useconds_t with room to spare.
+// 1000.0 / refresh_ms) and to hand to ncurses timeout(), whose argument
+// is the getch() wait in milliseconds.
 static const int MIN_REFRESH_MS = 100;
 static const int MAX_REFRESH_MS = 60000;
 

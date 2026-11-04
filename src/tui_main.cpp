@@ -121,8 +121,8 @@ int main(int argc, char **argv)
         }
     }
     // clamp both ends: below MIN_REFRESH_MS the /proc sweep dominates the
-    // refresh, above MAX_REFRESH_MS the UI looks frozen. The upper bound
-    // is what keeps refresh_ms * 1000 (usec) inside useconds_t.
+    // refresh, above MAX_REFRESH_MS the UI looks frozen. refresh_ms is
+    // also handed to ncurses timeout() as the getch() wait, in ms.
     if (refresh_ms < MIN_REFRESH_MS) {
         refresh_ms = MIN_REFRESH_MS;
     }
