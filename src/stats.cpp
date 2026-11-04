@@ -31,19 +31,41 @@ static void evict_lru(Map &m, size_t cap, Evictable evictable, OnErase on_erase)
             seqs.push_back(kv.second.last_seq);
         }
     }
-    if (seqs.empty()) {
-        return;
+    if (!seqs.empty()) {
+        size_t excess = std::min(m.size() - target, seqs.size());
+        std::nth_element(seqs.begin(), seqs.begin() + excess - 1, seqs.end());
+        uint64_t threshold = seqs[excess - 1];
+        for (auto it = m.begin(); it != m.end() && excess > 0;) {
+            if (it->second.last_seq <= threshold && evictable(*it)) {
+                on_erase(it->second);
+                it = m.erase(it);
+                excess--;
+            } else {
+                ++it;
+            }
+        }
     }
-    size_t excess = std::min(m.size() - target, seqs.size());
-    std::nth_element(seqs.begin(), seqs.begin() + excess - 1, seqs.end());
-    uint64_t threshold = seqs[excess - 1];
-    for (auto it = m.begin(); it != m.end() && excess > 0;) {
-        if (it->second.last_seq <= threshold && evictable(*it)) {
-            on_erase(it->second);
-            it = m.erase(it);
-            excess--;
-        } else {
-            ++it;
+    if (m.size() > target) {
+        // The veto is a preference, not immunity: with every candidate
+        // vetoed the quota is filled from all entries regardless, so the
+        // cap cannot be defeated by the configured path set (see the cap
+        // claim in stats.hpp).
+        std::vector<uint64_t> all;
+        all.reserve(m.size());
+        for (const auto &kv : m) {
+            all.push_back(kv.second.last_seq);
+        }
+        size_t excess = std::min(m.size() - target, all.size());
+        std::nth_element(all.begin(), all.begin() + excess - 1, all.end());
+        uint64_t threshold = all[excess - 1];
+        for (auto it = m.begin(); it != m.end() && excess > 0;) {
+            if (it->second.last_seq <= threshold) {
+                on_erase(it->second);
+                it = m.erase(it);
+                excess--;
+            } else {
+                ++it;
+            }
         }
     }
 }
@@ -186,6 +208,14 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
             paths_.pop_back();
             continue;
         }
+        if (devices_.size() >= MAX_DEVICE_ENTRIES) {
+            // the devices_ cap is absolute: with more configured paths
+            // than the table can hold, only the first MAX_DEVICE_ENTRIES
+            // are pre-seeded. The full set stays in monitor_paths_ (for
+            // matching and the eviction veto); later paths enter devices_
+            // through on_event like any other key, where the cap holds.
+            continue;
+        }
         devices_[norm].path = norm;
     }
 }
@@ -276,15 +306,13 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.last_active_ms = now;
     p.last_seq = ++seq_;
 
-    // device aggregate; configured monitor paths are never evicted.
-    // Every configured path is seeded into devices_ by the constructor and
-    // survives every eviction (the veto), so when the table holds nothing
-    // but configured paths there is nothing to trim — checking
-    // devices_.size() > monitor_paths_.size() is O(1) and avoids paying a
-    // full evict_lru scan (which would find no victim) for every new-path
-    // event once the configured set alone fills the table.
-    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end() &&
-        devices_.size() > monitor_paths_.size()) {
+    // device aggregate; configured monitor paths are preferred victims:
+    // evict_lru tries the veto-respecting pass first and only falls back
+    // to protected entries when every candidate is vetoed, so the table
+    // cap holds even when the configured path set fills it. The probe
+    // always runs for a NEW key — with the fallback in place the scan
+    // always frees a slot, so it never degenerates into wasted work.
+    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
         evict_lru(devices_, MAX_DEVICE_ENTRIES,
                   [this](const auto &kv) {
                       return monitor_paths_.count(kv.first) == 0;
