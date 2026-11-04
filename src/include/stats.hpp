@@ -42,20 +42,11 @@ struct ProcStat {
     std::string cmd;
     unsigned int uid = 0;
     uint64_t ops = 0;                       // total operations by this process
-    // Per-path op counts: monitor path for matched events, rebuilt event
-    // path otherwise. Copy-on-write: a published snapshot shares the table
-    // with the live aggregate, and on_event() clones it before an in-place
-    // update only when a snapshot still holds a reference. Publishing a
-    // snapshot therefore copies this pointer, never the table.
-    // The deferred clone is paid by the producer (the ring-buffer callback
-    // thread) and is bounded: one table of at most MAX_PER_FILE_ENTRIES
-    // entries per process per published generation, ~4 us worst case.
-    //
-    // Never null for entries produced by on_event(). The pointee is
-    // deliberately NOT const-qualified: writing through a pointer that was
-    // de-consted from a const-declared object is UB, so the "read only"
-    // contract for snapshot holders is by convention instead.
-    std::shared_ptr<std::map<std::string, uint64_t>> per_file;
+    // Immutable per-file table shared with published snapshots
+    // (copy-on-write). on_event() clones it only when a snapshot still
+    // holds a reference, so snapshot() never deep-copies per-file tables
+    // under the producer mutex. Treat it as read-only outside TraceStats.
+    std::shared_ptr<const std::map<std::string, uint64_t>> per_file;
     uint64_t last_active_ms = 0;            // wall clock ms of last event
     uint64_t last_seq = 0;                  // monotonic event seq for LRU
 };
@@ -78,10 +69,10 @@ public:
     // their own devices_ entry, and an empty path counts as dropped.
     void on_event(const struct event &e, const std::string &path);
 
-    // Copy the current aggregate state. The deep copy runs under the same
-    // mutex producers use: bounded by the caps above, fine for the low
-    // TUI refresh rate; revisit (double-buffered publish) when wiring the
-    // ring-buffer consumer if the stall ever shows up in practice.
+    // Copy the current aggregate state. Runs under the same mutex the
+    // producers use, but the copies are now cheap: ProcStat entries share
+    // their immutable per_file table (copy-on-write in on_event), so only
+    // the small scalar/string shells are copied while the lock is held.
     StatsSnapshot snapshot() const;
 
     // Full monitored path list (normalized), used for path matching.

@@ -156,7 +156,7 @@ static void test_cmd_refresh_on_exec()
     // thread comm, the key is tgid — no process identity to reset on)
     assert(snap.procs[0].cmd == "python");
     assert(snap.procs[0].ops == 3);
-    assert(snap.procs[0].per_file.at("/etc/hosts") == 3);
+    assert(snap.procs[0].per_file->at("/etc/hosts") == 3);
     std::cout << "test_cmd_refresh_on_exec passed" << std::endl;
 }
 
@@ -174,10 +174,10 @@ static void test_per_file_capped()
 
     StatsSnapshot snap = stats.snapshot();
     assert(snap.procs.size() == 1);
-    assert(snap.procs[0].per_file.size() <= MAX_PER_FILE_ENTRIES);
+    assert(snap.procs[0].per_file->size() <= MAX_PER_FILE_ENTRIES);
     // the configured monitor path must survive the trim with its count
-    assert(snap.procs[0].per_file.count("/etc/hosts") == 1);
-    assert(snap.procs[0].per_file.at("/etc/hosts") == 1);
+    assert(snap.procs[0].per_file->count("/etc/hosts") == 1);
+    assert(snap.procs[0].per_file->at("/etc/hosts") == 1);
     std::cout << "test_per_file_capped passed" << std::endl;
 }
 

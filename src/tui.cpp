@@ -104,22 +104,10 @@ static double read_total_mem_kb()
     return kb;
 }
 
-static unsigned long long read_boot_ms_since()
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_BOOTTIME, &ts);
-    return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-// Returns true and fills *u / *last_* on a successful /proc/<pid>/stat
-// read; on failure *u is left zeroed and *last_* untouched so the caller
-// keeps its previous baseline. The computed ProcUsage must be handed back
-// through *u: without that exit the caller can only store a default-
-// constructed value and %CPU/%MEM would always read 0.
-bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
-                             unsigned long long *last_utime,
-                             unsigned long long *last_stime,
-                             double hz, bool have_prev, ProcUsage *out)
+ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
+                                  unsigned long long *last_utime,
+                                  unsigned long long *last_stime,
+                                  double hz, bool have_prev)
 {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%u/stat", pid);
@@ -182,7 +170,6 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
 
 struct UsageSample {
     unsigned long long utime = 0, stime = 0;
-    bool have = false;
 };
 
 void TuiApp::sample_proc_usage()
@@ -196,49 +183,33 @@ void TuiApp::sample_proc_usage()
         total_mem_kb = read_total_mem_kb();
     }
 
+    // prev holds the previous frame's samples. Its utime/stime must be fed
+    // into read_proc_usage so %CPU is a real per-interval delta; feeding
+    // fresh zeroed counters would degenerate into cumulative CPU time.
     static std::map<unsigned int, UsageSample> prev;
     static std::map<unsigned int, UsageSample> cur;
     std::swap(prev, cur);
     cur.clear();
 
-    for (auto &row : proc_rows_) {
-        UsageSample s;
-        bool have_prev = prev.count(row.pid) && prev[row.pid].have;
-        unsigned long long utime = have_prev ? prev[row.pid].utime : 0;
-        unsigned long long stime = have_prev ? prev[row.pid].stime : 0;
-        ProcUsage u;
-        bool ok = read_proc_usage(row.pid, total_mem_kb,
-                                  &utime, &stime, hz, have_prev, &u);
-        if (ok) {
-            s.utime = utime;
-            s.stime = stime;
-            s.have = true;
-            usage_[row.pid] = u;
-        } else if (have_prev) {
-            // carry the last good sample forward so the delta baseline
-            // survives transient read failures (e.g. pid vanished mid-tick)
-            s.utime = prev[row.pid].utime;
-            s.stime = prev[row.pid].stime;
-            s.have = true;
-        }
-        cur[row.pid] = s;
-    }
+    // rebuild usage_ from scratch each tick so entries of exited pids
+    // are dropped and the map (and sort cost) stays bounded
+    std::map<unsigned int, ProcUsage> new_usage;
 
-    // drop usage for pids that left the table so the map cannot grow
-    // without bound across long sessions
-    for (auto it = usage_.begin(); it != usage_.end();) {
-        if (cur.count(it->first) == 0) {
-            it = usage_.erase(it);
-        } else {
-            ++it;
+    for (auto &row : proc_rows_) {
+        unsigned long long last_utime = 0, last_stime = 0;
+        auto it = prev.find(row.pid);
+        bool have_prev = it != prev.end();
+        if (have_prev) {
+            last_utime = it->second.utime;
+            last_stime = it->second.stime;
         }
+        ProcUsage u = read_proc_usage(row.pid, total_mem_kb,
+                                      &last_utime, &last_stime, hz,
+                                      have_prev);
+        cur[row.pid] = UsageSample{last_utime, last_stime};
+        new_usage[row.pid] = u;
     }
-    // defense in depth: the loop above already leaves only current pids,
-    // but never let a future change to the snapshot let this map outgrow
-    // its documented cap
-    while (usage_.size() > MAX_USAGE_ENTRIES) {
-        usage_.erase(usage_.begin());
-    }
+    usage_.swap(new_usage);
 }
 
 void TuiApp::sample_once()
@@ -254,9 +225,17 @@ void TuiApp::sample_once()
 // sorting / view helpers
 // ---------------------------------------------------------------------------
 
-// Sort the process rows by the current sort column/direction. The
-// column is cycled with s/S and the direction flipped with / (both in
-// handle_key); default view is OPS descending.
+// Non-inserting usage_ lookup: reads during sort/render must not add
+// zero entries back into the map the sampler rebuilds every tick.
+ProcUsage TuiApp::usage_of(unsigned int pid) const
+{
+    auto it = usage_.find(pid);
+    return it != usage_.end() ? it->second : ProcUsage{};
+}
+
+// Sort the process rows by the current sort column/direction.
+// (Column cycling and direction toggling are wired up in a later stage;
+// this keeps the default view: OPS descending.)
 void TuiApp::sort_rows()
 {
     std::sort(proc_rows_.begin(), proc_rows_.end(),
@@ -268,12 +247,12 @@ void TuiApp::sort_rows()
                       case SortColumn::Cmd:
                           return sort_desc_ ? a.cmd > b.cmd : a.cmd < b.cmd;
                       case SortColumn::Mem:
-                          ka = (uint64_t)(usage_[a.pid].mem * 100);
-                          kb = (uint64_t)(usage_[b.pid].mem * 100);
+                          ka = (uint64_t)(usage_of(a.pid).mem * 100);
+                          kb = (uint64_t)(usage_of(b.pid).mem * 100);
                           break;
                       case SortColumn::Cpu:
-                          ka = (uint64_t)(usage_[a.pid].cpu * 100);
-                          kb = (uint64_t)(usage_[b.pid].cpu * 100);
+                          ka = (uint64_t)(usage_of(a.pid).cpu * 100);
+                          kb = (uint64_t)(usage_of(b.pid).cpu * 100);
                           break;
                       case SortColumn::Ops:
                       default:
@@ -291,6 +270,9 @@ void TuiApp::sort_rows()
 void TuiApp::clamp_cursors()
 {
     int n = (int)proc_rows_.size();
+    // one line of the process panel is the column header, so only
+    // proc_height_ - 1 body rows are visible; counting the header row
+    // lets the selected row scroll one line past the screen
     int visible = proc_height_ - 1;
     if (proc_cursor_ >= n) {
         proc_cursor_ = n - 1;
@@ -571,10 +553,10 @@ void TuiApp::render_procs()
         x += 8;
         mvprintw(y, x, "%-10s", fmt_uint64(p.uid).c_str());
         x += 10;
-        snprintf(num, sizeof(num), "%.1f", usage_[p.pid].cpu);
+        snprintf(num, sizeof(num), "%.1f", usage_of(p.pid).cpu);
         mvprintw(y, x, "%7s", num);
         x += 7;
-        snprintf(num, sizeof(num), "%.1f", usage_[p.pid].mem);
+        snprintf(num, sizeof(num), "%.1f", usage_of(p.pid).mem);
         mvprintw(y, x, "%7s", num);
         x += 7;
         mvprintw(y, x, "%8s", fmt_uint64(p.ops).c_str());
@@ -669,15 +651,13 @@ void TuiApp::render_detail()
     snprintf(num, sizeof(num), "%llu", (unsigned long long)p->uid);
     mvprintw(y++, 2, "UID      : %s", num);
     mvprintw(y++, 2, "COMMAND  : %s", p->cmd.c_str());
-    snprintf(num, sizeof(num), "%.1f / %.1f", usage_[p->pid].cpu, usage_[p->pid].mem);
+    snprintf(num, sizeof(num), "%.1f / %.1f",
+             usage_of(p->pid).cpu, usage_of(p->pid).mem);
     mvprintw(y++, 2, "CPU/MEM%% : %s", num);
     y++;
     attron(A_BOLD | COLOR_PAIR(1));
     mvprintw(y++, 2, "per monitored file ops:");
     attroff(A_BOLD | COLOR_PAIR(1));
-    // per_file is a copy-on-write shared table; a snapshot may hold the
-    // same pointer the producer is about to clone, so read it through the
-    // pointer and tolerate a null table (entries seeded outside on_event).
     if (p->per_file) {
         for (const auto &kv : *p->per_file) {
             mvprintw(y++, 4, "%-40s %8s", trim_to_width(kv.first, 40).c_str(),

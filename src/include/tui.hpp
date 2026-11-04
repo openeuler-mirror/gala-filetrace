@@ -84,6 +84,7 @@ private:
     void render_detail();
 
     // --- view helpers ---
+    ProcUsage usage_of(unsigned int pid) const;   // no-insert usage_ lookup
     void sort_rows();
     void clamp_cursors();
     void move_proc_cursor(int delta);
