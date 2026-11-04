@@ -94,13 +94,13 @@ static double read_total_mem_kb()
     return kb;
 }
 
-// Returns true and fills *u / *last_* on a successful /proc/<pid>/stat
-// read; on failure leaves *last_* untouched so the caller keeps its
-// previous baseline.
+// Returns true and fills *out / *last_* on a successful /proc/<pid>/stat
+// read; on failure leaves both untouched so the caller keeps its previous
+// baseline and can carry the last good sample forward.
 bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
                              unsigned long long *last_utime,
                              unsigned long long *last_stime,
-                             double hz, bool have_prev)
+                             double hz, bool have_prev, ProcUsage *out)
 {
     ProcUsage u;
     char path[64];
@@ -149,6 +149,9 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
             u.cpu = 999;
         }
     }
+    // hand the result back: the values above are computed from this
+    // frame's sample, and nothing else can observe them otherwise
+    *out = u;
     *last_utime = utime;
     *last_stime = stime;
     return true;
@@ -182,7 +185,7 @@ void TuiApp::sample_proc_usage()
         unsigned long long stime = have_prev ? prev[row.pid].stime : 0;
         ProcUsage u;
         bool ok = read_proc_usage(row.pid, total_mem_kb,
-                                  &utime, &stime, hz, have_prev);
+                                  &utime, &stime, hz, have_prev, &u);
         if (ok) {
             s.utime = utime;
             s.stime = stime;
