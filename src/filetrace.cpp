@@ -261,7 +261,12 @@ int main(int argc, char **argv)
             }
         });
 
-        tui.run();                    // blocks until the user quits
+        // a signal delivered during setup (before the UI existed) only set
+        // tui_running — never call run() in that case, or the UI would
+        // block forever waiting for a stop that has already been consumed
+        if (tui_running.load()) {
+            tui.run();                // blocks until the user quits
+        }
         g_tui.store(nullptr, std::memory_order_release);
 
         tui_running = false;

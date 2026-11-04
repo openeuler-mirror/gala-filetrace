@@ -104,12 +104,21 @@ static double read_total_mem_kb()
     return kb;
 }
 
-bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
-                             unsigned long long *last_utime,
-                             unsigned long long *last_stime,
-                             double hz, bool have_prev, ProcUsage *out)
+static unsigned long long read_boot_ms_since()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+    return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
+                                  unsigned long long *last_utime,
+                                  unsigned long long *last_stime,
+                                  double hz, bool have_prev,
+                                  bool *got_sample)
 {
     ProcUsage u;
+    *got_sample = false;
     char path[64];
     snprintf(path, sizeof(path), "/proc/%u/stat", pid);
     FILE *f = fopen(path, "r");
@@ -136,6 +145,11 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
                &utime, &stime, &rss_pages) < 3) {
         return false;
     }
+    // a real sample was captured: only now may last_utime/last_stime be
+    // published, otherwise a zero-initialized object would later be
+    // treated as the previous sample and %CPU would show the cumulative
+    // total instead of the delta
+    *got_sample = true;
 
     if (total_mem_kb > 0) {
         // /proc/<pid>/stat rss (field 24) is reported in pages of
@@ -194,24 +208,11 @@ void TuiApp::sample_proc_usage()
 
     for (auto &row : proc_rows_) {
         UsageSample s;
-        bool have_prev = prev.count(row.pid) && prev[row.pid].have;
-        unsigned long long utime = have_prev ? prev[row.pid].utime : 0;
-        unsigned long long stime = have_prev ? prev[row.pid].stime : 0;
-        ProcUsage u;
-        bool ok = read_proc_usage(row.pid, total_mem_kb,
-                                  &utime, &stime, hz, have_prev, &u);
-        if (ok) {
-            s.utime = utime;
-            s.stime = stime;
-            s.have = true;
-            usage_[row.pid] = u;
-        } else if (have_prev) {
-            // carry the last good sample forward so the delta baseline
-            // survives transient read failures (e.g. pid vanished mid-tick)
-            s.utime = prev[row.pid].utime;
-            s.stime = prev[row.pid].stime;
-            s.have = true;
-        }
+        ProcUsage u = read_proc_usage(row.pid, total_mem_kb,
+                                      &s.utime, &s.stime, hz,
+                                      prev.count(row.pid) &&
+                                          prev[row.pid].have,
+                                      &s.have);
         cur[row.pid] = s;
     }
 
@@ -960,8 +961,12 @@ void TuiApp::handle_key(int ch)
         case KEY_HOME:
             if (focus_ == Focus::Devices) {
                 device_scroll_ = 0;
-            } else {
+            } else if (!proc_rows_.empty()) {
                 proc_cursor_ = 0;
+                // keep the pid anchor in sync, or the next refresh would
+                // relocate the cursor back to the previously selected row
+                selection_active_ = true;
+                selected_pid_ = proc_rows_[proc_cursor_].pid;
                 clamp_cursors();
             }
             break;
@@ -972,6 +977,9 @@ void TuiApp::handle_key(int ch)
                 device_scroll_ = visible > 0 ? std::max(n - visible, 0) : 0;
             } else if (!proc_rows_.empty()) {
                 proc_cursor_ = (int)proc_rows_.size() - 1;
+                // keep the pid anchor in sync (see KEY_HOME)
+                selection_active_ = true;
+                selected_pid_ = proc_rows_[proc_cursor_].pid;
                 clamp_cursors();
             }
             break;

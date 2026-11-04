@@ -80,7 +80,7 @@ private:
                                      unsigned long long *last_utime,
                                      unsigned long long *last_stime,
                                      double hz, bool have_prev,
-                                     ProcUsage *out);
+                                     bool *got_sample);
 
     // --- rendering ---
     void render();
