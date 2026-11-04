@@ -26,15 +26,25 @@
 //   per_file 16384 x (map node + key string, ~160 B)     ~ 2.6 MB
 // Worst case is therefore ~3 MB, not hundreds, and is independent of the
 // event rate (measured: 120k events over 600 processes x 200 distinct long
-// paths -> 2.7 MB). Protected entries (configured monitor paths) may push
-// a single table slightly past its share, bounded by the configured path
-// count, which is small. A published snapshot shares the tables instead of
-// copying them, so while one generation is published the live aggregate
-// can hold a second copy of a table it is writing to: peak ≈ 2x.
+// paths -> 2.7 MB). Both caps hold even when the entries are configured
+// monitor paths: such entries are only *preferred* victims, not immune
+// ones (see the second sweep in stats.cpp), so neither the per-process cap
+// nor the global budget can be defeated by the configured path set. A
+// published snapshot shares the tables instead of copying them, so while
+// one generation is published the live aggregate can hold a second copy of
+// a table it is writing to: peak ≈ 2x.
 static const size_t MAX_PROC_ENTRIES = 2048;
 static const size_t MAX_DEVICE_ENTRIES = 2048;
 static const size_t MAX_PER_FILE_ENTRIES = 128;          // per process
 static const size_t MAX_TOTAL_PER_FILE_ENTRIES = 16384;  // all processes
+
+// The budget trim cannot empty a table (each keeps at least one entry), so
+// the worst case it must be able to reach is one entry per process. If the
+// budget were below that floor it could never be satisfied and every event
+// would redo the trim pass for nothing.
+static_assert(MAX_TOTAL_PER_FILE_ENTRIES - MAX_TOTAL_PER_FILE_ENTRIES / 8 >
+                  MAX_PROC_ENTRIES,
+              "per-file budget must stay above the one-entry-per-process floor");
 
 // Aggregated statistics for one monitored file (device/file panel).
 struct DeviceStat {
@@ -61,6 +71,9 @@ struct ProcStat {
     // with the live aggregate, and on_event() clones it before an in-place
     // update only when a snapshot still holds a reference. Publishing a
     // snapshot therefore copies this pointer, never the table.
+    // The deferred clone is paid by the producer (the ring-buffer callback
+    // thread) and is bounded: one table of at most MAX_PER_FILE_ENTRIES
+    // entries per process per published generation, ~4 us worst case.
     //
     // Never null for entries produced by on_event(). The pointee is
     // deliberately NOT const-qualified: writing through a pointer that was
@@ -91,17 +104,30 @@ public:
 
     // Publish the current aggregate state.
     //
-    // The published view is cached per mutation generation: consecutive
-    // calls with no intervening event return a copy of the cached snapshot
-    // and never touch the producer mutex at all. On a miss the copy is
-    // taken while holding the producer mutex, but it copies only the small
-    // per-process/per-device shells (a few scalars, one short string and
-    // one shared pointer) — never a per-file map, which the snapshot shares
-    // and the producer clones lazily on its next write. The ring-buffer
-    // consumer is therefore never held up by a deep copy of the aggregate
-    // tables: the worst case is a few thousand shell copies, well under a
-    // millisecond, and only once per published generation — not per event,
-    // and independent of how many paths are tracked.
+    // Publishing never walks the per-file aggregate and never copies a
+    // table: a snapshot takes shared ownership of each process's table and
+    // copies only the shells (ProcStat = 88 B, DeviceStat = 96 B). The work
+    // is therefore O(#procs + #devices), capped by MAX_PROC_ENTRIES +
+    // MAX_DEVICE_ENTRIES -- measured ~60 us with both tables at their caps
+    // -- and independent of how many paths or events are tracked. With no
+    // event since the last publish the cached generation is returned as-is:
+    // no producer mutex, no rebuild, measured ~0.07 us.
+    //
+    // Sharing defers a copy rather than eliminating it, and the deferred
+    // part is paid by the producer, not by the consumer of these methods:
+    // on_event() clones a table (copy-on-write) the first time it writes to
+    // one a snapshot still references. That costs ~4 us for a full
+    // 128-entry table, at most once per process per published generation,
+    // so no single call -- publish or on_event() -- is ever O(all per-file
+    // entries); the cloning per generation is bounded by the entry budget
+    // (16384 entries, i.e. well under a millisecond in total).
+    //
+    // snapshot_shared() is the cheap path (a refcount bump on a hit);
+    // snapshot() returns a value copy of the same view and adds one shell
+    // copy (~40 us at the caps), which a caller that wants an owned object
+    // pays deliberately, while a TUI refreshing on a timer should hold the
+    // shared view instead.
+    std::shared_ptr<const StatsSnapshot> snapshot_shared() const;
     StatsSnapshot snapshot() const;
 
     // Full monitored path list (normalized), used for path matching.

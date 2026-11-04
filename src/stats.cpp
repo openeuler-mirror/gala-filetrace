@@ -85,6 +85,38 @@ static size_t trim_cold_files(std::map<std::string, uint64_t> &m, size_t target,
     return removed;
 }
 
+// Trim one process's table down to `target` entries and return how many
+// were dropped. The table may be shared with a published snapshot, in
+// which case it is cloned first (copy-on-write).
+//
+// The `pick` pre-scan is deliberate: cloning costs a full table copy
+// (~4 us for a full 128-entry table), so a table whose entries are all
+// vetoed must not pay for a copy that could never be used -- that is the
+// difference between "budget unreachable" costing one scan per event and
+// costing one clone per event.
+template <typename Pick>
+static size_t trim_table(std::shared_ptr<std::map<std::string, uint64_t>> &table,
+                         size_t target, Pick pick)
+{
+    if (!table || table->size() <= target) {
+        return 0;
+    }
+    bool droppable = false;
+    for (const auto &kv : *table) {
+        if (pick(kv)) {
+            droppable = true;
+            break;
+        }
+    }
+    if (!droppable) {
+        return 0;
+    }
+    if (table.use_count() > 1) {
+        table = std::make_shared<std::map<std::string, uint64_t>>(*table);
+    }
+    return trim_cold_files(*table, target, pick);
+}
+
 static uint64_t classify_flag(int flag)
 {
     switch (flag) {
@@ -221,10 +253,17 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     std::map<std::string, uint64_t> &files = *p.per_file;
 
     if (files.size() >= MAX_PER_FILE_ENTRIES && files.find(norm) == files.end()) {
-        // configured monitor paths are never trimmed from per_file
-        per_file_entries_ -= trim_cold_files(
-            files, MAX_PER_FILE_ENTRIES - MAX_PER_FILE_ENTRIES / EVICT_TARGET_FRAC,
-            [this](const auto &kv) { return monitor_paths_.count(kv.first) == 0; });
+        const size_t keep =
+            MAX_PER_FILE_ENTRIES - MAX_PER_FILE_ENTRIES / EVICT_TARGET_FRAC;
+        // configured monitor paths normally survive the trim
+        size_t removed = trim_cold_files(
+            files, keep, [this](const auto &kv) { return monitor_paths_.count(kv.first) == 0; });
+        if (removed == 0) {
+            // every entry is a protected monitor path: the cap still has
+            // to hold, or the table grows with the configured path set
+            removed = trim_cold_files(files, keep, [](const auto &) { return true; });
+        }
+        per_file_entries_ -= removed;
     }
     auto ins = files.emplace(norm, uint64_t{0});
     if (ins.second) {
@@ -273,6 +312,8 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
 // Trimming stops at 7/8 of the budget rather than at the budget itself:
 // each enforcement then frees ~2k entries, which is how many new entries
 // must arrive before the (O(P log P)) victim ordering is paid for again.
+// That amortization only works if a pass can actually free something, so
+// the pass is guaranteed to make progress: see the second sweep below.
 void TraceStats::enforce_per_file_budget(unsigned int keep_pid)
 {
     if (per_file_entries_ <= MAX_TOTAL_PER_FILE_ENTRIES) {
@@ -291,27 +332,38 @@ void TraceStats::enforce_per_file_budget(unsigned int keep_pid)
     // oldest first; ties broken by pid so the trim order is deterministic
     std::sort(order.begin(), order.end());
 
+    auto veto = [this](const auto &kv) { return monitor_paths_.count(kv.first) == 0; };
+    auto all = [](const auto &) { return true; };
+
+    // First sweep: keep configured monitor paths visible, as usual. Each
+    // table keeps at least one entry (halving never empties it), which is
+    // what lets the second sweep below reach the target.
     for (const auto &victim : order) {
         if (per_file_entries_ <= target) {
-            break;
+            return;
         }
         ProcStat &p = procs_[victim.second];
-        size_t before = p.per_file->size();
-        if (before <= 1) {
-            continue;
+        size_t keep = std::max<size_t>(p.per_file->size() / 2, 1);
+        per_file_entries_ -= trim_table(p.per_file, keep, veto);
+    }
+
+    // Second sweep: the veto is a preference, not a guarantee. A table made
+    // up entirely of configured paths would otherwise keep the budget
+    // unreachable, which would cost this whole O(P log P) pass on *every*
+    // following event. Dropping the coldest protected entries instead
+    // keeps the budget satisfiable; by the static_assert in stats.hpp the
+    // one-entry-per-table floor is always below the target.
+    for (const auto &victim : order) {
+        if (per_file_entries_ <= target) {
+            return;
         }
-        // same copy-on-write rule as on_event(): a published snapshot may
-        // still be reading this table, so trim a private copy
-        if (p.per_file.use_count() > 1) {
-            p.per_file = std::make_shared<std::map<std::string, uint64_t>>(*p.per_file);
-        }
-        per_file_entries_ -= trim_cold_files(
-            *p.per_file, before / 2,
-            [this](const auto &kv) { return monitor_paths_.count(kv.first) == 0; });
+        ProcStat &p = procs_[victim.second];
+        size_t keep = std::max<size_t>(p.per_file->size() / 2, 1);
+        per_file_entries_ -= trim_table(p.per_file, keep, all);
     }
 }
 
-StatsSnapshot TraceStats::snapshot() const
+std::shared_ptr<const StatsSnapshot> TraceStats::snapshot_shared() const
 {
     // Publishers serialize here, not on the producer mutex: one build per
     // mutation generation, shared by every reader that arrives meanwhile.
@@ -320,8 +372,8 @@ StatsSnapshot TraceStats::snapshot() const
     std::lock_guard<std::mutex> publish(cache_mutex_);
     if (cache_ && cache_gen_ == gen_.load(std::memory_order_acquire)) {
         // nothing changed since the last publish: no lock on mutex_, no
-        // re-copy of the shells, just a refcount bump per per_file table
-        return *cache_;
+        // rebuild, not even a copy of the shells -- just a refcount bump
+        return cache_;
     }
 
     auto pub = std::make_shared<StatsSnapshot>();
@@ -347,5 +399,11 @@ StatsSnapshot TraceStats::snapshot() const
     }
     cache_ = std::move(pub);
     cache_gen_ = captured;
-    return *cache_;
+    return cache_;
+}
+
+StatsSnapshot TraceStats::snapshot() const
+{
+    // convenience wrapper: same view, handed out as a value
+    return *snapshot_shared();
 }

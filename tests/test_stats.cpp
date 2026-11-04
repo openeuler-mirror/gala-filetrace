@@ -181,6 +181,57 @@ static void test_per_file_capped()
     std::cout << "test_per_file_capped passed" << std::endl;
 }
 
+static void test_per_file_cap_with_protected_entries()
+{
+    // one process touching nothing but configured paths: the veto rejects
+    // every entry, so only the fallback trim can enforce the cap
+    std::vector<std::string> paths;
+    for (size_t i = 0; i < MAX_PER_FILE_ENTRIES + 64; i++) {
+        paths.push_back("/mon/" + std::to_string(i));
+    }
+    TraceStats stats(paths);
+
+    struct event e = make_event(7, "walker", "hosts", SYS_write);
+    for (const auto &p : paths) {
+        stats.on_event(e, p);
+    }
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.procs.size() == 1);
+    assert(snap.procs[0].per_file->size() <= MAX_PER_FILE_ENTRIES);
+    std::cout << "test_per_file_cap_with_protected_entries passed" << std::endl;
+}
+
+static void test_per_file_budget_with_protected_entries()
+{
+    // same fan-out as test_per_file_global_budget, but every path is a
+    // configured one. The veto can never satisfy the budget here, so the
+    // last-resort sweep has to drop protected entries -- otherwise the
+    // budget would stay unreachable and every event would redo the pass.
+    std::vector<std::string> paths;
+    for (int i = 0; i < 200; i++) {
+        paths.push_back("/mon/path/" + std::to_string(i));
+    }
+    TraceStats stats(paths);
+
+    for (unsigned int pid = 1; pid <= 200; pid++) {
+        struct event ev = make_event(pid, "walker", "hosts", SYS_write);
+        for (const auto &p : paths) {
+            stats.on_event(ev, p);
+        }
+    }
+
+    StatsSnapshot snap = stats.snapshot();
+    size_t total = 0;
+    for (const auto &p : snap.procs) {
+        assert(p.per_file->size() <= MAX_PER_FILE_ENTRIES);
+        total += p.per_file->size();
+    }
+    assert(total <= MAX_TOTAL_PER_FILE_ENTRIES);
+    std::cout << "test_per_file_budget_with_protected_entries passed ("
+              << total << " entries)" << std::endl;
+}
+
 static void test_event_path_multi_dir()
 {
     struct event e = make_event(1, "test", "file.txt", SYS_write);
@@ -330,7 +381,11 @@ static void test_snapshot_copy_on_write()
     assert(snap1.procs[0].per_file->at("/etc/hosts") == 1);
 
     // no event in between: the published generation is reused as-is, the
-    // per-file table is shared rather than re-copied
+    // per-file table is shared rather than re-copied, and the shared view
+    // is literally the same object (no rebuild at all)
+    auto shared1 = stats.snapshot_shared();
+    auto shared2 = stats.snapshot_shared();
+    assert(shared1 == shared2);
     StatsSnapshot snap1b = stats.snapshot();
     assert(snap1b.procs[0].per_file == snap1.procs[0].per_file);
     assert(snap1b.total_events == snap1.total_events);
@@ -363,7 +418,9 @@ int main()
     test_empty_monitor_path_ignored();
     test_cmd_refresh_on_exec();
     test_per_file_capped();
+    test_per_file_cap_with_protected_entries();
     test_per_file_global_budget();
+    test_per_file_budget_with_protected_entries();
     test_snapshot_copy_on_write();
     test_table_eviction();
     test_concurrent_access();
