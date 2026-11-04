@@ -14,6 +14,7 @@ BuildRequires:  libcurl-devel
 BuildRequires:  libbpf-devel
 BuildRequires:  zlib-devel
 BuildRequires:  nlohmann-json-devel
+BuildRequires:  ncurses-devel
 BuildRequires:  cpp-httplib-devel
 
 Requires:       libcurl
@@ -37,6 +38,7 @@ make
 %install
 install -d %{buildroot}/usr/bin
 install -m 755 filetrace %{buildroot}/usr/bin/filetrace
+install -m 755 filetrace-tui %{buildroot}/usr/bin/filetrace-tui
 
 install -d %{buildroot}/etc/gala-filetrace
 install -m 644 config/gala-filetrace.json %{buildroot}/etc/gala-filetrace/gala-filetrace.json
@@ -60,6 +62,7 @@ rm -rf /usr/lib/systemd/system/gala-filetrace.service 2>&1
 
 %files
 /usr/bin/filetrace
+/usr/bin/filetrace-tui
 /etc/gala-filetrace/gala-filetrace.json
 /usr/lib/systemd/system/gala-filetrace.service
 

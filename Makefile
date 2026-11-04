@@ -1,5 +1,5 @@
 REQUIRED_TOOLS := clang bpftool
-REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm
+REQUIRED_PKGS := libcurl-devel libbpf-devel zlib-devel nlohmann-json-devel bpftool clang llvm ncurses-devel
 REQUIRED_FILES := /usr/include/httplib.h
 
 SRC_DIR := src
@@ -52,14 +52,14 @@ LLC ?= llc
 BPF_OBJ := $(OUTPUT_DIR)/filetrace.bpf.o
 
 
-all: filetrace
+all: filetrace filetrace-tui
 
 .PHONY: all clean install deps
 .DELETE_ON_ERROR:
 
 clean:
 	@echo "Cleaning up ..."
-	@rm -rf $(OUTPUT_DIR) filetrace filetrace.o filetrace.skel.h vmlinux.h
+	@rm -rf $(OUTPUT_DIR) filetrace filetrace-tui filetrace.o filetrace.skel.h vmlinux.h
 	@rm -f tests/test_postdata tests/test_logger tests/test_exporter tests/test_stats
  
 vmlinux.h:
@@ -82,9 +82,17 @@ $(CXX_OBJS): $(OUTPUT_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OUTPUT_DIR)
 	@echo "Compiling $< to $@ ..."
 	@$(CLANGXX) -c $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -MMD -MP -o $@ $<
 
-filetrace: $(CXX_OBJS)
+# the daemon must not link the TUI translation units: tui_main.o has
+# its own main() and tui.o pulls in the ncurses dependency
+filetrace: $(filter-out $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/tui_main.o,$(CXX_OBJS))
 	@echo "Linking filetrace.o exporter.o post.o to filetrace ..."
 	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $^ $(LDFLAGS)
+
+TUILDFLAGS = -lncurses -ltinfo -lpthread
+
+filetrace-tui: $(OUTPUT_DIR)/tui_main.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o
+	@echo "Linking tui_main.o tui.o stats.o to filetrace-tui ..."
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o $@ $(OUTPUT_DIR)/tui_main.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o $(LDFLAGS) $(TUILDFLAGS)
 
 $(OUTPUT_DIR):
 	@mkdir -p $@
@@ -94,6 +102,7 @@ $(OUTPUT_DIR):
 install:
 	@install -d $(DESTDIR)/usr/bin
 	@install -m 755 filetrace $(DESTDIR)/usr/bin/filetrace
+	@install -m 755 filetrace-tui $(DESTDIR)/usr/bin/filetrace-tui
 	@install -d $(DESTDIR)/etc/gala-filetrace
 	@install -m 644 config/gala-filetrace.json $(DESTDIR)/etc/gala-filetrace/gala-filetrace.json
 	@install -d $(DESTDIR)/usr/lib/systemd/system

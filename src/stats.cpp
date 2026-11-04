@@ -192,6 +192,10 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
             // are pre-seeded. The full set stays in monitor_paths_ (for
             // matching and the eviction veto); later paths enter devices_
             // through on_event like any other key, where the cap holds.
+            // Count them so the caller can tell the user the config is
+            // only partially representable instead of silently showing a
+            // device panel that is missing entries.
+            ignored_monitor_paths_++;
             continue;
         }
         devices_[norm].path = norm;
