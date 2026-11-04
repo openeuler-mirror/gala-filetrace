@@ -17,6 +17,15 @@ enum class Page { Main, Help, Detail };
 // Sort key for the process table.
 enum class SortColumn { Ops, Mem, Cpu, Pid, Cmd };
 
+// Sampling interval bounds, in milliseconds. Below the minimum the /proc
+// sweep costs more than the redraw; above the maximum the UI looks frozen.
+// Both the command-line parser and TuiApp's constructor clamp into this
+// range, so the value is always safe to divide with (read_proc_usage does
+// 1000.0 / refresh_ms) and to convert to microseconds for the tick sleep:
+// MAX_REFRESH_MS * 1000 fits in useconds_t with room to spare.
+static const int MIN_REFRESH_MS = 100;
+static const int MAX_REFRESH_MS = 60000;
+
 struct TuiOptions {
     int refresh_ms = 1000;          // sampling / redraw interval
     bool use_color = true;
@@ -46,6 +55,10 @@ public:
 
     // Request exit from another thread (e.g. signal handler).
     void request_stop() { running_ = false; }
+
+    // Sampling interval actually in use, i.e. after the constructor's
+    // range clamp. Callers can log it; tests assert the clamp with it.
+    int refresh_ms() const { return opts_.refresh_ms; }
 
 private:
     // --- one sampling tick ---

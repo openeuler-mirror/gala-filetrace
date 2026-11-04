@@ -70,6 +70,15 @@ static std::string trim_to_width(const std::string &s, int width)
 TuiApp::TuiApp(TraceStats &stats, const TuiOptions &opts)
     : stats_(stats), opts_(opts)
 {
+    // The interval is used as a divisor and converted to microseconds for
+    // the tick sleep, so a caller-provided value outside the supported
+    // range would either divide by zero or overflow the sleep argument.
+    // Clamp once here instead of trusting every caller to do it.
+    if (opts_.refresh_ms < MIN_REFRESH_MS) {
+        opts_.refresh_ms = MIN_REFRESH_MS;
+    } else if (opts_.refresh_ms > MAX_REFRESH_MS) {
+        opts_.refresh_ms = MAX_REFRESH_MS;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +337,12 @@ void TuiApp::run()
         if (page_ != Page::Main) {
             // still sample in background pages, per spec
         }
-        usleep(opts_.refresh_ms * 1000);
+        // widen before scaling: the interval is already clamped to
+        // MAX_REFRESH_MS, but doing the multiply in 64 bits means a future
+        // cap change cannot silently reintroduce signed overflow here
+        const long long tick_us =
+            static_cast<long long>(opts_.refresh_ms) * 1000LL;
+        usleep(static_cast<useconds_t>(tick_us));
     }
 
     endwin();

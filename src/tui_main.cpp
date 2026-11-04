@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -87,7 +88,31 @@ int main(int argc, char **argv)
     while ((opt = getopt(argc, argv, "c:r:d")) != -1) {
         switch (opt) {
             case 'c': config_file = optarg; break;
-            case 'r': refresh_ms = atoi(optarg); break;
+            case 'r': {
+                // strict parse: the whole argument must be a decimal
+                // integer, and errno catches values that do not fit in a
+                // long. atoi() silently truncates on overflow, which lets a
+                // huge -r value reach the multiply below and overflow.
+                char *end = nullptr;
+                errno = 0;
+                long val = strtol(optarg, &end, 10);
+                if (errno == ERANGE || end == optarg || *end != '\0' ||
+                    val <= 0) {
+                    std::cerr << "Warning: invalid refresh interval '"
+                              << optarg << "', using 1000ms" << std::endl;
+                    val = 1000;
+                } else if (val < MIN_REFRESH_MS || val > MAX_REFRESH_MS) {
+                    long clamped = val < MIN_REFRESH_MS ? MIN_REFRESH_MS
+                                                        : MAX_REFRESH_MS;
+                    std::cerr << "Warning: refresh interval " << val
+                              << "ms out of range [" << MIN_REFRESH_MS << ", "
+                              << MAX_REFRESH_MS << "], using " << clamped
+                              << "ms" << std::endl;
+                    val = clamped;
+                }
+                refresh_ms = (int)val;
+                break;
+            }
             case 'd': demo = true; break;
             default:
                 std::cerr << "Usage: " << argv[0]
@@ -95,12 +120,14 @@ int main(int argc, char **argv)
                 return 1;
         }
     }
-    if (refresh_ms < 100) {
-        refresh_ms = 100;
-    if (refresh_ms < 100) {
-        refresh_ms = 100;
-    } else if (refresh_ms > 60000) {
-        refresh_ms = 60000;
+    // clamp both ends: below MIN_REFRESH_MS the /proc sweep dominates the
+    // refresh, above MAX_REFRESH_MS the UI looks frozen. The upper bound
+    // is what keeps refresh_ms * 1000 (usec) inside useconds_t.
+    if (refresh_ms < MIN_REFRESH_MS) {
+        refresh_ms = MIN_REFRESH_MS;
+    }
+    if (refresh_ms > MAX_REFRESH_MS) {
+        refresh_ms = MAX_REFRESH_MS;
     }
 
     auto paths = load_config_list(config_file);
@@ -111,6 +138,14 @@ int main(int argc, char **argv)
     }
 
     TraceStats stats(paths);
+    if (stats.ignored_monitor_paths() > 0) {
+        // the aggregate sizes its device table by MAX_DEVICE_ENTRIES, so a
+        // config larger than that cannot be represented -- say so instead
+        // of silently showing a truncated device list
+        std::cerr << "Warning: config lists more than " << MAX_DEVICE_ENTRIES
+                  << " distinct paths; " << stats.ignored_monitor_paths()
+                  << " entries are ignored" << std::endl;
+    }
     TuiOptions opts;
     opts.refresh_ms = refresh_ms;
     TuiApp tui(stats, opts);
