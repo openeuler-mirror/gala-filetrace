@@ -104,11 +104,12 @@ static double read_total_mem_kb()
     return kb;
 }
 
-ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
-                                  unsigned long long *last_utime,
-                                  unsigned long long *last_stime,
-                                  double hz, bool have_prev)
+bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
+                             unsigned long long *last_utime,
+                             unsigned long long *last_stime,
+                             double hz, bool have_prev, ProcUsage *out)
 {
+    ProcUsage u;
     char path[64];
     snprintf(path, sizeof(path), "/proc/%u/stat", pid);
     FILE *f = fopen(path, "r");
@@ -129,50 +130,52 @@ ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     }
     unsigned long long utime = 0, stime = 0;
     long rss_pages = 0;
-    // fields: state(3) ppid(4) ... utime(14) stime(15) ... vsize(23) rss(24)
+    // fields: state(3) ppid(4) ... utime(14) stime(15) ...
+    //         starttime(22) vsize(23) rss(24)
     if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*lu %*lu %lu",
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu "
+               "%*d %*d %*d %*d %*d %*d %*u %*u %lu",
                &utime, &stime, &rss_pages) < 3) {
         return false;
     }
 
-    if (have_prev && total_mem_kb > 0) {
-        // /proc/stat rss is in pages; page size is 4KB on x86_64 but can
-        // be 16KB/64KB on other kernels, so query it instead of hardcoding
-        static double page_kb = 0;
-        if (page_kb == 0) {
-            long psz = sysconf(_SC_PAGESIZE);
-            page_kb = psz > 0 ? (double)psz / 1024.0 : 4.0;
-        }
+    // rss is reported in pages; the page size is 4 KB on x86-64 but 16 or
+    // 64 KB on other kernels, so query it once instead of assuming. Doing
+    // it per process per tick would put a sysconf() call in the hot path
+    // of a sweep that runs over every row.
+    static const double page_kb = [] {
+        long psz = sysconf(_SC_PAGESIZE);
+        return psz > 0 ? (double)psz / 1024.0 : 4.0;
+    }();
+
+    if (total_mem_kb > 0) {
         u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
+        if (u.mem < 0) {
+            u.mem = 0;
+        }
+        if (u.mem > 100) {
+            u.mem = 100;
+        }
     }
     if (have_prev && hz > 0) {
-        unsigned long long dt = (utime >= *last_utime ? utime - *last_utime : 0) +
-                                (stime >= *last_stime ? stime - *last_stime : 0);
+        // clamp each delta at zero before subtracting: utime/stime move
+        // backwards when a pid is reused by a new process, and unsigned
+        // wrap-around would otherwise inflate dt and pin %CPU at the
+        // 999 ceiling
+        unsigned long long dt =
+            (utime >= *last_utime ? utime - *last_utime : 0) +
+            (stime >= *last_stime ? stime - *last_stime : 0);
         u.cpu = 100.0 * (double)dt / hz *
                 (1000.0 / (double)opts_.refresh_ms);
         if (u.cpu < 0) {
             u.cpu = 0;
         }
-        if (out->cpu > 999) {
-            out->cpu = 999;
+        if (u.cpu > 999) {
+            u.cpu = 999;
         }
     }
 
-    if (total_mem_kb > 0) {
-        long page_kb = sysconf(_SC_PAGESIZE) / 1024;
-        if (page_kb <= 0) {
-            page_kb = 4;
-        }
-        out->mem = 100.0 * ((double)rss_pages * (double)page_kb) / total_mem_kb;
-        if (out->mem < 0) {
-            out->mem = 0;
-        }
-        if (out->mem > 100) {
-            out->mem = 100;
-        }
-    }
-
+    *out = u;
     *last_utime = utime;
     *last_stime = stime;
     return true;
@@ -180,6 +183,7 @@ ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
 
 struct UsageSample {
     unsigned long long utime = 0, stime = 0;
+    bool have = false;
 };
 
 void TuiApp::sample_proc_usage()
@@ -193,33 +197,49 @@ void TuiApp::sample_proc_usage()
         total_mem_kb = read_total_mem_kb();
     }
 
-    // prev holds the previous frame's samples. Its utime/stime must be fed
-    // into read_proc_usage so %CPU is a real per-interval delta; feeding
-    // fresh zeroed counters would degenerate into cumulative CPU time.
     static std::map<unsigned int, UsageSample> prev;
     static std::map<unsigned int, UsageSample> cur;
     std::swap(prev, cur);
     cur.clear();
 
-    // rebuild usage_ from scratch each tick so entries of exited pids
-    // are dropped and the map (and sort cost) stays bounded
-    std::map<unsigned int, ProcUsage> new_usage;
-
     for (auto &row : proc_rows_) {
-        unsigned long long last_utime = 0, last_stime = 0;
-        auto it = prev.find(row.pid);
-        bool have_prev = it != prev.end();
-        if (have_prev) {
-            last_utime = it->second.utime;
-            last_stime = it->second.stime;
+        UsageSample s;
+        bool have_prev = prev.count(row.pid) && prev[row.pid].have;
+        unsigned long long utime = have_prev ? prev[row.pid].utime : 0;
+        unsigned long long stime = have_prev ? prev[row.pid].stime : 0;
+        ProcUsage u;
+        bool ok = read_proc_usage(row.pid, total_mem_kb,
+                                  &utime, &stime, hz, have_prev, &u);
+        if (ok) {
+            s.utime = utime;
+            s.stime = stime;
+            s.have = true;
+            usage_[row.pid] = u;
+        } else if (have_prev) {
+            // carry the last good sample forward so the delta baseline
+            // survives transient read failures (e.g. pid vanished mid-tick)
+            s.utime = prev[row.pid].utime;
+            s.stime = prev[row.pid].stime;
+            s.have = true;
         }
-        ProcUsage u = read_proc_usage(row.pid, total_mem_kb,
-                                      &last_utime, &last_stime, hz,
-                                      have_prev);
-        cur[row.pid] = UsageSample{last_utime, last_stime};
-        new_usage[row.pid] = u;
+        cur[row.pid] = s;
     }
-    usage_.swap(new_usage);
+
+    // drop usage for pids that left the table so the map cannot grow
+    // without bound across long sessions
+    for (auto it = usage_.begin(); it != usage_.end();) {
+        if (cur.count(it->first) == 0) {
+            it = usage_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    // defense in depth: the loop above already leaves only current pids,
+    // but never let a future change to the snapshot let this map outgrow
+    // its documented cap
+    while (usage_.size() > MAX_USAGE_ENTRIES) {
+        usage_.erase(usage_.begin());
+    }
 }
 
 void TuiApp::sample_once()
@@ -320,7 +340,7 @@ void TuiApp::run()
     keypad(stdscr, TRUE);
     curs_set(0);
     set_escdelay(50);
-    timeout(0);                      // non-blocking input; loop sleeps
+    timeout(opts_.refresh_ms);       // blocking getch() ticks the interval
     mousemask(BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED, nullptr);
 
     if (opts_.use_color && has_colors()) {
@@ -338,21 +358,36 @@ void TuiApp::run()
     render();
     auto last_sample = std::chrono::steady_clock::now();
 
-        int ch;
-        while ((ch = getch()) != ERR) {
-            if (ch == KEY_MOUSE) {
-                MEVENT ev;
-                if (getmouse(&ev) == OK) {
-                    handle_mouse(ev);
+    while (running_) {
+        // getch() blocks up to one refresh interval, so a key press or a
+        // click is handled the moment it arrives instead of waiting out a
+        // full sleep'ed tick first.
+        int ch = getch();
+        if (ch != ERR) {
+            // Drain the whole typeahead buffer before drawing: a burst of
+            // keys must be handled immediately, but one full-screen render
+            // per event is wasted work. The drain itself uses a zero
+            // timeout so the batch ends as soon as the buffer is empty.
+            timeout(0);
+            do {
+                if (ch == KEY_MOUSE) {
+                    MEVENT ev;
+                    if (getmouse(&ev) == OK) {
+                        handle_mouse(ev);
+                    }
+                } else {
+                    handle_key(ch);
                 }
-            } else {
-                handle_key(ch);
-            }
+                if (!running_) {
+                    break;
+                }
+            } while ((ch = getch()) != ERR);
+            timeout(opts_.refresh_ms);
             if (!running_) {
                 break;
             }
         }
-        // ERR is not a reliable sampling tick: while keys keep arriving
+        // ERR is not a reliable sampling tick: while events keep arriving
         // faster than refresh_ms, getch() keeps returning early, ERR never
         // fires and sampling would starve (the data freezes while the UI
         // keeps redrawing). Track the interval on the wall clock instead,
