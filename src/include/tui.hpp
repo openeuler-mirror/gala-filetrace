@@ -28,6 +28,12 @@ struct ProcUsage {
     double mem = 0.0;   // percent of total physical memory (RSS)
 };
 
+// Capacity contract for TuiApp::usage_: at most one sample per process
+// the stats layer tracks. usage_ only ever mirrors the pids present in
+// the current snapshot, and TraceStats already bounds its process table
+// by MAX_PROC_ENTRIES, so this cap is inherited rather than chosen here.
+static const size_t MAX_USAGE_ENTRIES = MAX_PROC_ENTRIES;
+
 // top-style terminal UI over a TraceStats aggregator. The UI owns no
 // data: each tick it takes a snapshot() and renders it. Run() blocks
 // until the user quits.
@@ -73,6 +79,14 @@ private:
     // latest snapshot + derived view state
     StatsSnapshot snap_;
     std::vector<ProcStat> proc_rows_;      // sorted view of snap_.procs
+    // Latest /proc sample per pid. Lifecycle contract:
+    //   * entries exist only for pids in the current proc_rows_ (i.e. in
+    //     snap_.procs), never for processes that already left the table,
+    //     so no state accumulates across exited pids;
+    //   * sample_proc_usage() re-samples exactly the current rows and
+    //     erases every other pid at the end of each tick;
+    //   * size is therefore bounded by MAX_USAGE_ENTRIES
+    //     (= MAX_PROC_ENTRIES), enforced by a defensive trim as well.
     std::map<unsigned int, ProcUsage> usage_;
 
     // view state

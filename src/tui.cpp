@@ -135,12 +135,16 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
         u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
     }
     if (have_prev && hz > 0) {
-        unsigned long long dt = (utime - *last_utime) + (stime - *last_stime);
+        // clamp each delta at zero before subtracting: utime/stime move
+        // backwards when a pid is reused by a new process, and the plain
+        // unsigned subtraction wrapped around to a huge dt, which pinned
+        // %CPU at the 999 ceiling and made the negative guard below
+        // unreachable dead code
+        unsigned long long dt =
+            (utime >= *last_utime ? utime - *last_utime : 0) +
+            (stime >= *last_stime ? stime - *last_stime : 0);
         u.cpu = 100.0 * (double)dt / hz *
                 (1000.0 / (double)opts_.refresh_ms);
-        if (u.cpu < 0) {
-            u.cpu = 0;
-        }
         if (u.cpu > 999) {
             u.cpu = 999;
         }
@@ -202,6 +206,12 @@ void TuiApp::sample_proc_usage()
         } else {
             ++it;
         }
+    }
+    // defense in depth: the loop above already leaves only current pids,
+    // but never let a future change to the snapshot let this map outgrow
+    // its documented cap
+    while (usage_.size() > MAX_USAGE_ENTRIES) {
+        usage_.erase(usage_.begin());
     }
 }
 

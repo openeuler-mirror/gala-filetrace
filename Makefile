@@ -102,6 +102,7 @@ $(OUTPUT_DIR):
 install:
 	@install -d $(DESTDIR)/usr/bin
 	@install -m 755 filetrace $(DESTDIR)/usr/bin/filetrace
+	@install -m 755 filetrace-tui $(DESTDIR)/usr/bin/filetrace-tui
 	@install -d $(DESTDIR)/etc/gala-filetrace
 	@install -m 644 config/gala-filetrace.json $(DESTDIR)/etc/gala-filetrace/gala-filetrace.json
 	@install -d $(DESTDIR)/usr/lib/systemd/system
