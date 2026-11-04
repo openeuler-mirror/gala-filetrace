@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <algorithm>
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -214,14 +215,15 @@ static void test_table_eviction()
     struct event e = make_event(1, "init", "hosts", SYS_write);
     stats.on_event(e, "/etc/hosts");
 
-    // flood with fresh pids/paths to overflow both tables; the pre-seeded
-    // least recently active entries must be evicted, not the current one
-    constexpr unsigned int kLastFloodPid = 10 + MAX_PROC_ENTRIES;
+    // flood with fresh pids/paths to overflow both tables; the flood
+    // count must be derived from the LARGER of the two caps, otherwise
+    // a single loop bounded by MAX_PROC_ENTRIES would never push the
+    // devices table past MAX_DEVICE_ENTRIES and its eviction logic
+    // would go untested. The pre-seeded least recently active entries
+    // must be evicted, not the current one.
+    constexpr unsigned int kLastFloodPid =
+        10 + (unsigned int)std::max(MAX_PROC_ENTRIES, MAX_DEVICE_ENTRIES);
     for (unsigned int pid = 2; pid <= kLastFloodPid; pid++) {
-        struct event e2 = make_event(pid, "p", "hosts", SYS_write);
-        std::string path = "/path" + std::to_string(pid);
-        stats.on_event(e2, path);
-    for (unsigned int pid = 2; pid < 2 + MAX_PROC_ENTRIES + MAX_DEVICE_ENTRIES; pid++) {
         struct event e2 = make_event(pid, "p", "hosts", SYS_write);
         std::string path = "/path" + std::to_string(pid);
         stats.on_event(e2, path);

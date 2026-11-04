@@ -112,14 +112,15 @@ static unsigned long long read_boot_ms_since()
 }
 
 // Returns true and fills *u / *last_* on a successful /proc/<pid>/stat
-// read; on failure leaves *last_* untouched so the caller keeps its
-// previous baseline.
+// read; on failure *u is left zeroed and *last_* untouched so the caller
+// keeps its previous baseline. The computed ProcUsage must be handed back
+// through *u: without that exit the caller can only store a default-
+// constructed value and %CPU/%MEM would always read 0.
 bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
                              unsigned long long *last_utime,
                              unsigned long long *last_stime,
-                             double hz, bool have_prev)
+                             double hz, bool have_prev, ProcUsage *u)
 {
-    ProcUsage u;
     char path[64];
     snprintf(path, sizeof(path), "/proc/%u/stat", pid);
     FILE *f = fopen(path, "r");
@@ -148,18 +149,19 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     }
 
     if (have_prev && hz > 0) {
-        // clamp each delta at zero before subtracting: utime/stime move
-        // backwards when a pid is reused by a new process, and the plain
-        // unsigned subtraction wrapped around to a huge dt, which pinned
-        // %CPU at the 999 ceiling and made the negative guard below
-        // unreachable dead code
+        // clamp each delta at zero: utime/stime move backwards when a pid
+        // is reused by a new process, and unsigned wrap-around would
+        // otherwise inflate dt and pin %CPU at the 999 ceiling
         unsigned long long dt =
             (utime >= *last_utime ? utime - *last_utime : 0) +
             (stime >= *last_stime ? stime - *last_stime : 0);
-        u.cpu = 100.0 * (double)dt / hz *
-                (1000.0 / (double)opts_.refresh_ms);
-        if (u.cpu > 999) {
-            u.cpu = 999;
+        u->cpu = 100.0 * (double)dt / hz *
+                 (1000.0 / (double)opts_.refresh_ms);
+        if (u->cpu < 0) {
+            u->cpu = 0;
+        }
+        if (u->cpu > 999) {
+            u->cpu = 999;
         }
     }
 
@@ -168,12 +170,12 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
         if (page_kb <= 0) {
             page_kb = 4;
         }
-        u.mem = 100.0 * ((double)rss_pages * (double)page_kb) / total_mem_kb;
-        if (u.mem < 0) {
-            u.mem = 0;
+        u->mem = 100.0 * ((double)rss_pages * (double)page_kb) / total_mem_kb;
+        if (u->mem < 0) {
+            u->mem = 0;
         }
-        if (u.mem > 100) {
-            u.mem = 100;
+        if (u->mem > 100) {
+            u->mem = 100;
         }
     }
 
@@ -210,7 +212,7 @@ void TuiApp::sample_proc_usage()
         unsigned long long stime = have_prev ? prev[row.pid].stime : 0;
         ProcUsage u;
         bool ok = read_proc_usage(row.pid, total_mem_kb,
-                                  &utime, &stime, hz, have_prev);
+                                  &utime, &stime, hz, have_prev, &u);
         if (ok) {
             s.utime = utime;
             s.stime = stime;
@@ -635,11 +637,8 @@ void TuiApp::render_help()
         "  PageUp/PageDown  page up / page down                    ",
         "  Home / End       jump to first / last row               ",
         "  Left / Right     scroll long command lines horizontally ",
-        "  mouse click on   OPS / %MEM / %CPU header: sort by that ",
-        "    %MEM %CPU OPS  column (desc first, click again flips) ",
-        "  s / S            cycle sort: OPS -> %MEM -> %CPU (desc) ",
+        "  s / S            cycle sort: OPS->%MEM->%CPU->PID->CMD  ",
         "  /                reverse current sort direction         ",
-        "  mouse click row  select process; click elsewhere clears ",
         "  Enter            open detail page of selected process   ",
         "  Esc              back / clear selection / quit          ",
         "                                                          ",

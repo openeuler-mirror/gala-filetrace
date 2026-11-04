@@ -68,7 +68,7 @@ private:
                                      unsigned long long *last_utime,
                                      unsigned long long *last_stime,
                                      double hz, bool have_prev,
-                                     ProcUsage *out);
+                                     ProcUsage *u);
 
     // --- rendering ---
     void render();
