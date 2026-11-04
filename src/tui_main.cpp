@@ -97,6 +97,10 @@ int main(int argc, char **argv)
     }
     if (refresh_ms < 100) {
         refresh_ms = 100;
+    if (refresh_ms < 100) {
+        refresh_ms = 100;
+    } else if (refresh_ms > 60000) {
+        refresh_ms = 60000;
     }
 
     auto paths = load_config_list(config_file);
