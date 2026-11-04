@@ -244,6 +244,39 @@ static void test_event_path_multi_dir()
     std::cout << "test_event_path_multi_dir passed" << std::endl;
 }
 
+// The snapshot cache must be usable from the very first call: an empty
+// snapshot before any event, then a snapshot that sees the first event,
+// then a cache hit that reports the same view. This exercises the gen_ 0
+// -> 1 transition against the "never published" cache sentinel.
+static void test_cache_first_use()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    StatsSnapshot empty = stats.snapshot();
+    // no event yet: only the seeded configured path, no process rows
+    assert(empty.procs.empty());
+    assert(empty.devices.size() == 1);
+    assert(empty.devices[0].ops == 0);
+    assert(empty.total_events == 0 && empty.dropped_events == 0);
+
+    // the empty snapshot must not be served after a mutation
+    struct event e = make_event(100, "bash", "hosts", SYS_write);
+    stats.on_event(e, "/etc/hosts");
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.total_events == 1);
+    assert(snap.devices.size() == 1 && snap.devices[0].ops == 1);
+    assert(snap.procs.size() == 1);
+
+    // a second call hits the published generation and sees the same view
+    StatsSnapshot again = stats.snapshot();
+    assert(again.total_events == snap.total_events);
+    assert(again.dropped_events == snap.dropped_events);
+    assert(again.devices.size() == snap.devices.size());
+    assert(again.procs.size() == snap.procs.size());
+    std::cout << "test_cache_first_use passed" << std::endl;
+}
+
 static void test_empty_monitor_path_ignored()
 {
     // an empty configured path is skipped, not normalized to "/"
@@ -290,6 +323,59 @@ static void test_table_eviction()
     }
     assert(found);
     std::cout << "test_table_eviction passed" << std::endl;
+}
+
+static void test_devices_cap_under_config_saturation()
+{
+    // the configured set alone saturates devices_: every entry is
+    // veto-protected, so the veto-respecting sweep can free nothing and
+    // eviction must degrade to plain LRU or the cap would be defeated
+    std::vector<std::string> paths;
+    paths.reserve(MAX_DEVICE_ENTRIES);
+    for (size_t i = 0; i < MAX_DEVICE_ENTRIES; i++) {
+        paths.push_back("/cfg" + std::to_string(i));
+    }
+    TraceStats stats(paths);
+    assert(stats.snapshot().devices.size() == MAX_DEVICE_ENTRIES);
+
+    // flood with fresh unconfigured paths; enough of them to run the
+    // degradation sweep several times (it trims back to 7/8 of the cap,
+    // so the table refills and saturates again every cap/8 insertions)
+    for (unsigned int pid = 2; pid < 700; pid++) {
+        struct event e = make_event(pid, "p", "hosts", SYS_write);
+        stats.on_event(e, "/new" + std::to_string(pid));
+        if (pid % 64 == 0) {
+            // spot-check the cap mid-flood: it must never be exceeded
+            assert(stats.snapshot().devices.size() <= MAX_DEVICE_ENTRIES);
+        }
+    }
+
+    // a configured path touched again becomes recently active and must
+    // survive further degradation sweeps
+    struct event rewarm = make_event(100000, "w", "cfg0", SYS_write);
+    stats.on_event(rewarm, "/cfg0");
+    for (unsigned int pid = 200000; pid < 200000 + 300; pid++) {
+        struct event e = make_event(pid, "p", "hosts", SYS_write);
+        stats.on_event(e, "/new2" + std::to_string(pid));
+    }
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.devices.size() <= MAX_DEVICE_ENTRIES);
+    bool cfg0 = false;
+    size_t unconfigured = 0;
+    for (const auto &d : snap.devices) {
+        if (d.path == "/cfg0") {
+            cfg0 = true;
+        }
+        if (d.path.rfind("/cfg", 0) != 0) {
+            unconfigured++;
+        }
+    }
+    assert(cfg0);
+    // the degradation must actually admit unconfigured entries, not just
+    // silently drop every event on an unconfigured path
+    assert(unconfigured > 0);
+    std::cout << "test_devices_cap_under_config_saturation passed" << std::endl;
 }
 
 static void test_concurrent_access()
@@ -416,6 +502,7 @@ int main()
     test_copy_file_range_is_write();
     test_classification();
     test_empty_monitor_path_ignored();
+    test_cache_first_use();
     test_cmd_refresh_on_exec();
     test_per_file_capped();
     test_per_file_cap_with_protected_entries();
@@ -423,6 +510,7 @@ int main()
     test_per_file_budget_with_protected_entries();
     test_snapshot_copy_on_write();
     test_table_eviction();
+    test_devices_cap_under_config_saturation();
     test_concurrent_access();
     std::cout << "All TraceStats tests passed" << std::endl;
     return 0;
