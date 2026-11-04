@@ -8,6 +8,8 @@
 
 #include "stats.hpp"
 
+#include <ncurses.h>   // MEVENT, KEY_MOUSE, key macros
+
 // Which panel the keyboard focus is on.
 enum class Focus { Devices, Procs };
 
@@ -82,8 +84,22 @@ private:
     void render_detail();
 
     // --- view helpers ---
+    ProcUsage usage_of(unsigned int pid) const;   // no-insert usage_ lookup
     void sort_rows();
     void clamp_cursors();
+    void move_proc_cursor(int delta);
+    void scroll_list(int delta);
+    void open_detail();
+    void escape();
+    void cycle_sort();
+    void reverse_sort();
+    void set_sort_column(SortColumn col);
+    void handle_mouse(const MEVENT &ev);
+
+    // x offset of each process-table column (recomputed each render)
+    int col_x_[8] = {0};
+    int col_w_[8] = {0};
+    int proc_header_y_ = 0;
 
     // --- input (wired up in later stages) ---
     void handle_key(int ch);

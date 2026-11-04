@@ -16,12 +16,15 @@ BuildRequires:  zlib-devel
 BuildRequires:  nlohmann-json-devel
 BuildRequires:  ncurses-devel
 BuildRequires:  cpp-httplib-devel
+# filetrace-tui (ncurses TUI) added in stage 4
+BuildRequires:  ncurses-devel
 
 Requires:       libcurl
 Requires:       libbpf
 Requires:       zlib
 Requires:       nlohmann-json
 Requires:       cpp-httplib
+Requires:       ncurses-libs
 
 %define debug_package %{nil}
 

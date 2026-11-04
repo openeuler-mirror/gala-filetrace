@@ -104,9 +104,6 @@ static double read_total_mem_kb()
     return kb;
 }
 
-// Returns true and fills *out / *last_* on a successful /proc/<pid>/stat
-// read; on failure leaves both untouched so the caller keeps its previous
-// baseline and can carry the last good sample forward.
 bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
                              unsigned long long *last_utime,
                              unsigned long long *last_stime,
@@ -133,34 +130,51 @@ bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     }
     unsigned long long utime = 0, stime = 0;
     long rss_pages = 0;
-    // fields: state(3) ppid(4) ... utime(14) stime(15) ... vsize(23) rss(24)
+    // fields: state(3) ppid(4) ... utime(14) stime(15) ...
+    //         starttime(22) vsize(23) rss(24)
     if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*u %lu",
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu "
+               "%*d %*d %*d %*d %*d %*d %*u %*u %lu",
                &utime, &stime, &rss_pages) < 3) {
         return false;
     }
 
+    // rss is reported in pages; the page size is 4 KB on x86-64 but 16 or
+    // 64 KB on other kernels, so query it once instead of assuming. Doing
+    // it per process per tick would put a sysconf() call in the hot path
+    // of a sweep that runs over every row.
+    static const double page_kb = [] {
+        long psz = sysconf(_SC_PAGESIZE);
+        return psz > 0 ? (double)psz / 1024.0 : 4.0;
+    }();
+
     if (total_mem_kb > 0) {
-        static const double page_kb = sysconf(_SC_PAGESIZE) / 1024.0;
         u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
+        if (u.mem < 0) {
+            u.mem = 0;
+        }
+        if (u.mem > 100) {
+            u.mem = 100;
+        }
     }
     if (have_prev && hz > 0) {
         // clamp each delta at zero before subtracting: utime/stime move
-        // backwards when a pid is reused by a new process, and the plain
-        // unsigned subtraction wrapped around to a huge dt, which pinned
-        // %CPU at the 999 ceiling and made the negative guard below
-        // unreachable dead code
+        // backwards when a pid is reused by a new process, and unsigned
+        // wrap-around would otherwise inflate dt and pin %CPU at the
+        // 999 ceiling
         unsigned long long dt =
             (utime >= *last_utime ? utime - *last_utime : 0) +
             (stime >= *last_stime ? stime - *last_stime : 0);
         u.cpu = 100.0 * (double)dt / hz *
                 (1000.0 / (double)opts_.refresh_ms);
+        if (u.cpu < 0) {
+            u.cpu = 0;
+        }
         if (u.cpu > 999) {
             u.cpu = 999;
         }
     }
-    // hand the result back: the values above are computed from this
-    // frame's sample, and nothing else can observe them otherwise
+
     *out = u;
     *last_utime = utime;
     *last_stime = stime;
@@ -232,14 +246,24 @@ void TuiApp::sample_once()
 {
     snap_ = stats_.snapshot();
     proc_rows_ = snap_.procs;
-    sort_rows();
+    // %CPU/%MEM must be sampled for this frame's rows BEFORE sorting,
+    // otherwise the sort keys come from the previous frame's usage data
     sample_proc_usage();
+    sort_rows();
     clamp_cursors();
 }
 
 // ---------------------------------------------------------------------------
 // sorting / view helpers
 // ---------------------------------------------------------------------------
+
+// Non-inserting usage_ lookup: reads during sort/render must not add
+// zero entries back into the map the sampler rebuilds every tick.
+ProcUsage TuiApp::usage_of(unsigned int pid) const
+{
+    auto it = usage_.find(pid);
+    return it != usage_.end() ? it->second : ProcUsage{};
+}
 
 // Sort the process rows by the current sort column/direction.
 // (Column cycling and direction toggling are wired up in a later stage;
@@ -255,12 +279,12 @@ void TuiApp::sort_rows()
                       case SortColumn::Cmd:
                           return sort_desc_ ? a.cmd > b.cmd : a.cmd < b.cmd;
                       case SortColumn::Mem:
-                          ka = (uint64_t)(usage_[a.pid].mem * 100);
-                          kb = (uint64_t)(usage_[b.pid].mem * 100);
+                          ka = (uint64_t)(usage_of(a.pid).mem * 100);
+                          kb = (uint64_t)(usage_of(b.pid).mem * 100);
                           break;
                       case SortColumn::Cpu:
-                          ka = (uint64_t)(usage_[a.pid].cpu * 100);
-                          kb = (uint64_t)(usage_[b.pid].cpu * 100);
+                          ka = (uint64_t)(usage_of(a.pid).cpu * 100);
+                          kb = (uint64_t)(usage_of(b.pid).cpu * 100);
                           break;
                       case SortColumn::Ops:
                       default:
@@ -278,7 +302,10 @@ void TuiApp::sort_rows()
 void TuiApp::clamp_cursors()
 {
     int n = (int)proc_rows_.size();
-    int visible = proc_height_ > 1 ? proc_height_ - 1 : 1;
+    // one line of the process panel is the column header, so only
+    // proc_height_ - 1 body rows are visible; counting the header row
+    // lets the selected row scroll one line past the screen
+    int visible = proc_height_ - 1;
     if (proc_cursor_ >= n) {
         proc_cursor_ = n - 1;
     }
@@ -314,6 +341,7 @@ void TuiApp::run()
     curs_set(0);
     set_escdelay(50);
     timeout(opts_.refresh_ms);       // blocking getch() ticks the interval
+    mousemask(BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED, nullptr);
 
     if (opts_.use_color && has_colors()) {
         start_color();
@@ -331,19 +359,25 @@ void TuiApp::run()
     auto last_sample = std::chrono::steady_clock::now();
 
     while (running_) {
-        // getch() blocks up to one refresh interval, so a key press is
-        // handled the moment it arrives instead of waiting out a full
-        // sleep'ed tick first (with the 60 s upper bound on refresh_ms
-        // that wait made the UI feel dead).
+        // getch() blocks up to one refresh interval, so a key press or a
+        // click is handled the moment it arrives instead of waiting out a
+        // full sleep'ed tick first.
         int ch = getch();
         if (ch != ERR) {
             // Drain the whole typeahead buffer before drawing: a burst of
             // keys must be handled immediately, but one full-screen render
-            // per key is wasted work. The drain itself uses a zero timeout
-            // so the batch ends as soon as the buffer is empty.
+            // per event is wasted work. The drain itself uses a zero
+            // timeout so the batch ends as soon as the buffer is empty.
             timeout(0);
             do {
-                handle_key(ch);
+                if (ch == KEY_MOUSE) {
+                    MEVENT ev;
+                    if (getmouse(&ev) == OK) {
+                        handle_mouse(ev);
+                    }
+                } else {
+                    handle_key(ch);
+                }
                 if (!running_) {
                     break;
                 }
@@ -353,7 +387,7 @@ void TuiApp::run()
                 break;
             }
         }
-        // ERR is not a reliable sampling tick: while keys keep arriving
+        // ERR is not a reliable sampling tick: while events keep arriving
         // faster than refresh_ms, getch() keeps returning early, ERR never
         // fires and sampling would starve (the data freezes while the UI
         // keeps redrawing). Track the interval on the wall clock instead,
@@ -391,14 +425,16 @@ void TuiApp::render()
 
     // layout: header | devices panel | process panel | footer
     dev_height_ = std::min(rows_ / 3, 3 + (int)snap_.devices.size());
-    if (dev_height_ < DEV_HEADER + 1) {
-        dev_height_ = DEV_HEADER + 1;
+    if (dev_height_ < DEV_HEADER + 2) {
+        // title + column header + at least one data row + separator
+        dev_height_ = DEV_HEADER + 2;
     }
     if (dev_height_ > rows_ - HEADER_LINES - FOOTER_LINES - PROC_HEADER - 1) {
         dev_height_ = rows_ - HEADER_LINES - FOOTER_LINES - PROC_HEADER - 1;
     }
-    if (dev_height_ < DEV_HEADER + 1) {
-        dev_height_ = DEV_HEADER + 1;
+    if (dev_height_ < DEV_HEADER + 2) {
+        // title + column header + at least one data row + separator
+        dev_height_ = DEV_HEADER + 2;
     }
     proc_top_ = HEADER_LINES + dev_height_;
     proc_height_ = rows_ - proc_top_ - FOOTER_LINES;
@@ -460,7 +496,9 @@ void TuiApp::render_devices()
         x += w;
     }
 
-    // rows, honoring device_scroll_; the bottom line is the separator
+    // rows, honoring device_scroll_. The panel's last line is the panel
+    // separator drawn below, so it must be reserved here: counting it as
+    // a data row makes the separator overwrite the last visible device.
     int visible = dev_height_ - DEV_HEADER - 1;
     for (int row = 0; row < visible; row++) {
         int idx = device_scroll_ + row;
@@ -515,8 +553,11 @@ void TuiApp::render_procs()
     }
 
     // column header; sortable columns get the sort marker
+    proc_header_y_ = y;
     for (int i = 0; i < kNumCols; i++) {
         int w = kColumns[i].width != 0 ? kColumns[i].width : cmd_w;
+        col_x_[i] = x;
+        col_w_[i] = w;
         std::string title = kColumns[i].title;
         bool sortable = title == "OPS" || title == "%MEM" ||
                         title == "%CPU" || title == "PID" || title == "COMMAND";
@@ -536,8 +577,8 @@ void TuiApp::render_procs()
         x += w;
     }
 
-    // rows
-    int visible = proc_height_;
+    // rows: the column header occupies one line, matching clamp_cursors
+    int visible = proc_height_ - 1;
     for (int row = 0; row < visible; row++) {
         int idx = proc_scroll_ + row;
         y++;
@@ -563,10 +604,10 @@ void TuiApp::render_procs()
         x += 8;
         mvprintw(y, x, "%-10s", fmt_uint64(p.uid).c_str());
         x += 10;
-        snprintf(num, sizeof(num), "%.1f", usage_[p.pid].cpu);
+        snprintf(num, sizeof(num), "%.1f", usage_of(p.pid).cpu);
         mvprintw(y, x, "%7s", num);
         x += 7;
-        snprintf(num, sizeof(num), "%.1f", usage_[p.pid].mem);
+        snprintf(num, sizeof(num), "%.1f", usage_of(p.pid).mem);
         mvprintw(y, x, "%7s", num);
         x += 7;
         mvprintw(y, x, "%8s", fmt_uint64(p.ops).c_str());
@@ -576,11 +617,14 @@ void TuiApp::render_procs()
         std::string view = cmd;
         if (h_scroll_ < 0 && (int)cmd.size() > cmd_w) {
             int start = -h_scroll_;
-            if (start < (int)cmd.size()) {
-                view = cmd.substr(start);
-            } else {
-                view = "";
+            int max_start = (int)cmd.size() - cmd_w;
+            if (start > max_start) {
+                start = max_start;   // never scroll past the line tail
             }
+            if (start < 0) {
+                start = 0;
+            }
+            view = cmd.substr(start);
         }
         mvprintw(y, x, "%-*s", cmd_w, trim_to_width(view, cmd_w).c_str());
         if (selected || (focus_ == Focus::Procs && idx == proc_cursor_)) {
@@ -613,15 +657,12 @@ void TuiApp::render_help()
         "  h / ?            toggle this help (sampling continues)  ",
         "  q                quit from main view                    ",
         "  Tab              switch focus: devices <-> processes    ",
-        "  Up / Down, j / k move selection (process focus)         ",
+        "  Up / Down, j / k move selection (procs) / scroll (devs) ",
         "  PageUp/PageDown  page up / page down                    ",
         "  Home / End       jump to first / last row               ",
         "  Left / Right     scroll long command lines horizontally ",
-        "  mouse click on   OPS / %MEM / %CPU header: sort by that ",
-        "    %MEM %CPU OPS  column (desc first, click again flips) ",
-        "  s / S            cycle sort: OPS -> %MEM -> %CPU (desc) ",
+        "  s / S            cycle sort: OPS->%MEM->%CPU->PID->CMD  ",
         "  /                reverse current sort direction         ",
-        "  mouse click row  select process; click elsewhere clears ",
         "  Enter            open detail page of selected process   ",
         "  Esc              back / clear selection / quit          ",
         "                                                          ",
@@ -661,15 +702,13 @@ void TuiApp::render_detail()
     snprintf(num, sizeof(num), "%llu", (unsigned long long)p->uid);
     mvprintw(y++, 2, "UID      : %s", num);
     mvprintw(y++, 2, "COMMAND  : %s", p->cmd.c_str());
-    snprintf(num, sizeof(num), "%.1f / %.1f", usage_[p->pid].cpu, usage_[p->pid].mem);
+    snprintf(num, sizeof(num), "%.1f / %.1f",
+             usage_of(p->pid).cpu, usage_of(p->pid).mem);
     mvprintw(y++, 2, "CPU/MEM%% : %s", num);
     y++;
     attron(A_BOLD | COLOR_PAIR(1));
     mvprintw(y++, 2, "per monitored file ops:");
     attroff(A_BOLD | COLOR_PAIR(1));
-    // per_file is a copy-on-write shared table; a snapshot may hold the
-    // same pointer the producer is about to clone, so read it through the
-    // pointer and tolerate a null table (entries seeded outside on_event).
     if (p->per_file) {
         for (const auto &kv : *p->per_file) {
             mvprintw(y++, 4, "%-40s %8s", trim_to_width(kv.first, 40).c_str(),
@@ -682,18 +721,286 @@ void TuiApp::render_detail()
 }
 
 // ---------------------------------------------------------------------------
-// input
+// sorting controls
 // ---------------------------------------------------------------------------
 
-// Key handling is extended in later stages; this stage only quits.
+// s / S: cycle OPS -> %MEM -> %CPU (spec order), resetting to descending.
+void TuiApp::cycle_sort()
+{
+    switch (sort_col_) {
+        case SortColumn::Ops:
+            sort_col_ = SortColumn::Mem;
+            break;
+        case SortColumn::Mem:
+            sort_col_ = SortColumn::Cpu;
+            break;
+        case SortColumn::Cpu:
+        default:
+            sort_col_ = SortColumn::Ops;
+            break;
+    }
+    sort_desc_ = true;
+    sort_rows();
+    clamp_cursors();
+}
+
+// '/': reverse the current sort direction.
+void TuiApp::reverse_sort()
+{
+    sort_desc_ = !sort_desc_;
+    sort_rows();
+    clamp_cursors();
+}
+
+// Header click: switch to that column descending by default; clicking
+// the active column again flips the direction.
+void TuiApp::set_sort_column(SortColumn col)
+{
+    if (sort_col_ == col) {
+        sort_desc_ = !sort_desc_;
+    } else {
+        sort_col_ = col;
+        sort_desc_ = true;
+    }
+    sort_rows();
+    clamp_cursors();
+}
+
+static SortColumn column_to_sort(const char *title)
+{
+    if (strcmp(title, "OPS") == 0) return SortColumn::Ops;
+    if (strcmp(title, "%MEM") == 0) return SortColumn::Mem;
+    if (strcmp(title, "%CPU") == 0) return SortColumn::Cpu;
+    return SortColumn::Ops;
+}
+
+// ---------------------------------------------------------------------------
+// mouse
+// ---------------------------------------------------------------------------
+
+void TuiApp::handle_mouse(const MEVENT &ev)
+{
+    int mx = ev.x, my = ev.y;
+
+    // header row: sortable column click sorts
+    if (page_ == Page::Main && my == proc_header_y_) {
+        for (int i = 0; i < kNumCols; i++) {
+            if (mx >= col_x_[i] && mx < col_x_[i] + col_w_[i]) {
+                const char *title = kColumns[i].title;
+                if (strcmp(title, "OPS") == 0 || strcmp(title, "%MEM") == 0 ||
+                    strcmp(title, "%CPU") == 0) {
+                    set_sort_column(column_to_sort(title));
+                }
+                return;
+            }
+        }
+        return;
+    }
+
+    if (page_ != Page::Main) {
+        return;
+    }
+
+    // process row click selects; click below the table (footer/blank)
+    // clears the selection
+    int row = my - proc_top_ - 1;    // -1 for column header
+    if (row >= 0 && row < proc_height_ - 1) {
+        int idx = proc_scroll_ + row;
+        if (idx < (int)proc_rows_.size()) {
+            proc_cursor_ = idx;
+            selection_active_ = true;
+        }
+        return;
+    }
+    selection_active_ = false;
+}
+
+
+void TuiApp::move_proc_cursor(int delta)
+{
+    if (proc_rows_.empty()) {
+        return;
+    }
+    selection_active_ = true;
+    proc_cursor_ += delta;
+    if (proc_cursor_ < 0) {
+        proc_cursor_ = 0;
+    }
+    if (proc_cursor_ >= (int)proc_rows_.size()) {
+        proc_cursor_ = (int)proc_rows_.size() - 1;
+    }
+    clamp_cursors();
+}
+
+// Scroll the focused list by delta lines (devices when device-focused,
+// processes otherwise).
+void TuiApp::scroll_list(int delta)
+{
+    if (focus_ == Focus::Devices) {
+        int n = (int)snap_.devices.size();
+        // one line each for the panel separator (see render_devices)
+        int visible = dev_height_ - DEV_HEADER - 1;
+        if (visible <= 0) {
+            return;
+        }
+        device_scroll_ += delta;
+        if (device_scroll_ > n - visible) {
+            device_scroll_ = n - visible;
+        }
+        if (device_scroll_ < 0) {
+            device_scroll_ = 0;
+        }
+    } else {
+        move_proc_cursor(delta);
+    }
+}
+
+void TuiApp::open_detail()
+{
+    if (focus_ != Focus::Procs || proc_rows_.empty() ||
+        proc_cursor_ >= (int)proc_rows_.size()) {
+        return;
+    }
+    detail_pid_ = proc_rows_[proc_cursor_].pid;
+    page_ = Page::Detail;
+}
+
+// Esc semantics: help/detail go back; in the main view first clear the
+// selection, and quit only when nothing is selected.
+void TuiApp::escape()
+{
+    switch (page_) {
+        case Page::Help:
+        case Page::Detail:
+            page_ = Page::Main;
+            break;
+        case Page::Main:
+        default:
+            if (selection_active_) {
+                selection_active_ = false;
+            } else {
+                running_ = false;
+            }
+            break;
+    }
+}
+
 void TuiApp::handle_key(int ch)
 {
+    // Help / detail pages: limited keys, sampling keeps running.
+    if (page_ == Page::Help) {
+        switch (ch) {
+            case 'h':
+            case '?':
+            case 27:            // Esc
+            case 'q':
+                page_ = Page::Main;
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+    if (page_ == Page::Detail) {
+        switch (ch) {
+            case 27:            // Esc
+            case '\n':
+            case '\r':
+            case KEY_ENTER:
+                page_ = Page::Main;
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
     switch (ch) {
         case 'q':
         case 'Q':
-            if (page_ == Page::Main) {
-                running_ = false;
+            running_ = false;
+            break;
+        case 'h':
+        case '?':
+            page_ = Page::Help;
+            break;
+        case '\t':
+            focus_ = focus_ == Focus::Procs ? Focus::Devices : Focus::Procs;
+            break;
+        case KEY_UP:
+        case 'k':
+            if (focus_ == Focus::Devices) {
+                scroll_list(-1);
+            } else {
+                move_proc_cursor(-1);
             }
+            break;
+        case KEY_DOWN:
+        case 'j':
+            if (focus_ == Focus::Devices) {
+                scroll_list(1);
+            } else {
+                move_proc_cursor(1);
+            }
+            break;
+        case KEY_PPAGE:
+            if (focus_ == Focus::Devices) {
+                scroll_list(-std::max(dev_height_ - DEV_HEADER - 1, 1));
+            } else {
+                scroll_list(-std::max(proc_height_ - 1, 1));
+            }
+            break;
+        case KEY_NPAGE:
+            if (focus_ == Focus::Devices) {
+                scroll_list(std::max(dev_height_ - DEV_HEADER - 1, 1));
+            } else {
+                scroll_list(std::max(proc_height_ - 1, 1));
+            }
+            break;
+        case KEY_HOME:
+            if (focus_ == Focus::Devices) {
+                device_scroll_ = 0;
+            } else {
+                proc_cursor_ = 0;
+                clamp_cursors();
+            }
+            break;
+        case KEY_END:
+            if (focus_ == Focus::Devices) {
+                int n = (int)snap_.devices.size();
+                int visible = dev_height_ - DEV_HEADER - 1;
+                device_scroll_ = visible > 0 ? std::max(n - visible, 0) : 0;
+            } else if (!proc_rows_.empty()) {
+                proc_cursor_ = (int)proc_rows_.size() - 1;
+                clamp_cursors();
+            }
+            break;
+        case KEY_LEFT:
+            h_scroll_ -= 8;      // reveal later part of long command lines
+            if (h_scroll_ < -(1 << 16)) {
+                h_scroll_ = -(1 << 16);
+            }
+            break;
+        case KEY_RIGHT:
+            h_scroll_ += 8;
+            if (h_scroll_ > 0) {
+                h_scroll_ = 0;
+            }
+            break;
+        case 's':
+        case 'S':
+            cycle_sort();
+            break;
+        case '/':
+            reverse_sort();
+            break;
+        case '\n':
+        case '\r':
+        case KEY_ENTER:
+            open_detail();
+            break;
+        case 27:                 // Esc
+            escape();
             break;
         default:
             break;

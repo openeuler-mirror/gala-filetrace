@@ -11,13 +11,15 @@
 
 #include <atomic>
 #include <cerrno>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <nlohmann/json.hpp>
 #include <thread>
+#include <nlohmann/json.hpp>
+#include <getopt.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include "stats.hpp"
 #include "tui.hpp"
@@ -89,10 +91,8 @@ int main(int argc, char **argv)
         switch (opt) {
             case 'c': config_file = optarg; break;
             case 'r': {
-                // strict parse: the whole argument must be a decimal
-                // integer, and errno catches values that do not fit in a
-                // long. atoi() silently truncates on overflow, which lets a
-                // huge -r value reach the multiply below and overflow.
+                // strict parse: whole-string decimal, errno checked for
+                // overflow, junk or non-numeric input rejected
                 char *end = nullptr;
                 errno = 0;
                 long val = strtol(optarg, &end, 10);
@@ -101,14 +101,6 @@ int main(int argc, char **argv)
                     std::cerr << "Warning: invalid refresh interval '"
                               << optarg << "', using 1000ms" << std::endl;
                     val = 1000;
-                } else if (val < MIN_REFRESH_MS || val > MAX_REFRESH_MS) {
-                    long clamped = val < MIN_REFRESH_MS ? MIN_REFRESH_MS
-                                                        : MAX_REFRESH_MS;
-                    std::cerr << "Warning: refresh interval " << val
-                              << "ms out of range [" << MIN_REFRESH_MS << ", "
-                              << MAX_REFRESH_MS << "], using " << clamped
-                              << "ms" << std::endl;
-                    val = clamped;
                 }
                 refresh_ms = (int)val;
                 break;
@@ -120,14 +112,14 @@ int main(int argc, char **argv)
                 return 1;
         }
     }
-    // clamp both ends: below MIN_REFRESH_MS the /proc sweep dominates the
-    // refresh, above MAX_REFRESH_MS the UI looks frozen. refresh_ms is
-    // also handed to ncurses timeout() as the getch() wait, in ms.
-    if (refresh_ms < MIN_REFRESH_MS) {
-        refresh_ms = MIN_REFRESH_MS;
+    // below 100ms the /proc sampling cost dominates; above 60s the
+    // usleep(refresh_ms * 1000) usec argument becomes needlessly large
+    // and the UI would look frozen — clamp both ends
+    if (refresh_ms < 100) {
+        refresh_ms = 100;
     }
-    if (refresh_ms > MAX_REFRESH_MS) {
-        refresh_ms = MAX_REFRESH_MS;
+    if (refresh_ms > 60000) {
+        refresh_ms = 60000;
     }
 
     auto paths = load_config_list(config_file);
@@ -155,6 +147,9 @@ int main(int argc, char **argv)
 
     std::atomic<bool> running{true};
     std::thread feeder;
+    // Safe to share TraceStats across threads: on_event() and snapshot()
+    // serialize on TraceStats' internal mutex, so the demo feeder writing
+    // here and the UI thread taking snapshots cannot race.
     if (demo) {
         feeder = std::thread(demo_feed, std::ref(stats), paths, std::ref(running));
     }
