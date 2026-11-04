@@ -276,20 +276,33 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     p.last_active_ms = now;
     p.last_seq = ++seq_;
 
-    // device aggregate; configured monitor paths are never evicted.
-    // Every configured path is seeded into devices_ by the constructor and
-    // survives every eviction (the veto), so when the table holds nothing
-    // but configured paths there is nothing to trim — checking
-    // devices_.size() > monitor_paths_.size() is O(1) and avoids paying a
-    // full evict_lru scan (which would find no victim) for every new-path
-    // event once the configured set alone fills the table.
-    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end() &&
-        devices_.size() > monitor_paths_.size()) {
-        evict_lru(devices_, MAX_DEVICE_ENTRIES,
-                  [this](const auto &kv) {
-                      return monitor_paths_.count(kv.first) == 0;
-                  },
-                  [](const DeviceStat &) {});
+    // device aggregate. Configured monitor paths are vetoed as eviction
+    // victims, but the veto is a preference, not immunity (see the header
+    // comment in stats.hpp): when the configured set alone fills the
+    // table, a veto-respecting sweep can never free anything and the cap
+    // would be defeated, so a second pass degrades to plain LRU eviction.
+    // The devices_.size() > monitor_paths_.size() check is kept as a
+    // fast path for pass 1: more entries than configured paths implies at
+    // least one unconfigured entry, so the scan cannot come up empty.
+    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
+        if (devices_.size() > monitor_paths_.size()) {
+            // pass 1: the table holds an unconfigured entry, honor the veto
+            evict_lru(devices_, MAX_DEVICE_ENTRIES,
+                      [this](const auto &kv) {
+                          return monitor_paths_.count(kv.first) == 0;
+                      },
+                      [](const DeviceStat &) {});
+        }
+        if (devices_.size() >= MAX_DEVICE_ENTRIES) {
+            // pass 2: only configured paths remain (or the configured set
+            // itself is larger than the cap), so pass 1 freed nothing (or
+            // not enough). Evict from the LRU end regardless of the veto:
+            // the cap must hold. An evicted configured path re-enters on
+            // its next event.
+            evict_lru(devices_, MAX_DEVICE_ENTRIES,
+                      [](const auto &) { return true; },
+                      [](const DeviceStat &) {});
+        }
     }
     DeviceStat &d = devices_[norm];
     if (d.path.empty()) {

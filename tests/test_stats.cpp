@@ -325,6 +325,59 @@ static void test_table_eviction()
     std::cout << "test_table_eviction passed" << std::endl;
 }
 
+static void test_devices_cap_under_config_saturation()
+{
+    // the configured set alone saturates devices_: every entry is
+    // veto-protected, so the veto-respecting sweep can free nothing and
+    // eviction must degrade to plain LRU or the cap would be defeated
+    std::vector<std::string> paths;
+    paths.reserve(MAX_DEVICE_ENTRIES);
+    for (size_t i = 0; i < MAX_DEVICE_ENTRIES; i++) {
+        paths.push_back("/cfg" + std::to_string(i));
+    }
+    TraceStats stats(paths);
+    assert(stats.snapshot().devices.size() == MAX_DEVICE_ENTRIES);
+
+    // flood with fresh unconfigured paths; enough of them to run the
+    // degradation sweep several times (it trims back to 7/8 of the cap,
+    // so the table refills and saturates again every cap/8 insertions)
+    for (unsigned int pid = 2; pid < 700; pid++) {
+        struct event e = make_event(pid, "p", "hosts", SYS_write);
+        stats.on_event(e, "/new" + std::to_string(pid));
+        if (pid % 64 == 0) {
+            // spot-check the cap mid-flood: it must never be exceeded
+            assert(stats.snapshot().devices.size() <= MAX_DEVICE_ENTRIES);
+        }
+    }
+
+    // a configured path touched again becomes recently active and must
+    // survive further degradation sweeps
+    struct event rewarm = make_event(100000, "w", "cfg0", SYS_write);
+    stats.on_event(rewarm, "/cfg0");
+    for (unsigned int pid = 200000; pid < 200000 + 300; pid++) {
+        struct event e = make_event(pid, "p", "hosts", SYS_write);
+        stats.on_event(e, "/new2" + std::to_string(pid));
+    }
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.devices.size() <= MAX_DEVICE_ENTRIES);
+    bool cfg0 = false;
+    size_t unconfigured = 0;
+    for (const auto &d : snap.devices) {
+        if (d.path == "/cfg0") {
+            cfg0 = true;
+        }
+        if (d.path.rfind("/cfg", 0) != 0) {
+            unconfigured++;
+        }
+    }
+    assert(cfg0);
+    // the degradation must actually admit unconfigured entries, not just
+    // silently drop every event on an unconfigured path
+    assert(unconfigured > 0);
+    std::cout << "test_devices_cap_under_config_saturation passed" << std::endl;
+}
+
 static void test_concurrent_access()
 {
     TraceStats stats({"/etc/hosts"});
@@ -457,6 +510,7 @@ int main()
     test_per_file_budget_with_protected_entries();
     test_snapshot_copy_on_write();
     test_table_eviction();
+    test_devices_cap_under_config_saturation();
     test_concurrent_access();
     std::cout << "All TraceStats tests passed" << std::endl;
     return 0;

@@ -29,11 +29,14 @@
 // event rate (measured: 120k events over 600 processes x 200 distinct long
 // paths -> 2.7 MB). Both caps hold even when the entries are configured
 // monitor paths: such entries are only *preferred* victims, not immune
-// ones (see the second sweep in stats.cpp), so neither the per-process cap
-// nor the global budget can be defeated by the configured path set. A
-// published snapshot shares the tables instead of copying them, so while
-// one generation is published the live aggregate can hold a second copy of
-// a table it is writing to: peak ≈ 2x.
+// ones. Each sweep honors the veto first, and when that cannot free
+// anything (or not enough) it degrades to veto-blind LRU eviction -- see
+// the two-pass devices_ handling in on_event and the second sweep of
+// enforce_per_file_budget in stats.cpp. Neither the device cap, the
+// per-process cap nor the global budget can be defeated by the configured
+// path set. A published snapshot shares the tables instead of copying
+// them, so while one generation is published the live aggregate can hold a
+// second copy of a table it is writing to: peak ≈ 2x.
 static const size_t MAX_PROC_ENTRIES = 2048;
 static const size_t MAX_DEVICE_ENTRIES = 2048;
 static const size_t MAX_PER_FILE_ENTRIES = 128;          // per process
