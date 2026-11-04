@@ -208,10 +208,17 @@ void TuiApp::sample_proc_usage()
 
     for (auto &row : proc_rows_) {
         UsageSample s;
+        bool have_prev = prev.count(row.pid) && prev[row.pid].have;
+        if (have_prev) {
+            // seed the deltas with the PREVIOUS sample's values: read_proc_usage
+            // computes utime - *last_utime, so passing the zero-initialized
+            // fresh object here would make %CPU the cumulative total
+            s.utime = prev[row.pid].utime;
+            s.stime = prev[row.pid].stime;
+        }
         ProcUsage u = read_proc_usage(row.pid, total_mem_kb,
                                       &s.utime, &s.stime, hz,
-                                      prev.count(row.pid) &&
-                                          prev[row.pid].have,
+                                      have_prev,
                                       &s.have);
         cur[row.pid] = s;
     }
