@@ -3,19 +3,22 @@
 #include <sys/time.h>
 #include <algorithm>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 // Batch-evict the least recently active entries (by monotonic last_seq)
 // when a table hits its cap, trimming down to 7/8 of the cap. One O(n)
 // selection pass per batch instead of a scan per event, and no dependence
 // on wall clock (ties / clock rollback cannot misorder). `evictable`
-// may veto individual victims (e.g. configured monitor paths).
+// may veto individual victims (e.g. configured monitor paths); `on_erase`
+// runs on each victim just before it is removed, so callers can keep
+// derived bookkeeping (the per-file entry budget) in sync.
 // Probe happens before inserting a NEW key, so the key being processed
 // is never displaced.
 static const size_t EVICT_TARGET_FRAC = 8; // trim back to 7/8 of cap
 
-template <typename Map, typename Evictable>
-static void evict_lru(Map &m, size_t cap, Evictable evictable)
+template <typename Map, typename Evictable, typename OnErase>
+static void evict_lru(Map &m, size_t cap, Evictable evictable, OnErase on_erase)
 {
     size_t target = cap - cap / EVICT_TARGET_FRAC;
     if (m.size() <= target) {
@@ -36,6 +39,7 @@ static void evict_lru(Map &m, size_t cap, Evictable evictable)
     uint64_t threshold = seqs[excess - 1];
     for (auto it = m.begin(); it != m.end() && excess > 0;) {
         if (it->second.last_seq <= threshold && evictable(*it)) {
+            on_erase(it->second);
             it = m.erase(it);
             excess--;
         } else {
@@ -44,15 +48,16 @@ static void evict_lru(Map &m, size_t cap, Evictable evictable)
     }
 }
 
-// per_file entries carry no seq; trim the least-touched ones instead.
-// `evictable` may veto victims (configured monitor paths are protected).
+// Trim a per_file table down to `target` entries, dropping the coldest
+// (least touched) ones first. `evictable` may veto victims (configured
+// monitor paths are protected). Returns the number of entries removed so
+// the caller can keep the global entry budget in sync.
 template <typename Evictable>
-static void evict_cold_files(std::map<std::string, uint64_t> &m, size_t cap,
-                             Evictable evictable)
+static size_t trim_cold_files(std::map<std::string, uint64_t> &m, size_t target,
+                              Evictable evictable)
 {
-    size_t target = cap - cap / EVICT_TARGET_FRAC;
     if (m.size() <= target) {
-        return;
+        return 0;
     }
     std::vector<uint64_t> counts;
     counts.reserve(m.size());
@@ -62,19 +67,54 @@ static void evict_cold_files(std::map<std::string, uint64_t> &m, size_t cap,
         }
     }
     if (counts.empty()) {
-        return;
+        return 0;
     }
     size_t excess = std::min(m.size() - target, counts.size());
     std::nth_element(counts.begin(), counts.begin() + excess - 1, counts.end());
     uint64_t threshold = counts[excess - 1];
+    size_t removed = 0;
     for (auto it = m.begin(); it != m.end() && excess > 0;) {
         if (it->second <= threshold && evictable(*it)) {
             it = m.erase(it);
             excess--;
+            removed++;
         } else {
             ++it;
         }
     }
+    return removed;
+}
+
+// Trim one process's table down to `target` entries and return how many
+// were dropped. The table may be shared with a published snapshot, in
+// which case it is cloned first (copy-on-write).
+//
+// The `pick` pre-scan is deliberate: cloning costs a full table copy
+// (~4 us for a full 128-entry table), so a table whose entries are all
+// vetoed must not pay for a copy that could never be used -- that is the
+// difference between "budget unreachable" costing one scan per event and
+// costing one clone per event.
+template <typename Pick>
+static size_t trim_table(std::shared_ptr<std::map<std::string, uint64_t>> &table,
+                         size_t target, Pick pick)
+{
+    if (!table || table->size() <= target) {
+        return 0;
+    }
+    bool droppable = false;
+    for (const auto &kv : *table) {
+        if (pick(kv)) {
+            droppable = true;
+            break;
+        }
+    }
+    if (!droppable) {
+        return 0;
+    }
+    if (table.use_count() > 1) {
+        table = std::make_shared<std::map<std::string, uint64_t>>(*table);
+    }
+    return trim_cold_files(*table, target, pick);
 }
 
 static uint64_t classify_flag(int flag)
@@ -200,58 +240,56 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
             paths_.pop_back();
             continue;
         }
+        if (devices_.size() >= MAX_DEVICE_ENTRIES) {
+            // the devices_ cap is absolute: with more configured paths
+            // than the table can hold, only the first MAX_DEVICE_ENTRIES
+            // are pre-seeded. The full set stays in monitor_paths_ (for
+            // matching and the eviction veto); later paths enter devices_
+            // through on_event like any other key, where the cap holds.
+            // Count them so the caller can tell the user the config is
+            // only partially representable instead of silently showing a
+            // device panel that is missing entries.
+            ignored_monitor_paths_++;
+            continue;
+        }
+        devices_[norm].path = norm;
     }
 }
 
 void TraceStats::on_event(const struct event &e, const std::string &path)
 {
     // normalize the incoming path the same way the constructor normalizes
-    // configured paths, so both build identical aggregate keys. The header
-    // contract: only configured monitor paths aggregate; a non-empty path
-    // outside the monitor set is NOT aggregated — it counts as dropped,
-    // exactly like an event with no path information at all.
+    // configured paths, so both build identical devices_ keys (a configured
+    // "/var/log/" and events on it must not create two entries)
     std::string norm = path;
     while (norm.size() > 1 && norm.back() == '/') {
         norm.pop_back();
     }
-    if (norm.empty() || monitor_paths_.find(norm) == monitor_paths_.end()) {
+    if (norm.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
-        pending_dropped_events_++;
+        dropped_events_++;
+        gen_.fetch_add(1, std::memory_order_release);
         return;
     }
 
-    // Keep the producer critical section O(1): just enqueue the event.
-    // The actual aggregation runs on the snapshot() builder thread.
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (pending_.size() >= kMaxPendingEvents) {
-        // bounded queue: drop the oldest event rather than grow without
-        // limit when the consumer stalls; it counts as dropped.
-        pending_.pop_front();
-        pending_dropped_events_++;
-    }
-    PendingEvent pe;
-    pe.e = e;
-    pe.path = std::move(norm);
-    pending_.push_back(std::move(pe));
-    pending_total_events_++;
-}
-
-// Fold one queued feed event into the aggregate. Runs on the snapshot()
-// builder thread, never under the producer mutex. `monitor_paths` is
-// immutable after construction, so it is read without locking.
-void TraceStats::apply_event(TraceStats::Aggregate &agg, const struct event &e,
-                        const std::string &norm,
-                        const std::set<std::string> &monitor_paths,
-                        uint64_t now)
-{
+    uint64_t now = now_ms();
     uint64_t kind = classify_flag(e.flag);
 
+    std::lock_guard<std::mutex> lock(mutex_);
+    total_events_++;
+
     // process aggregate
-    if (agg.procs.size() >= MAX_PROC_ENTRIES && agg.procs.find(e.pid) == agg.procs.end()) {
-        evict_lru(agg.procs, MAX_PROC_ENTRIES,
-                  [](const auto &kv) { return true; });
+    if (procs_.size() >= MAX_PROC_ENTRIES && procs_.find(e.pid) == procs_.end()) {
+        evict_lru(procs_, MAX_PROC_ENTRIES,
+                  [](const auto &) { return true; },
+                  [this](const ProcStat &victim) {
+                      // its per_file table leaves with it
+                      if (victim.per_file) {
+                          per_file_entries_ -= victim.per_file->size();
+                      }
+                  });
     }
-    ProcStat &p = agg.procs[e.pid];
+    ProcStat &p = procs_[e.pid];
     p.pid = e.pid;
     p.ppid = e.ppid;
     {
@@ -267,29 +305,77 @@ void TraceStats::apply_event(TraceStats::Aggregate &agg, const struct event &e,
     }
     p.uid = e.uid;
     p.ops++;
-    if (p.per_file.size() >= MAX_PER_FILE_ENTRIES &&
-        p.per_file.find(norm) == p.per_file.end()) {
-        // configured monitor paths are never trimmed from per_file
-        evict_cold_files(p.per_file, MAX_PER_FILE_ENTRIES, [&monitor_paths](const auto &kv) {
-            return monitor_paths.count(kv.first) == 0;
-        });
-    }
-    p.per_file[norm]++;
-    p.last_active_ms = now;
-    p.last_seq = ++agg.seq;
 
-    // device aggregate; configured monitor paths are never evicted
-    if (agg.devices.size() >= MAX_DEVICE_ENTRIES && agg.devices.find(norm) == agg.devices.end()) {
-        evict_lru(agg.devices, MAX_DEVICE_ENTRIES, [&monitor_paths](const auto &kv) {
-            return monitor_paths.count(kv.first) == 0;
-        });
+    // per_file is copy-on-write: a published snapshot shares this table,
+    // so clone it before the in-place update while a snapshot still holds
+    // a reference (use_count() > 1). Exactly one clone per process per
+    // published generation at most, and the cost is paid here by the
+    // producer instead of a deep copy of every process inside snapshot().
+    if (!p.per_file || p.per_file.use_count() > 1) {
+        p.per_file = p.per_file
+                         ? std::make_shared<std::map<std::string, uint64_t>>(*p.per_file)
+                         : std::make_shared<std::map<std::string, uint64_t>>();
     }
-    DeviceStat &d = agg.devices[norm];
+    std::map<std::string, uint64_t> &files = *p.per_file;
+
+    if (files.size() >= MAX_PER_FILE_ENTRIES && files.find(norm) == files.end()) {
+        const size_t keep =
+            MAX_PER_FILE_ENTRIES - MAX_PER_FILE_ENTRIES / EVICT_TARGET_FRAC;
+        // configured monitor paths normally survive the trim
+        size_t removed = trim_cold_files(
+            files, keep, [this](const auto &kv) { return monitor_paths_.count(kv.first) == 0; });
+        if (removed == 0) {
+            // every entry is a protected monitor path: the cap still has
+            // to hold, or the table grows with the configured path set
+            removed = trim_cold_files(files, keep, [](const auto &) { return true; });
+        }
+        per_file_entries_ -= removed;
+    }
+    auto ins = files.emplace(norm, uint64_t{0});
+    if (ins.second) {
+        per_file_entries_++;
+    }
+    ins.first->second++;
+    // the per-process cap alone still allows MAX_PROC_ENTRIES x
+    // MAX_PER_FILE_ENTRIES entries; keep the global footprint bounded
+    enforce_per_file_budget(e.pid);
+    p.last_active_ms = now;
+    p.last_seq = ++seq_;
+
+    // device aggregate. Configured monitor paths are vetoed as eviction
+    // victims, but the veto is a preference, not immunity (see the header
+    // comment in stats.hpp): when the configured set alone fills the
+    // table, a veto-respecting sweep can never free anything and the cap
+    // would be defeated, so a second pass degrades to plain LRU eviction.
+    // The devices_.size() > monitor_paths_.size() check is kept as a
+    // fast path for pass 1: more entries than configured paths implies at
+    // least one unconfigured entry, so the scan cannot come up empty.
+    if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
+        if (devices_.size() > monitor_paths_.size()) {
+            // pass 1: the table holds an unconfigured entry, honor the veto
+            evict_lru(devices_, MAX_DEVICE_ENTRIES,
+                      [this](const auto &kv) {
+                          return monitor_paths_.count(kv.first) == 0;
+                      },
+                      [](const DeviceStat &) {});
+        }
+        if (devices_.size() >= MAX_DEVICE_ENTRIES) {
+            // pass 2: only configured paths remain (or the configured set
+            // itself is larger than the cap), so pass 1 freed nothing (or
+            // not enough). Evict from the LRU end regardless of the veto:
+            // the cap must hold. An evicted configured path re-enters on
+            // its next event.
+            evict_lru(devices_, MAX_DEVICE_ENTRIES,
+                      [](const auto &) { return true; },
+                      [](const DeviceStat &) {});
+        }
+    }
+    DeviceStat &d = devices_[norm];
     if (d.path.empty()) {
         d.path = norm;
     }
     d.last_active_ms = now;
-    d.last_seq = ++agg.seq;
+    d.last_seq = ++seq_;
     d.ops++;
     if (kind & (1 << 0)) d.writes++;
     else if (kind & (1 << 1)) d.opens++;
@@ -404,67 +490,6 @@ std::shared_ptr<const StatsSnapshot> TraceStats::snapshot_shared() const
 
 StatsSnapshot TraceStats::snapshot() const
 {
-    // One builder at a time: the drain/build/publish sequence below takes
-    // sole ownership of the published state, so concurrent builders would
-    // otherwise base their copy on a detached aggregate.
-    std::lock_guard<std::mutex> build(build_mutex_);
-
-    std::deque<PendingEvent> batch;
-    uint64_t ev = 0, dr = 0;
-    {
-        // short critical section: swap out the queue, take the deltas
-        std::lock_guard<std::mutex> lock(mutex_);
-        batch.swap(pending_);
-        ev = pending_total_events_;
-        dr = pending_dropped_events_;
-        pending_total_events_ = pending_dropped_events_ = 0;
-    }
-
-    // Take sole ownership of the published aggregate (O(1)); producers
-    // never touch it, so everything from here on runs lock-free.
-    std::shared_ptr<Aggregate> owned;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        owned = std::const_pointer_cast<Aggregate>(last_);
-        last_.reset();
-    }
-    if (!owned) {
-        owned = std::make_shared<Aggregate>();
-    }
-    // configured paths always appear in the snapshot, even before their
-    // first event (the aggregate is created once and reused, so seeding
-    // here covers every later snapshot as well)
-    for (const auto &p : paths_) {
-        DeviceStat &d = owned->devices[p];
-        if (d.path.empty()) {
-            d.path = p;
-        }
-    }
-    owned->total_events += ev;
-    owned->dropped_events += dr;
-    uint64_t now = now_ms();
-    for (auto &pe : batch) {
-        apply_event(*owned, pe.e, pe.path, monitor_paths_, now);
-    }
-
-    // Build the TUI-facing vectors off the producer path.
-    StatsSnapshot snap;
-    snap.total_events = owned->total_events;
-    snap.dropped_events = owned->dropped_events;
-    snap.devices.reserve(owned->devices.size());
-    for (const auto &kv : owned->devices) {
-        snap.devices.push_back(kv.second);
-    }
-    snap.procs.reserve(owned->procs.size());
-    for (const auto &kv : owned->procs) {
-        snap.procs.push_back(kv.second);
-    }
-
-    // Publish via an O(1) pointer swap.
-    std::shared_ptr<const Aggregate> published = owned;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        last_ = published;
-    }
-    return snap;
+    // convenience wrapper: same view, handed out as a value
+    return *snapshot_shared();
 }
