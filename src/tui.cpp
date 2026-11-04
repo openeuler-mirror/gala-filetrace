@@ -136,6 +136,16 @@ ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
         return false;
     }
 
+    if (have_prev && total_mem_kb > 0) {
+        // /proc/stat rss is in pages; page size is 4KB on x86_64 but can
+        // be 16KB/64KB on other kernels, so query it instead of hardcoding
+        static double page_kb = 0;
+        if (page_kb == 0) {
+            long psz = sysconf(_SC_PAGESIZE);
+            page_kb = psz > 0 ? (double)psz / 1024.0 : 4.0;
+        }
+        u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
+    }
     if (have_prev && hz > 0) {
         unsigned long long dt = (utime >= *last_utime ? utime - *last_utime : 0) +
                                 (stime >= *last_stime ? stime - *last_stime : 0);
@@ -216,8 +226,10 @@ void TuiApp::sample_once()
 {
     snap_ = stats_.snapshot();
     proc_rows_ = snap_.procs;
-    sort_rows();
+    // %CPU/%MEM must be sampled for this frame's rows BEFORE sorting,
+    // otherwise the sort keys come from the previous frame's usage data
     sample_proc_usage();
+    sort_rows();
     clamp_cursors();
 }
 
@@ -378,14 +390,16 @@ void TuiApp::render()
 
     // layout: header | devices panel | process panel | footer
     dev_height_ = std::min(rows_ / 3, 3 + (int)snap_.devices.size());
-    if (dev_height_ < DEV_HEADER + 1) {
-        dev_height_ = DEV_HEADER + 1;
+    if (dev_height_ < DEV_HEADER + 2) {
+        // title + column header + at least one data row + separator
+        dev_height_ = DEV_HEADER + 2;
     }
     if (dev_height_ > rows_ - HEADER_LINES - FOOTER_LINES - PROC_HEADER - 1) {
         dev_height_ = rows_ - HEADER_LINES - FOOTER_LINES - PROC_HEADER - 1;
     }
-    if (dev_height_ < DEV_HEADER + 1) {
-        dev_height_ = DEV_HEADER + 1;
+    if (dev_height_ < DEV_HEADER + 2) {
+        // title + column header + at least one data row + separator
+        dev_height_ = DEV_HEADER + 2;
     }
     proc_top_ = HEADER_LINES + dev_height_;
     proc_height_ = rows_ - proc_top_ - FOOTER_LINES;
@@ -447,7 +461,9 @@ void TuiApp::render_devices()
         x += w;
     }
 
-    // rows, honoring device_scroll_; the bottom line is the separator
+    // rows, honoring device_scroll_. The panel's last line is the panel
+    // separator drawn below, so it must be reserved here: counting it as
+    // a data row makes the separator overwrite the last visible device.
     int visible = dev_height_ - DEV_HEADER - 1;
     for (int row = 0; row < visible; row++) {
         int idx = device_scroll_ + row;
@@ -787,6 +803,7 @@ void TuiApp::scroll_list(int delta)
 {
     if (focus_ == Focus::Devices) {
         int n = (int)snap_.devices.size();
+        // one line each for the panel separator (see render_devices)
         int visible = dev_height_ - DEV_HEADER - 1;
         if (visible <= 0) {
             return;
