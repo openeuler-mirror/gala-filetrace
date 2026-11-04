@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -168,7 +169,15 @@ private:
     // mutex_, so the two can never deadlock.
     mutable std::mutex cache_mutex_;
     mutable std::shared_ptr<StatsSnapshot> cache_;
-    mutable uint64_t cache_gen_ = 0;
+    // The invariant: cache_ is a valid view of the current state iff
+    // cache_ is set AND cache_gen_ == gen_. The initial cache_gen_ must
+    // therefore NOT collide with gen_'s initial 0 -- otherwise "same
+    // generation" would read as "cache valid" before the first publish
+    // ever happened. The sentinel marks "never published" and can only
+    // equal gen_ after a wrap-around of 2^64 mutations, i.e. never.
+    static constexpr uint64_t kNeverPublishedGen =
+        std::numeric_limits<uint64_t>::max();
+    mutable uint64_t cache_gen_ = kNeverPublishedGen;
 };
 
 #endif // STATS_HPP

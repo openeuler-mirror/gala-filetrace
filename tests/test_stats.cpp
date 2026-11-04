@@ -244,6 +244,39 @@ static void test_event_path_multi_dir()
     std::cout << "test_event_path_multi_dir passed" << std::endl;
 }
 
+// The snapshot cache must be usable from the very first call: an empty
+// snapshot before any event, then a snapshot that sees the first event,
+// then a cache hit that reports the same view. This exercises the gen_ 0
+// -> 1 transition against the "never published" cache sentinel.
+static void test_cache_first_use()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    StatsSnapshot empty = stats.snapshot();
+    // no event yet: only the seeded configured path, no process rows
+    assert(empty.procs.empty());
+    assert(empty.devices.size() == 1);
+    assert(empty.devices[0].ops == 0);
+    assert(empty.total_events == 0 && empty.dropped_events == 0);
+
+    // the empty snapshot must not be served after a mutation
+    struct event e = make_event(100, "bash", "hosts", SYS_write);
+    stats.on_event(e, "/etc/hosts");
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.total_events == 1);
+    assert(snap.devices.size() == 1 && snap.devices[0].ops == 1);
+    assert(snap.procs.size() == 1);
+
+    // a second call hits the published generation and sees the same view
+    StatsSnapshot again = stats.snapshot();
+    assert(again.total_events == snap.total_events);
+    assert(again.dropped_events == snap.dropped_events);
+    assert(again.devices.size() == snap.devices.size());
+    assert(again.procs.size() == snap.procs.size());
+    std::cout << "test_cache_first_use passed" << std::endl;
+}
+
 static void test_empty_monitor_path_ignored()
 {
     // an empty configured path is skipped, not normalized to "/"
@@ -416,6 +449,7 @@ int main()
     test_copy_file_range_is_write();
     test_classification();
     test_empty_monitor_path_ignored();
+    test_cache_first_use();
     test_cmd_refresh_on_exec();
     test_per_file_capped();
     test_per_file_cap_with_protected_entries();
