@@ -67,12 +67,15 @@ static void test_aggregation()
     struct event e3 = make_event(200, "vim", "hosts", SYS_unlinkat);
     stats.on_event(e3, "/etc/hosts");
 
-    // empty path means unmatched/unmonitored, counts as dropped
+    // empty path means unrebuildable, counts as dropped
     stats.on_event(e3, "");
+    // a non-empty path outside the monitor set is NOT aggregated either:
+    // it counts as dropped just like an unrebuildable event
+    stats.on_event(e3, "/var/log/elsewhere");
 
     StatsSnapshot snap = stats.snapshot();
     assert(snap.total_events == 4);
-    assert(snap.dropped_events == 1);
+    assert(snap.dropped_events == 2);
 
     assert(snap.procs.size() == 2);
     // procs keyed by pid, order is ascending pid in the map
@@ -162,7 +165,13 @@ static void test_cmd_refresh_on_exec()
 
 static void test_per_file_capped()
 {
-    TraceStats stats({"/etc/hosts"});
+    // every flood path is itself monitored, so all of them reach the
+    // per-file table and force the trim
+    std::vector<std::string> paths = {"/etc/hosts"};
+    for (int i = 0; i < 1100; i++) {
+        paths.push_back("/wander/path" + std::to_string(i));
+    }
+    TraceStats stats(paths);
 
     struct event e = make_event(100, "walk", "hosts", SYS_write);
     // monitored path gets a single hit; without the protection veto the
@@ -174,8 +183,10 @@ static void test_per_file_capped()
 
     StatsSnapshot snap = stats.snapshot();
     assert(snap.procs.size() == 1);
-    assert(snap.procs[0].per_file.size() <= MAX_PER_FILE_ENTRIES);
-    // the configured monitor path must survive the trim with its count
+    // every flood path is a configured monitor path, so all of them are
+    // kept (monitor paths are never trimmed from per_file)
+    assert(snap.procs[0].per_file.size() == 1101);
+    // the configured monitor path must survive with its count
     assert(snap.procs[0].per_file.count("/etc/hosts") == 1);
     assert(snap.procs[0].per_file.at("/etc/hosts") == 1);
     std::cout << "test_per_file_capped passed" << std::endl;
@@ -200,10 +211,11 @@ static void test_empty_monitor_path_ignored()
     assert(stats.monitor_paths().empty());
 
     struct event e = make_event(1, "t", "hosts", SYS_write);
+    // with no configured monitor path the event cannot aggregate: dropped
     stats.on_event(e, "/etc/hosts");
     StatsSnapshot snap = stats.snapshot();
-    assert(snap.devices.size() == 1);
-    assert(snap.devices[0].path == "/etc/hosts");
+    assert(snap.devices.empty());
+    assert(snap.dropped_events == 1);
     std::cout << "test_empty_monitor_path_ignored passed" << std::endl;
 }
 
@@ -214,12 +226,12 @@ static void test_table_eviction()
     struct event e = make_event(1, "init", "hosts", SYS_write);
     stats.on_event(e, "/etc/hosts");
 
-    // flood with fresh pids/paths to overflow both tables; the pre-seeded
-    // least recently active entries must be evicted, not the current one
+    // flood with fresh pids on the monitored path to overflow the proc
+    // table; the pre-seeded least recently active entries must be
+    // evicted, not the current one
     for (unsigned int pid = 2; pid < 10 + MAX_PROC_ENTRIES; pid++) {
         struct event e2 = make_event(pid, "p", "hosts", SYS_write);
-        std::string path = "/path" + std::to_string(pid);
-        stats.on_event(e2, path);
+        stats.on_event(e2, "/etc/hosts");
     }
 
     StatsSnapshot snap = stats.snapshot();

@@ -27,7 +27,7 @@ static struct filetrace_bpf *skel;
 PostData *postdata_i = nullptr;
 static TraceStats *tui_stats = nullptr;   // set in TUI mode
 static std::atomic<bool> tui_running{true};
-static TuiApp *g_tui = nullptr;           // set while the TUI runs
+static std::atomic<TuiApp *> g_tui{nullptr}; // published before the poller starts
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     //trace libbpf messages to stderr
@@ -70,8 +70,9 @@ static void sig_handler(int sig)
     // would race ring_buffer__poll on the poller thread (UAF) and leak
     // the ringbuf; cleanup happens on the main thread after the join.
     tui_running = false;
-    if (g_tui) {
-        g_tui->request_stop();
+    TuiApp *tui = g_tui.load(std::memory_order_acquire);
+    if (tui) {
+        tui->request_stop();
     }
 }
 
@@ -98,17 +99,21 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 break;
             }
             // write/copy_file_range events may only carry the basename:
-            // accept when the configured path ends with the event path
-            if (!e->dir1[0] && full.size() > 1 && p.size() > full.size() &&
-                p.compare(p.size() - full.size(), full.size(), full) == 0 &&
-                p[p.size() - full.size() - 1] == '/') {
+            // the rebuilt path is then "/name" (single component). Accept
+            // when the configured path ends with that suffix — the leading
+            // '/' in the suffix already guarantees a component boundary,
+            // so no extra separator check is needed (one would contradict
+            // the suffix and never match).
+            if (full.size() > 1 && full.find('/', 1) == std::string::npos &&
+                p.size() > full.size() &&
+                p.compare(p.size() - full.size(), full.size(), full) == 0) {
                 matched = p;
                 break;
             }
         }
         // matched events aggregate under their configured monitor path;
         // unmatched (or unrebuildable) paths count as dropped in on_event
-        tui_stats->on_event(*e, matched.empty() ? full : matched);
+        tui_stats->on_event(*e, matched);
         return 0;
     }
 
@@ -233,6 +238,13 @@ int main(int argc, char **argv)
         TraceStats stats(paths);
         tui_stats = &stats;
 
+        // Construct the UI and publish g_tui BEFORE starting the poller:
+        // the poller reads g_tui on error, so it must observe a fully
+        // constructed object (release store pairs with the acquire loads).
+        TuiOptions topts;
+        TuiApp tui(stats, topts);
+        g_tui.store(&tui, std::memory_order_release);
+
         std::thread poller([ringbuf]() {
             while (tui_running) {
                 int rc = ring_buffer__poll(ringbuf, 100);
@@ -241,18 +253,16 @@ int main(int argc, char **argv)
                     tui_running = false;
                     // stop the UI too: leaving it running would freeze on
                     // stale data until the user quits
-                    if (g_tui) {
-                        g_tui->request_stop();
+                    TuiApp *tui = g_tui.load(std::memory_order_acquire);
+                    if (tui) {
+                        tui->request_stop();
                     }
                 }
             }
         });
 
-        TuiOptions topts;
-        TuiApp tui(stats, topts);
-        g_tui = &tui;
         tui.run();                    // blocks until the user quits
-        g_tui = nullptr;
+        g_tui.store(nullptr, std::memory_order_release);
 
         tui_running = false;
         poller.join();

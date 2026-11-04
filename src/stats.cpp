@@ -152,15 +152,15 @@ TraceStats::TraceStats(std::vector<std::string> monitor_paths)
 void TraceStats::on_event(const struct event &e, const std::string &path)
 {
     // normalize the incoming path the same way the constructor normalizes
-    // configured paths, so both build identical aggregate keys. Events on
-    // paths outside the configured monitor set still aggregate under
-    // their own key (the snapshot shows them as unconfigured entries);
-    // only events with no path information at all are dropped.
+    // configured paths, so both build identical aggregate keys. The header
+    // contract: only configured monitor paths aggregate; a non-empty path
+    // outside the monitor set is NOT aggregated — it counts as dropped,
+    // exactly like an event with no path information at all.
     std::string norm = path;
     while (norm.size() > 1 && norm.back() == '/') {
         norm.pop_back();
     }
-    if (norm.empty()) {
+    if (norm.empty() || monitor_paths_.find(norm) == monitor_paths_.end()) {
         std::lock_guard<std::mutex> lock(mutex_);
         pending_dropped_events_++;
         return;

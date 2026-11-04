@@ -74,8 +74,8 @@ public:
     explicit TraceStats(std::vector<std::string> monitor_paths);
 
     // Feed one BPF event. path is the rebuilt event path (see event_path());
-    // every non-empty path aggregates (configured or not, so per-file
-    // counters stay meaningful); empty paths count only as dropped.
+    // only configured monitor paths aggregate; empty paths and non-empty
+    // paths outside the monitor set count as dropped.
     void on_event(const struct event &e, const std::string &path);
 
     // Copy the current aggregate state. Producers only enqueue the event
@@ -93,8 +93,8 @@ public:
     // results, so configured absolute paths can be prefix-matched).
     // Pure path reconstruction: the result is NOT matched against the
     // configured monitor paths here. The caller decides whether the
-    // event is monitored; on_event() aggregates every non-empty path
-    // (configured or not), and empty paths count only as dropped.
+    // event is monitored; on_event() aggregates only configured monitor
+    // paths, everything else (unmatched, unrebuildable) counts as dropped.
     static std::string event_path(const struct event &e);
 
     static uint64_t now_ms();

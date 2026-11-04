@@ -236,6 +236,10 @@ void TuiApp::sample_once()
 {
     snap_ = stats_.snapshot();
     proc_rows_ = snap_.procs;
+    // refresh %CPU/%MEM BEFORE sorting: sort_rows() orders by the usage
+    // values that are rendered, so sampling after the sort would order
+    // the rows by the previous sample's numbers
+    sample_proc_usage();
     sort_rows();
     // the selection tracks a pid, but the cursor is an index into
     // proc_rows_: re-sorting (new events, changed order) moves rows, so
@@ -255,8 +259,6 @@ void TuiApp::sample_once()
             selected_pid_ = 0;
         }
     }
-    sample_proc_usage();
-    sort_rows();
     clamp_cursors();
 }
 
@@ -816,7 +818,6 @@ void TuiApp::move_proc_cursor(int delta)
         return;
     }
     selection_active_ = true;
-    selected_pid_ = proc_rows_[proc_cursor_].pid;
     proc_cursor_ += delta;
     if (proc_cursor_ < 0) {
         proc_cursor_ = 0;
@@ -824,6 +825,10 @@ void TuiApp::move_proc_cursor(int delta)
     if (proc_cursor_ >= (int)proc_rows_.size()) {
         proc_cursor_ = (int)proc_rows_.size() - 1;
     }
+    // record the pid of the NEW row: recording it before the move would
+    // anchor the selection on the previous row and every refresh would
+    // relocate the cursor back there, cancelling the key press
+    selected_pid_ = proc_rows_[proc_cursor_].pid;
     clamp_cursors();
 }
 
