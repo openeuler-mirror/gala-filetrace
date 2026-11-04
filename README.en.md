@@ -17,6 +17,40 @@ gala-filetrace is a functional component in A-OPS, mainly used for real-time mon
 
 # 2. Implementation Architecture
 
+gala-filetrace uses eBPF to collect configuration-file changes in kernel space and process them in user space. The overall data flow is:
+
+```text
+┌─────────────────────── Kernel space (eBPF) ─────────────────────┐
+│  tracepoint/fentry hooks                                         │
+│   - sys_enter_openat / unlinkat / rename(at/at2) / execve        │
+│   - sys_enter_copy_file_range / write (or fentry security_*)     │
+│   - sched_process_exec                                           │
+│        │ build struct event (pid/ppid/cmd/uid/gid/inode/path)    │
+│        ├──► exec_map (HASH): process lineage for ptrace backtrace│
+│        └──► events  (RINGBUF, 16MB): deliver file events         │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │ ring_buffer__poll
+┌───────────────────────────────▼───── User space ────────────────┐
+│  handle_event → PostData::process_event                          │
+│        │ is_valid_event filtering (path in config_list, skip)    │
+│        ├──► PrometheusExporter: file_access_total / gauge        │
+│        ├──► curl HTTP POST → gala-ragdoll (when publish=true)    │
+│        └──► cache_event: cache into memory queue for API         │
+│                                                                  │
+│  cpp-httplib HTTP Server (server:port) serves config/query API   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Core modules:
+
+| Module | File | Responsibility |
+| :--- | :--- | :--- |
+| eBPF program | `src/filetrace.bpf.c` | Attach syscall/VFS hooks, collect events into the ring buffer |
+| Main program | `src/filetrace.cpp` | Load/attach skeleton, poll the ring buffer and dispatch events |
+| Event handling | `src/post.cpp` | Filtering, config loading, push to ragdoll, process lineage, HTTP API |
+| Metrics export | `src/exporter.cpp` | Integrate with Prometheus, expose counter/gauge metrics |
+| Logging | `src/logger.cpp` | Layered logging and file rotation |
+
 # 3. Compilation and Running
 
 Currently supported openEuler versions:
@@ -131,16 +165,93 @@ rpm -ivh gala-filetrace-<version>-<release>.<arch>.rpm
 
 ## 3.5 Configuration Description
 
-Configuration description:
-| Configuration Item        | Value         | Description         |
-| :---         |    :----:   |          ---: |
-| host_id       | string          | Host UUID |
-| domain_name       | string           | Domain / data center where the host resides |
-| ragdoll_api       | string           | Ragdoll server address |
-| publish       | bool         | Whether to push to ragdoll |
-| exporter_address  | string   | Prometheus Node Exporter listening address |
+Configuration description (default path `/etc/gala-filetrace/gala-filetrace.json`, overridable via `-c`):
+| Configuration Item | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| host_id | string | none | Host UUID, **required**, startup fails if empty |
+| domain_name | string | none | Domain / data center where the host resides, **required** |
+| cluster_id | string | `""` | Cluster ID, optional |
+| config_list | array | none | Absolute paths of config files to monitor, **required and non-empty** |
+| skip_processes_list | array | none | Process names to ignore (noise processes), **required** |
+| ragdoll_api | string | none | gala-ragdoll receiving address |
+| publish | bool | `false` | Whether to push events to ragdoll; also enables the built-in HTTP Server |
+| exporter_address | string | `0.0.0.0:8080` | Prometheus Exporter listening address |
+| server | string | `0.0.0.0` | Listening address of the config/query API (must be a valid IPv4) |
+| port | int | `8080` | Listening port of the config/query API |
+| cache_data | bool | `false` | Whether to cache events in memory for `/monitor_file_status` |
+| cache_timeout_seconds | int | `30` | Timeout (seconds) for Prometheus gauge cache records |
+| max_event_queue_size | int | `1000` | Maximum number of events kept in the memory queue |
+| max_dir_level | int | `4` | Maximum directory depth allowed for `config_list` paths |
+| log_level | string | `info` | Log level (debug/info/warn/error) |
+| log_file | string | `/var/log/filetrace.log` | Log file path |
+| log_size | int | `100` | Maximum size of a single log file (MB) |
 
 Visit <http://IP:9090/Metrics> in a browser to view monitoring metrics.
+
+## 3.6 API Endpoints
+
+The built-in HTTP Server is started only when `publish` is `true` (listening on `server:port`) and provides the endpoints below. `POST /filetrace` and `GET /filetrace` are always available once the server is up; `/monitor_file_status` is registered only when `cache_data` is `true`.
+
+### 3.6.1 Add / remove a monitored file
+
+```
+POST /filetrace
+Content-Type: application/json
+
+{"conf": "/etc/hosts", "action": "add"}
+```
+
+- `action` is `add` or `remove`; `conf` is the absolute path of a config file.
+- On success the change is persisted back to the config file.
+- Response: `200` on success (`Configuration updated successfully`); `400` for invalid parameters; `500` when writing to disk fails.
+
+Query the current monitored list:
+
+```
+GET /filetrace
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "conf_list": ["/etc/hosts"]
+}
+```
+
+### 3.6.2 Query monitored events
+
+```
+GET /monitor_file_status?count=10
+```
+
+- `count` is the number of events to return; defaults to `10` when missing/invalid, capped at `max_event_queue_size`.
+- `200` when events are returned; `204` with `status` `no_event` when the queue is empty.
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "count": 1,
+  "events": [
+    {
+      "pid": 1234,
+      "ppid": 5678,
+      "cmd": "vim",
+      "flag": 5,
+      "syscall": "sys_enter_write",
+      "filename": "hosts",
+      "oldfilename": "",
+      "dir1": "etc",
+      "dir2": "",
+      "dir3": "",
+      "dir4": ""
+    }
+  ]
+}
+```
 
 # 4. QA
 
@@ -150,7 +261,11 @@ Visit <http://IP:9090/Metrics> in a browser to view monitoring metrics.
 permission error while running as root; try raising 'ulimit -l'? current value: 64.0 KiB.
  ```
 
-Solution：
+Cause: loading eBPF programs requires raising `RLIMIT_MEMLOCK` (the maximum amount of lockable memory); the default 64 KiB is insufficient.
+
+* Started as a systemd service (recommended): `config/gala-filetrace.service` already sets `LimitMEMLOCK=infinity`, so no manual step is needed.
+
+* When running `filetrace` directly from the command line, raise the limit in the current shell first:
 
 ```bash
 # ulimit -l 819200  
