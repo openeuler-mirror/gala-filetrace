@@ -123,6 +123,16 @@ int main(int argc, char **argv)
         refresh_ms = 60000;
     }
 
+    // This standalone binary has no live event source (the real ring-buffer
+    // feed lives in the main filetrace binary via -t); without the demo
+    // generator the UI would render forever with no data at all.
+    if (!demo) {
+        std::cerr << "filetrace-tui has no live event source." << std::endl
+                  << "Use -d for the demo feed, or run 'filetrace -t' for live tracing."
+                  << std::endl;
+        return 1;
+    }
+
     auto paths = load_config_list(config_file);
     if (paths.empty()) {
         std::cerr << "No config_list entries in " << config_file

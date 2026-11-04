@@ -98,17 +98,27 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 matched = p;
                 break;
             }
+        }
+        if (matched.empty()) {
             // write/copy_file_range events may only carry the basename:
             // the rebuilt path is then "/name" (single component). Accept
-            // when the configured path ends with that suffix — the leading
-            // '/' in the suffix already guarantees a component boundary,
-            // so no extra separator check is needed (one would contradict
-            // the suffix and never match).
-            if (full.size() > 1 && full.find('/', 1) == std::string::npos &&
-                p.size() > full.size() &&
-                p.compare(p.size() - full.size(), full.size(), full) == 0) {
-                matched = p;
-                break;
+            // it only when EXACTLY ONE configured monitor path ends with
+            // that suffix — with several candidates the event could be
+            // attributed to the wrong monitored file, so it is dropped
+            // instead (the leading '/' in the suffix already guarantees a
+            // component boundary, no extra separator check is needed).
+            int hits = 0;
+            std::string candidate;
+            for (const auto &p : tui_stats->monitor_paths()) {
+                if (full.size() > 1 && full.find('/', 1) == std::string::npos &&
+                    p.size() > full.size() &&
+                    p.compare(p.size() - full.size(), full.size(), full) == 0) {
+                    hits++;
+                    candidate = p;
+                }
+            }
+            if (hits == 1) {
+                matched = candidate;
             }
         }
         // matched events aggregate under their configured monitor path;
