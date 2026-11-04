@@ -111,14 +111,12 @@ static unsigned long long read_boot_ms_since()
     return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
-                                  unsigned long long *last_utime,
-                                  unsigned long long *last_stime,
-                                  double hz, bool have_prev,
-                                  bool *got_sample)
+bool TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
+                             unsigned long long *last_utime,
+                             unsigned long long *last_stime,
+                             double hz, bool have_prev, ProcUsage *out)
 {
     ProcUsage u;
-    *got_sample = false;
     char path[64];
     snprintf(path, sizeof(path), "/proc/%u/stat", pid);
     FILE *f = fopen(path, "r");
@@ -139,27 +137,32 @@ ProcUsage TuiApp::read_proc_usage(unsigned int pid, double total_mem_kb,
     }
     unsigned long long utime = 0, stime = 0;
     long rss_pages = 0;
-    // fields: state(3) ppid(4) ... utime(14) stime(15) ... vsize(23) rss(24)
+    // fields: state(3) ppid(4) ... utime(14) stime(15) ...
+    //         starttime(22) vsize(23) rss(24)
     if (sscanf(p + 2,
-               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu %*d %*d %*d %*d %*d %*d %*u %*u %lu",
+               "%*s %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu "
+               "%*d %*d %*d %*d %*d %*d %*u %*u %lu",
                &utime, &stime, &rss_pages) < 3) {
         return false;
     }
-    // a real sample was captured: only now may last_utime/last_stime be
-    // published, otherwise a zero-initialized object would later be
-    // treated as the previous sample and %CPU would show the cumulative
-    // total instead of the delta
-    *got_sample = true;
+
+    // rss is reported in pages; the page size is 4 KB on x86-64 but 16 or
+    // 64 KB on other kernels, so query it once instead of assuming. Doing
+    // it per process per tick would put a sysconf() call in the hot path
+    // of a sweep that runs over every row.
+    static const double page_kb = [] {
+        long psz = sysconf(_SC_PAGESIZE);
+        return psz > 0 ? (double)psz / 1024.0 : 4.0;
+    }();
 
     if (total_mem_kb > 0) {
-        // /proc/<pid>/stat rss (field 24) is reported in pages of
-        // PAGE_SIZE (same units procps uses), so convert with the
-        // runtime page size instead of assuming 4 KiB
-        long page_kb = sysconf(_SC_PAGESIZE) / 1024;
-        if (page_kb <= 0) {
-            page_kb = 4;
+        u.mem = 100.0 * (double)rss_pages * page_kb / total_mem_kb;
+        if (u.mem < 0) {
+            u.mem = 0;
         }
-        u.mem = 100.0 * ((double)rss_pages * (double)page_kb) / total_mem_kb;
+        if (u.mem > 100) {
+            u.mem = 100;
+        }
     }
     if (have_prev && hz > 0) {
         // clamp each delta at zero before subtracting: utime/stime move
@@ -209,17 +212,23 @@ void TuiApp::sample_proc_usage()
     for (auto &row : proc_rows_) {
         UsageSample s;
         bool have_prev = prev.count(row.pid) && prev[row.pid].have;
-        if (have_prev) {
-            // seed the deltas with the PREVIOUS sample's values: read_proc_usage
-            // computes utime - *last_utime, so passing the zero-initialized
-            // fresh object here would make %CPU the cumulative total
+        unsigned long long utime = have_prev ? prev[row.pid].utime : 0;
+        unsigned long long stime = have_prev ? prev[row.pid].stime : 0;
+        ProcUsage u;
+        bool ok = read_proc_usage(row.pid, total_mem_kb,
+                                  &utime, &stime, hz, have_prev, &u);
+        if (ok) {
+            s.utime = utime;
+            s.stime = stime;
+            s.have = true;
+            usage_[row.pid] = u;
+        } else if (have_prev) {
+            // carry the last good sample forward so the delta baseline
+            // survives transient read failures (e.g. pid vanished mid-tick)
             s.utime = prev[row.pid].utime;
             s.stime = prev[row.pid].stime;
+            s.have = true;
         }
-        ProcUsage u = read_proc_usage(row.pid, total_mem_kb,
-                                      &s.utime, &s.stime, hz,
-                                      have_prev,
-                                      &s.have);
         cur[row.pid] = s;
     }
 
@@ -372,13 +381,26 @@ void TuiApp::run()
     render();
     auto last_sample = std::chrono::steady_clock::now();
 
-        int ch;
-        while ((ch = getch()) != ERR) {
-            if (ch == KEY_MOUSE) {
-                MEVENT ev;
-                if (getmouse(&ev) == OK) {
-                    handle_mouse(MouseEvent{ev.id, ev.x, ev.y, ev.z,
-                                            (unsigned long)ev.bstate});
+    while (running_) {
+        // getch() blocks up to one refresh interval, so a key press or a
+        // click is handled the moment it arrives instead of waiting out a
+        // full sleep'ed tick first.
+        int ch = getch();
+        if (ch != ERR) {
+            // Drain the whole typeahead buffer before drawing: a burst of
+            // keys must be handled immediately, but one full-screen render
+            // per event is wasted work. The drain itself uses a zero
+            // timeout so the batch ends as soon as the buffer is empty.
+            timeout(0);
+            do {
+                if (ch == KEY_MOUSE) {
+                    MEVENT ev;
+                    if (getmouse(&ev) == OK) {
+                        handle_mouse(MouseEvent{ev.id, ev.x, ev.y, ev.z,
+                                                (unsigned long)ev.bstate});
+                    }
+                } else {
+                    handle_key(ch);
                 }
                 if (!running_) {
                     break;
