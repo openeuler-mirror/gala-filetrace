@@ -573,7 +573,6 @@ void TuiApp::render_procs()
         x += 8;
         // command line: h-scroll window for long lines
         std::string cmd = p.cmd;
-        int avail = cmd_w + h_scroll_;   // h_scroll_<0 shifts window left
         std::string view = cmd;
         if (h_scroll_ < 0 && (int)cmd.size() > cmd_w) {
             int start = -h_scroll_;
