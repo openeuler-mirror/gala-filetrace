@@ -377,10 +377,13 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
     }
     // zero-init to avoid uninitialized garbage bytes (which can produce invalid UTF-8)
     memset(pinfo, 0, sizeof(struct pinfo_t));
-    while (true)
+    // A recycled PID in exec_map can form a cycle (a -> b -> a); cap the walk
+    // so a stale entry cannot loop forever or build an unbounded JSON array.
+    const unsigned int max_trace_depth = 32;
+    for (unsigned int depth = 0; depth < max_trace_depth; depth++)
     {
         if (proc_id == 0) {
-            break; 
+            break;
         }
         LOG_INFO("Generating proc trace for PID: " + std::to_string(proc_id));
         int ret = get_procinfo_by_pid_from_map(pinfo, proc_id);
@@ -539,8 +542,10 @@ int  PostData::get_procinfo_by_pid_from_map(struct pinfo_t *pinfo , unsigned int
 {
     int ret = bpf_map_lookup_elem(exec_map_fd, &pid, pinfo);
     if (ret != 0) {
-        LOG_ERROR("Failed to lookup pinfo for PID " + std::to_string(pid) + ", ret:" + std::to_string(ret));
-        return -1; 
+        // Not an error: any process that exec'd before filetrace started is
+        // absent from the map; fall back to /proc below.
+        LOG_DEBUG("No pinfo in map for PID " + std::to_string(pid) + ", ret:" + std::to_string(ret));
+        return -1;
     }
     LOG_INFO("Found pinfo in map for PID " + std::to_string(pid) + ": " 
                  + std::string(pinfo->comm) + ", args: " 
@@ -551,25 +556,35 @@ int  PostData::get_procinfo_by_pid_from_map(struct pinfo_t *pinfo , unsigned int
     return 0;
 }
 
-std::vector<std::string> PostData::split_stat_line(const std::string &line) 
+std::vector<std::string> PostData::split_stat_line(const std::string &line)
 {
     std::vector<std::string> result;
-    size_t start = 0, end = 0;
+    // /proc/<pid>/stat is "pid (comm) state ppid ...". comm is wrapped in
+    // parentheses and may itself contain spaces and parentheses, so locate the
+    // last ')' of the line. An empty or malformed line must yield an empty
+    // result: the process can exit between the open() and the read(), and an
+    // exception here would escape the ring buffer callback.
+    size_t comm_end = line.rfind(')');
+    if (comm_end == std::string::npos) {
+        return result;
+    }
+    size_t comm_start = line.find('(');
+    if (comm_start == std::string::npos || comm_start > comm_end) {
+        return result;
+    }
 
     // first item is pid
-    end = line.find(' ');
-    result.push_back(line.substr(start, end - start));
-    start = end + 1;
+    size_t end = line.find(' ');
+    if (end == std::string::npos || end >= comm_start) {
+        return result;
+    }
+    result.push_back(line.substr(0, end));
 
-    // second item is comm 
-    end = line.find(' ', start);
-    start = line.find('(');
-    end = line.rfind(')');
-    result.push_back(line.substr(start, end - start + 1));
-    start = end + 2;
+    // second item is comm, "(...)" inclusive
+    result.push_back(line.substr(comm_start, comm_end - comm_start + 1));
 
-    // other
-    std::istringstream iss(line.substr(start));
+    // other fields follow the closing parenthesis
+    std::istringstream iss(line.substr(comm_end + 1));
     std::string token;
     while (iss >> token) {
         result.push_back(token);
@@ -594,7 +609,12 @@ int PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned in
         return -1;
     }
     std::string line;
-    std::getline(stat_file, line);
+    // The process can exit between open() and read(): an empty or truncated
+    // line must fail this lookup instead of throwing.
+    if (!std::getline(stat_file, line)) {
+        LOG_DEBUG("Failed to read stat file: " + std::string(proc_path));
+        return -1;
+    }
     stat_file.close();
 
     auto fields = split_stat_line(line);
@@ -603,7 +623,12 @@ int PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned in
         return -1;
     }
     // pid, comm, ppid
-    pinfo->pid = std::stoul(fields[3]);
+    try {
+        pinfo->pid = std::stoul(fields[3]);
+    } catch (const std::exception &ex) {
+        LOG_ERROR("Failed to parse ppid from " + std::string(proc_path) + ": " + ex.what());
+        return -1;
+    }
     strncpy(pinfo->comm, fields[1].c_str(), sizeof(pinfo->comm) - 1);
     pinfo->comm[sizeof(pinfo->comm) - 1] = '\0';
     return 0;
