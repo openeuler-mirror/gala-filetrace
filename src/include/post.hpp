@@ -15,6 +15,10 @@
 #include <linux/version.h>
 #include <mutex>
 #include <queue>
+#include <condition_variable>
+#include <atomic>
+#include <thread>
+#include <chrono>
 
 extern "C" {
 #include <bpf/bpf.h>
@@ -74,7 +78,29 @@ class PostData {
         // Queue for storing events (FIFO) - protected by mutex
         std::queue<json> event_queue;
         std::mutex event_queue_mutex;
-        std::mutex config_mutex; 
+        std::mutex config_mutex;
+        // Publishing is decoupled from the ring buffer consumer through a bounded
+        // FIFO: a slow or unreachable ragdoll endpoint must not stall event
+        // consumption (the ring buffer would overflow and drop events silently).
+        size_t max_publish_queue_size;
+        std::queue<std::string> publish_queue;
+        std::mutex publish_queue_mutex;
+        std::condition_variable publish_cv;
+        std::thread publish_thread;
+        std::atomic<bool> stop_publish_thread{false};
+        // Cleared when the publisher thread cannot create its curl handle, so
+        // send() stops enqueueing instead of filling the queue and spamming
+        // drop warnings for events that can never be delivered.
+        std::atomic<bool> publish_worker_ok{true};
+        // curl_global_init() succeeded; cleanup is paired in the destructor.
+        bool curl_global_inited = false;
+        // Drop bookkeeping: send() runs on the single ring buffer consumer
+        // thread, so these do not need a lock. The log is rate limited so a
+        // sustained overflow cannot flood the log (and the write happens
+        // outside publish_queue_mutex).
+        size_t publish_dropped_count = 0;
+        std::chrono::steady_clock::time_point last_publish_drop_log{};
+        void publish_worker_loop();
         std::vector<std::string> split_stat_line(const std::string &line);
         void start_http_server();
         void handle_update_config_request(const std::string &body, httplib::Response &res);
