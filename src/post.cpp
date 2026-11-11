@@ -49,10 +49,11 @@ static std::string sanitize_utf8(const std::string &s) {
 
 PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verbose, const std::string& monitor_file_path)
     :  config_json(configFile),
-        publish(false),
         verbose(verbose),
         monitor_file_path(monitor_file_path),
-        max_dir_level(4)
+        max_dir_level(4),
+        publish(false),
+        max_publish_queue_size(10000)
 {
     std::cout << "Initializing PostData!" << std::endl;
     if(configFile.empty()) {
@@ -81,10 +82,28 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verb
     if (exec_map_fd < 0) {
         throw std::runtime_error("Failed to get exec_map fd!");
     }
+    // libcurl must be initialized before any thread is created, and
+    // exporter_start() already spawns the gauge timeout thread.
+    if (publish) {
+        CURLcode init_res = curl_global_init(CURL_GLOBAL_DEFAULT);
+        if (init_res != CURLE_OK) {
+            LOG_ERROR("curl_global_init() failed: " +
+                      std::string(curl_easy_strerror(init_res)) +
+                      ", event publishing is disabled");
+            publish_worker_ok = false;
+        } else {
+            curl_global_inited = true;
+        }
+    }
+
     exporter_start();
     if(publish) {
         std::thread server_thread(&PostData::start_http_server, this);
         server_thread.detach(); // Detach the thread to run the HTTP server in the background
+
+        if (publish_worker_ok.load()) {
+            publish_thread = std::thread(&PostData::publish_worker_loop, this);
+        }
     }
     LOG_INFO("PostData initialized successfully!");
 }
@@ -92,21 +111,45 @@ PostData::PostData(filetrace_bpf *skel, const std::string& configFile, bool verb
 // Default constructor for unit testing (does not touch eBPF or config files)
 PostData::PostData()
     : config_json(std::string()),
-      publish(false),
       verbose(false),
       monitor_file_path(std::string()),
       max_dir_level(4),
       exporter_ptr(nullptr),
+      publish(false),
       exec_map_fd(-1),
-      log_size(0),
-      skel(nullptr)
+      max_publish_queue_size(10000),
+      skel(nullptr),
+      log_size(0)
 {
     // Intentionally empty: test code can set fields directly.
 }
 
-PostData::~PostData() 
+PostData::~PostData()
 {
     LOG_INFO("PostData destroyed");
+    // Stop the publisher thread first so it cannot touch a half-destroyed
+    // object; pending events are dropped on shutdown.
+    if (publish_thread.joinable()) {
+        // Change the state the worker waits on while holding the same mutex it
+        // uses to evaluate the predicate: setting it outside the lock can lose
+        // the wakeup (and then join() would block forever).
+        {
+            std::lock_guard<std::mutex> lk(publish_queue_mutex);
+            stop_publish_thread = true;
+        }
+        publish_cv.notify_all();
+        publish_thread.join();
+        if (!publish_queue.empty()) {
+            LOG_WARN("Dropping " + std::to_string(publish_queue.size()) +
+                     " unpublished events on shutdown (" +
+                     std::to_string(publish_dropped_count) +
+                     " dropped while running)");
+        }
+    }
+    if (curl_global_inited) {
+        curl_global_cleanup();
+        curl_global_inited = false;
+    }
     this->skel = nullptr;
     this->exec_map_fd = -1;
     delete this->exporter_ptr;
@@ -208,6 +251,21 @@ int PostData::load_config(const std::string& configFile)
             LOG_WARN("max_event_queue_size must be positive, using default 1000");
             max_event_queue_size = 1000;
         }
+        // bound for the publisher queue (oldest event is dropped on overflow).
+        // Read it as a floating point value so a number above INT_MAX is
+        // clamped instead of throwing json::out_of_range and failing startup.
+        double publish_queue_limit = config_json_obj.value("max_publish_queue_size", 10000.0);
+        if (!(publish_queue_limit >= 1.0)) {
+            LOG_WARN("max_publish_queue_size must be positive, using default 10000");
+            publish_queue_limit = 10000.0;
+        }
+        const double max_publish_queue_cap = 100000.0;
+        if (publish_queue_limit > max_publish_queue_cap) {
+            LOG_WARN("max_publish_queue_size exceeds the maximum, clamping to " +
+                     std::to_string(static_cast<long long>(max_publish_queue_cap)));
+            publish_queue_limit = max_publish_queue_cap;
+        }
+        max_publish_queue_size = static_cast<size_t>(publish_queue_limit);
         LOG_INFO("Configuration loaded from " + configFile);
         LOG_INFO("ragdoll_api: " + ragdoll_api);
         LOG_INFO("skip_processes: ");
@@ -264,42 +322,134 @@ int PostData::send(struct event e)
     std::string data = convert_to_string(e);
     if (data.empty()) {
         LOG_ERROR("Failed to convert event to JSON string.");
-        return 1; 
+        return 1;
     }
     if(publish == false) {
         LOG_INFO("Publishing is disabled, skip it.");
         LOG_INFO("Data: " + data);
-        return 0; 
+        return 0;
     }
-    LOG_INFO("Sending data to Aops: " + data);
-    long http_code = 0;
-    CURL *curl;
-    CURLcode res;
-    struct curl_slist *headers = NULL;
-    std::string readBuffer; 
-    std::string content_type = "Content-Type: application/json"; 
-    curl = curl_easy_init(); 
+    if (!publish_worker_ok.load()) {
+        // The publisher could not start (curl init failed); enqueueing would
+        // only fill the queue and log a drop warning for every event.
+        LOG_DEBUG("Publisher is unavailable, skipping event.");
+        return 0;
+    }
+    // Hand the payload to the publisher thread instead of POSTing here: this
+    // function runs in the ring buffer callback, and a slow ragdoll endpoint
+    // would stall event consumption until the ring buffer overflows.
+    bool dropped = false;
+    {
+        std::lock_guard<std::mutex> lk(publish_queue_mutex);
+        if (!publish_queue.empty() && publish_queue.size() >= max_publish_queue_size) {
+            publish_queue.pop();
+            dropped = true;
+        }
+        publish_queue.push(std::move(data));
+    }
+    if (dropped) {
+        // Logging is done outside the queue lock and rate limited: this path
+        // is reached once per event while the consumer is ahead of ragdoll.
+        ++publish_dropped_count;
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_publish_drop_log >= std::chrono::seconds(5)) {
+            last_publish_drop_log = now;
+            LOG_WARN("Publish queue full, dropped oldest event (total dropped: " +
+                     std::to_string(publish_dropped_count) + ")");
+        }
+    }
+    publish_cv.notify_one();
+    return 0;
+}
+
+// Single dedicated curl connection so publishing does not pay the handle
+// setup (and TLS handshake, once ragdoll moves to https) per event.
+void PostData::publish_worker_loop()
+{
+    CURL *curl = curl_easy_init();
     if (!curl) {
-        LOG_ERROR("Failed to initialize CURL.");
-        return 1; 
+        LOG_ERROR("Failed to initialize CURL, event publishing is disabled.");
+        publish_worker_ok = false;
+        return;
     }
-    headers = curl_slist_append(headers, content_type.c_str());
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    if (!headers) {
+        LOG_ERROR("Failed to allocate curl headers, event publishing is disabled.");
+        curl_easy_cleanup(curl);
+        publish_worker_ok = false;
+        return;
+    }
     curl_easy_setopt(curl, CURLOPT_URL, ragdoll_api.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    // Never block the consumer indefinitely: bound both the connection and
+    // the total transfer, and keep libcurl from using signals in a thread.
+    // The total timeout is also the upper bound on how long shutdown can wait
+    // for a request that was already in flight, so keep it short.
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
-    //curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, data.length());
-    res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        LOG_ERROR("curl_easy_perform() failed: " + std::string(curl_easy_strerror(res)));
-    } else {
+    auto post = [&](const std::string &data) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(data.size()));
+        CURLcode res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            LOG_ERROR("curl_easy_perform() failed: " + std::string(curl_easy_strerror(res)));
+            return;
+        }
+        long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        LOG_INFO("HTTP POST successful, HTTP Status Code: " + std::to_string(http_code));
-        //Logger::info("Response: " + readBuffer);
+        if (http_code < 200 || http_code >= 300) {
+            LOG_ERROR("Publish rejected with HTTP status: " + std::to_string(http_code));
+        } else {
+            LOG_INFO("Published event, HTTP status: " + std::to_string(http_code));
+        }
+    };
+
+    LOG_INFO("Publishing events to " + ragdoll_api);
+    while (true) {
+        std::string data;
+        bool stopping = false;
+        {
+            std::unique_lock<std::mutex> lk(publish_queue_mutex);
+            publish_cv.wait(lk, [this] {
+                return stop_publish_thread.load() || !publish_queue.empty();
+            });
+            if (stop_publish_thread.load()) {
+                stopping = true;
+            } else {
+                data = std::move(publish_queue.front());
+                publish_queue.pop();
+            }
+        }
+
+        if (stopping) {
+            // Bounded flush: give a reachable endpoint a chance to receive
+            // what is still queued, but do not let an unreachable one delay
+            // shutdown indefinitely. The shorter timeout bounds each attempt
+            // and the deadline bounds the whole drain.
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 500L);
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+            while (std::chrono::steady_clock::now() < deadline) {
+                std::string pending;
+                {
+                    std::lock_guard<std::mutex> flush_lk(publish_queue_mutex);
+                    if (publish_queue.empty()) {
+                        break;
+                    }
+                    pending = std::move(publish_queue.front());
+                    publish_queue.pop();
+                }
+                post(pending);
+            }
+            break;
+        }
+
+        post(data);
     }
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    return 0; 
 }
 
 void PostData::print_event(const struct event *event) 
