@@ -249,9 +249,12 @@ static void test_demo_feed_should_generate_events_while_running()
     // Look the path up instead of asserting the table holds exactly one
     // entry: the count would break the moment the demo fixture gains a second
     // path, which says nothing about whether the configured one was summed.
+    // Existence, not an exact count: if the demo fixture ever splits one path
+    // into several aggregates the test would fail while the tested behaviour
+    // (this path's ops are counted) is still fine.
     auto hosts = devices_for(snap, "/etc/hosts");
-    CHECK(hosts.size() == 1);
-    if (hosts.size() == 1) {
+    CHECK(!hosts.empty());
+    if (!hosts.empty()) {
         CHECK(hosts[0].ops > 0);
     }
     std::cout << "test_demo_feed_should_generate_events_while_running passed" << std::endl;
