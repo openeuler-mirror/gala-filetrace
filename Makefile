@@ -60,7 +60,7 @@ all: filetrace filetrace-tui
 clean:
 	@echo "Cleaning up ..."
 	@rm -rf $(OUTPUT_DIR) filetrace filetrace-tui filetrace.o filetrace.skel.h vmlinux.h
-	@rm -f tests/test_postdata tests/test_logger tests/test_exporter tests/test_stats tests/test_tui
+	@rm -f tests/test_postdata tests/test_logger tests/test_exporter tests/test_stats tests/test_tui tests/test_tui_main
  
 vmlinux.h:
 	@echo "Generating kernel type header ..."
@@ -189,3 +189,7 @@ test: all
 	@echo "Building and running TuiApp unit tests"
 	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_tui tests/test_tui.cpp $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(LDFLAGS) $(TUILDFLAGS)
 	@./tests/test_tui
+
+	@echo "Building and running filetrace-tui entry unit tests"
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_tui_main tests/test_tui_main.cpp $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(OUTPUT_DIR)/logger.o $(LDFLAGS) $(TUILDFLAGS)
+	@./tests/test_tui_main
