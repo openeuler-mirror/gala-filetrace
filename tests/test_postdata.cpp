@@ -494,6 +494,125 @@ int main()
         assert(j2["ptrace"][0]["pid"] == static_cast<int>(my_pid));
     }
 
+    // sanitize_utf8 comprehensive unit tests
+    {
+        const std::string REPL = "\xEF\xBF\xBD"; // U+FFFD Unicode replacement character
+
+        // 1. Empty string
+        assert(PostData::sanitize_utf8("") == "");
+
+        // 2. Pure ASCII strings
+        assert(PostData::sanitize_utf8("hello world") == "hello world");
+        assert(PostData::sanitize_utf8("/proc/12345/cmdline: python3 test.py --arg=val") ==
+               "/proc/12345/cmdline: python3 test.py --arg=val");
+        assert(PostData::sanitize_utf8("line1\nline2\tline3\r\n") == "line1\nline2\tline3\r\n");
+        // ASCII boundary values (\x00 to \x7F)
+        std::string ascii_boundary;
+        ascii_boundary.push_back('\x00');
+        ascii_boundary.push_back('\x01');
+        ascii_boundary.push_back('\x20');
+        ascii_boundary.push_back('\x7E');
+        ascii_boundary.push_back('\x7F');
+        assert(PostData::sanitize_utf8(ascii_boundary) == ascii_boundary);
+
+        // 3. Valid multi-byte UTF-8 sequences (2, 3, and 4 bytes)
+        // 2-byte UTF-8: Latin characters, Greek alphabet, etc.
+        assert(PostData::sanitize_utf8("Café") == "Café");
+        assert(PostData::sanitize_utf8("αβγδ") == "αβγδ");
+        assert(PostData::sanitize_utf8("\xC2\x80\xDF\xBF") == "\xC2\x80\xDF\xBF");
+
+        // 3-byte UTF-8: Chinese characters (汉字), Japanese, symbols
+        assert(PostData::sanitize_utf8("中文字符测试") == "中文字符测试");
+        assert(PostData::sanitize_utf8("こんにちは") == "こんにちは");
+        assert(PostData::sanitize_utf8("★☆♠♣") == "★☆♠♣");
+        assert(PostData::sanitize_utf8("\xE0\xA0\x80\xEF\xBF\xBF") == "\xE0\xA0\x80\xEF\xBF\xBF");
+
+        // 4-byte UTF-8: Emoji and supplementary plane characters
+        assert(PostData::sanitize_utf8("😀🚀🎉💡") == "😀🚀🎉💡");
+        assert(PostData::sanitize_utf8("Hello 🌍! Status: ✔️") == "Hello 🌍! Status: ✔️");
+
+        // 4. Invalid leading bytes
+        // Single 0xFF
+        assert(PostData::sanitize_utf8("\xFF") == REPL);
+        // Single 0xFE
+        assert(PostData::sanitize_utf8("\xFE") == REPL);
+        // Disallowed prefix 0xF8..0xFD
+        assert(PostData::sanitize_utf8("\xF8") == REPL);
+        assert(PostData::sanitize_utf8("\xFC") == REPL);
+        // Lone continuation bytes (0x80..0xBF)
+        assert(PostData::sanitize_utf8("\x80") == REPL);
+        assert(PostData::sanitize_utf8("\xBF") == REPL);
+        assert(PostData::sanitize_utf8("\x9A") == REPL);
+        // Invalid leading byte embedded in ASCII
+        assert(PostData::sanitize_utf8("abc\xFF" "def") == "abc" + REPL + "def");
+        assert(PostData::sanitize_utf8("stat:\xFE" "cmd") == "stat:" + REPL + "cmd");
+
+        // 5. Truncated incomplete sequences
+        // 2-byte sequence truncated (only leading byte 0xC2..0xDF at end of string)
+        assert(PostData::sanitize_utf8("\xC3") == REPL);
+        assert(PostData::sanitize_utf8("cmd_\xC3") == "cmd_" + REPL);
+        // 2-byte sequence followed by non-continuation ASCII
+        assert(PostData::sanitize_utf8("\xC3" "a") == REPL + "a");
+
+        // 3-byte sequence truncated:
+        // Leading byte only at end of string
+        assert(PostData::sanitize_utf8("\xE4") == REPL);
+        assert(PostData::sanitize_utf8("prefix_\xE4") == "prefix_" + REPL);
+        assert(PostData::sanitize_utf8("\xE4" "a") == REPL + "a");
+        // 3-byte sequence with only 2 bytes at end of string (missing 3rd byte)
+        // E.g., '中' is \xE4\xB8\xAD, truncated to \xE4\xB8
+        assert(PostData::sanitize_utf8("\xE4\xB8") == REPL + REPL);
+        assert(PostData::sanitize_utf8("cmd_\xE4\xB8") == "cmd_" + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xE4\xB8" "x") == REPL + REPL + "x");
+        // 3-byte sequence followed by invalid byte
+        assert(PostData::sanitize_utf8("\xE4\xB8\xFF") == REPL + REPL + REPL);
+
+        // 4-byte sequence truncated (e.g. emoji truncated at 1, 2, or 3 bytes):
+        // E.g., 😀 is \xF0\x9F\x98\x80
+        assert(PostData::sanitize_utf8("\xF0") == REPL);
+        assert(PostData::sanitize_utf8("\xF0\x9F") == REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF0\x9F\x98") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("emoji_\xF0\x9F\x98") == "emoji_" + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF0\x9F\x98" "Z") == REPL + REPL + REPL + "Z");
+
+        // 6. Consecutive invalid bytes replaced with \xEF\xBF\xBD
+        assert(PostData::sanitize_utf8("\xFF\xFF") == REPL + REPL);
+        assert(PostData::sanitize_utf8("\xFF\xFF\xFF") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\x80\x81\x82") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xFF\xFE\x80\xBF") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("start\xFF\xFF" "middle\x80\x81" "end") ==
+               "start" + REPL + REPL + "middle" + REPL + REPL + "end");
+
+        // 7. Simulated /proc/<pid>/stat and cmdline reading scenarios
+        // Scenario A: cmdline with null-separated arguments, truncated UTF-8, and invalid bytes
+        std::string mock_cmdline;
+        mock_cmdline.append("python3\0", 8);
+        mock_cmdline.append("/opt/app/运行.py\0", strlen("/opt/app/运行.py") + 1);
+        mock_cmdline.append("--data=\xFF\xFE\0", 10);
+        mock_cmdline.append("arg2", 4);
+
+        std::string expected_cmdline;
+        expected_cmdline.append("python3\0", 8);
+        expected_cmdline.append("/opt/app/运行.py\0", strlen("/opt/app/运行.py") + 1);
+        expected_cmdline.append("--data=");
+        expected_cmdline.append(REPL);
+        expected_cmdline.append(REPL);
+        expected_cmdline.append("\0arg2", 5);
+
+        assert(PostData::sanitize_utf8(mock_cmdline) == expected_cmdline);
+
+        // Scenario B: buffer truncation on reading /proc/<pid>/cmdline or path
+        // Buffer cut off in the middle of a 3-byte Chinese character (e.g. "服务\xE6\x9C")
+        std::string truncated_cmd = "/usr/bin/服务\xE6\x9C";
+        assert(PostData::sanitize_utf8(truncated_cmd) == "/usr/bin/服务" + REPL + REPL);
+
+        // Scenario C: /proc/<pid>/stat line with corrupted process comm name
+        std::string stat_line = "1234 (proc_\xFF\xFE_test) S 1 1234 0 0";
+        assert(PostData::sanitize_utf8(stat_line) == "1234 (proc_" + REPL + REPL + "_test) S 1 1234 0 0");
+
+        std::cout << "  PASS: sanitize_utf8 comprehensive tests" << std::endl;
+    }
+
     // filetrace.cpp handle_event() tests (see test_filetrace.cpp)
     run_filetrace_handle_event_tests();
 
