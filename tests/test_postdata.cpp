@@ -123,6 +123,110 @@ int main()
     json reported = json::parse(p.convert_to_string(cfr));
     assert(reported["file"].get<std::string>() == "/etc/hosts");
 
+    // =========================================================================
+    // SYS_rename, SYS_renameat, SYS_renameat2 tests:
+    // 1. is_valid_event matches directly against e.filename (destination path),
+    //    unlike SYS_write / SYS_copy_file_range / SYS_unlinkat which match
+    //    against get_full_path(&e).
+    // 2. Legal monitored path matching.
+    // 3. Illegal event filtering:
+    //    - unmonitored destination path rejected (even if oldfilename matches)
+    //    - bare basename rejected when conf_list has absolute path (no get_full_path fallback)
+    //    - invalid filename (empty or starting with '.') rejected
+    //    - invalid pid (0) rejected
+    //    - process in skip_processes rejected
+    // 4. convert_to_string reporting: JSON field "file" must equal e.filename
+    //    (destination), "flag" matches the syscall flag, and "syscall" matches nr_map.
+    // =========================================================================
+    {
+        const int rename_flags[] = {SYS_rename, SYS_renameat, SYS_renameat2};
+        p.conf_list = {"/etc/hosts", "/data/app.conf"};
+        p.skip_processes.clear();
+
+        for (int rf : rename_flags) {
+            struct event ren{};
+            ren.pid = 100;
+            ren.uid = 0;
+            ren.gid = 0;
+            ren.i_ino = 1001;
+            ren.flag = rf;
+            strncpy(ren.cmd, "mv", sizeof(ren.cmd) - 1);
+            strncpy(ren.filename, "/etc/hosts", sizeof(ren.filename) - 1);
+            strncpy(ren.oldfilename, "/tmp/hosts.tmp", sizeof(ren.oldfilename) - 1);
+            // Non-empty dir fields must not alter matching: rename* uses e.filename directly
+            strncpy(ren.dir1, "var", sizeof(ren.dir1) - 1);
+            strncpy(ren.dir2, "log", sizeof(ren.dir2) - 1);
+
+            // 1. Legal monitored path matching
+            assert(p.is_valid_event(ren) == true);
+
+            // Another legal path in conf_list
+            strncpy(ren.filename, "/data/app.conf", sizeof(ren.filename) - 1);
+            assert(p.is_valid_event(ren) == true);
+
+            // 2. Illegal filtering: unmonitored destination path
+            strncpy(ren.filename, "/etc/shadow", sizeof(ren.filename) - 1);
+            assert(p.is_valid_event(ren) == false);
+
+            // Illegal filtering: oldfilename is monitored, but destination is unmonitored -> rejected
+            strncpy(ren.oldfilename, "/etc/hosts", sizeof(ren.oldfilename) - 1);
+            strncpy(ren.filename, "/tmp/hosts.bak", sizeof(ren.filename) - 1);
+            assert(p.is_valid_event(ren) == false);
+
+            // Illegal filtering: bare basename "hosts" with dir1="etc" must NOT match "/etc/hosts"
+            // (rename does not invoke get_full_path in is_valid_event)
+            strncpy(ren.filename, "hosts", sizeof(ren.filename) - 1);
+            strncpy(ren.dir1, "etc", sizeof(ren.dir1) - 1);
+            assert(p.is_valid_event(ren) == false);
+
+            // Illegal filtering: empty filename
+            memset(ren.filename, 0, sizeof(ren.filename));
+            assert(p.is_valid_event(ren) == false);
+
+            // Illegal filtering: starts with '.'
+            strncpy(ren.filename, ".hosts", sizeof(ren.filename) - 1);
+            assert(p.is_valid_event(ren) == false);
+            strncpy(ren.filename, "./etc/hosts", sizeof(ren.filename) - 1);
+            assert(p.is_valid_event(ren) == false);
+
+            // Illegal filtering: invalid PID
+            strncpy(ren.filename, "/etc/hosts", sizeof(ren.filename) - 1);
+            ren.pid = 0;
+            assert(p.is_valid_event(ren) == false);
+            ren.pid = 100;
+
+            // Illegal filtering: process in skip_processes
+            p.skip_processes = {"mv"};
+            assert(p.is_valid_event(ren) == false);
+            p.skip_processes.clear();
+            assert(p.is_valid_event(ren) == true);
+
+            // 3. Reporting JSON fields correctness via convert_to_string
+            // Reset fields for JSON serialization test
+            strncpy(ren.filename, "/etc/hosts", sizeof(ren.filename) - 1);
+            strncpy(ren.oldfilename, "/tmp/hosts.tmp", sizeof(ren.oldfilename) - 1);
+            strncpy(ren.dir1, "dir_a", sizeof(ren.dir1) - 1);
+            strncpy(ren.dir2, "dir_b", sizeof(ren.dir2) - 1);
+
+            json ren_json = json::parse(p.convert_to_string(ren));
+            // "file" must be the target filename e.filename, NOT get_full_path(&e)
+            assert(ren_json["file"].get<std::string>() == "/etc/hosts");
+            assert(ren_json["file"].get<std::string>() == ren.filename);
+            assert(ren_json["flag"].get<int>() == rf);
+            assert(ren_json["syscall"].get<std::string>() == nr_map[rf]);
+            assert(ren_json["cmd"].get<std::string>() == "mv");
+            assert(ren_json["pid"].get<int>() == 100);
+            assert(ren_json["inode"].get<unsigned long>() == 1001);
+
+            // Contrast with SYS_write: write reports get_full_path(&e)
+            struct event wr = ren;
+            wr.flag = SYS_write;
+            json wr_json = json::parse(p.convert_to_string(wr));
+            assert(wr_json["file"].get<std::string>() == "/dir_b/dir_a//etc/hosts");
+            assert(wr_json["file"].get<std::string>() != ren_json["file"].get<std::string>());
+        }
+    }
+
     // Rejected events must not write a log entry: the logger's write is also
     // observed by the BPF program and would otherwise feed events back into
     // this path indefinitely.
@@ -165,6 +269,16 @@ int main()
             strncpy(unrelated.filename, "shadow", sizeof(unrelated.filename) - 1);
             assert(dispatch.process_event(unrelated) == 0);
 
+            // SYS_rename* targeting an unmonitored path must also be rejected
+            for (int rf : {SYS_rename, SYS_renameat, SYS_renameat2}) {
+                struct event ren_unrelated{};
+                ren_unrelated.pid = 1;
+                ren_unrelated.flag = rf;
+                strncpy(ren_unrelated.cmd, "renamer", sizeof(ren_unrelated.cmd) - 1);
+                strncpy(ren_unrelated.filename, "/etc/shadow", sizeof(ren_unrelated.filename) - 1);
+                assert(dispatch.process_event(ren_unrelated) == 0);
+            }
+
             dispatch.skip_processes = {"writer"};
             assert(dispatch.process_event(accepted) == 0);
             dispatch.skip_processes.clear();
@@ -195,6 +309,20 @@ int main()
         auto cached = dispatch.get_events_from_queue(10);
         assert(cached.size() == 1);
         assert(cached[0]["filename"] == "hosts");
+
+        // Normal mode also caches accepted SYS_rename* events
+        for (int rf : {SYS_rename, SYS_renameat, SYS_renameat2}) {
+            struct event ren_accepted{};
+            ren_accepted.pid = 2;
+            ren_accepted.flag = rf;
+            strncpy(ren_accepted.cmd, "renamer", sizeof(ren_accepted.cmd) - 1);
+            strncpy(ren_accepted.filename, "/etc/hosts", sizeof(ren_accepted.filename) - 1);
+            assert(dispatch.process_event(ren_accepted) == 0);
+            auto cached_ren = dispatch.get_events_from_queue(10);
+            assert(cached_ren.size() == 1);
+            assert(cached_ren[0]["filename"] == "/etc/hosts");
+            assert(cached_ren[0]["pid"] == 2);
+        }
 
         dispatch.cache_data = false;
         assert(dispatch.process_event(accepted) == 0);

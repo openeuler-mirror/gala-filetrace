@@ -253,6 +253,20 @@ static void test_set_metrics_file_access_counter()
     std::cout << "  PASS: set_metrics increments file_access_counter" << std::endl;
 }
 
+// ---- Test: set_metrics for rename events (SYS_rename, SYS_renameat, SYS_renameat2) ----
+static void test_set_metrics_rename()
+{
+    PrometheusExporter exp("127.0.0.1:19104", 30);
+    const int rename_flags[] = {SYS_rename, SYS_renameat, SYS_renameat2};
+    for (int rf : rename_flags) {
+        // e.filename should be used directly without get_full_path alteration
+        struct event e = make_event(400, 1, "mv", "/etc/hosts", "dir_a", "dir_b", "", "",
+                                    rf, 0, 0, 8000);
+        exp.set_metrics(e);
+    }
+    std::cout << "  PASS: set_metrics for SYS_rename* events" << std::endl;
+}
+
 int main()
 {
     std::cout << "Running PrometheusExporter unit tests..." << std::endl;
@@ -269,6 +283,7 @@ int main()
     test_get_full_path_slash_dir();
     test_set_metrics_write();
     test_set_metrics_openat();
+    test_set_metrics_rename();
     test_cache_timeout_thread();
     test_destructor_stops_thread();
     test_set_metrics_file_access_counter();

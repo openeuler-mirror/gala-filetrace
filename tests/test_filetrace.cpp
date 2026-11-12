@@ -94,6 +94,17 @@ static int run_filetrace_handle_event_tests()
         assert(arr[0]["pid"] == 100);
     }
 
+    // non-verbose valid SYS_renameat2: matches directly on e.filename and cached
+    struct event ren = make_event(300, "mv", "/etc/hosts", nullptr, SYS_renameat2, 0, 0);
+    assert(handle_event(nullptr, &ren, sizeof(struct event)) == 0);
+    {
+        auto arr = post.get_events_from_queue(10);
+        assert(arr.is_array());
+        assert(arr.size() == 1);
+        assert(arr[0]["pid"] == 300);
+        assert(arr[0]["filename"] == "/etc/hosts");
+    }
+
     postdata_i = saved;
     std::cout << "All filetrace handle_event unit tests passed." << std::endl;
     return 0;
