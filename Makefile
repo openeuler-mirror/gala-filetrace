@@ -171,7 +171,7 @@ rpm:
 .PHONY: test
 test: all
 	@echo "Building and running PostData unit tests"
-	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_postdata tests/test_postdata.cpp $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(LDFLAGS)
+	@$(CLANGXX) $(CFLAGS) $(CFLAGSPLUS) $(CINCLUDE) -o tests/test_postdata tests/test_postdata.cpp $(OUTPUT_DIR)/post.o $(OUTPUT_DIR)/exporter.o $(OUTPUT_DIR)/logger.o $(OUTPUT_DIR)/tui.o $(OUTPUT_DIR)/stats.o $(LDFLAGS) $(TUILDFLAGS)
 	@./tests/test_postdata
 
 	@echo "Building and running Logger unit tests"

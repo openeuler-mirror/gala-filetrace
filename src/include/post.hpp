@@ -37,6 +37,7 @@ class PostData {
         PostData();
         PostData(filetrace_bpf *skel, const std::string& configFile, bool verbose = false, const std::string& monitorFilePath = "");
         ~PostData();
+        static std::string sanitize_utf8(const std::string &s);
         //config items
         std::string ragdoll_api;
         std::string config_json;

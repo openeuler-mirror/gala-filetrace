@@ -4,7 +4,7 @@
 
 
 // Replace invalid UTF-8 sequences with the Unicode replacement character (U+FFFD)
-static std::string sanitize_utf8(const std::string &s) {
+std::string PostData::sanitize_utf8(const std::string &s) {
     std::string out;
     out.reserve(s.size());
     const unsigned char *data = reinterpret_cast<const unsigned char*>(s.data());
