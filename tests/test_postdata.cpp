@@ -534,6 +534,133 @@ int main()
         unlink(no_api.c_str());
     }
 
+    // Parameterized constructor exception paths (src/post.cpp):
+    // 1. configFile is empty -> throws std::runtime_error("Configuration file path is empty!")
+    // 2. configFile does not exist -> throws std::runtime_error("Configuration file does not exist or is not accessible: ...")
+    // 3. load_config fails (malformed JSON or invalid config fields) -> throws std::runtime_error("Configuration load failed")
+    // 4. skel == nullptr -> throws std::runtime_error("eBPF skeleton is null!")
+    // 5. skel->maps.exec_map yields invalid fd (< 0) -> throws std::runtime_error("Failed to get exec_map fd!")
+    {
+        // 1. Empty configFile
+        {
+            bool threw = false;
+            std::string err_msg;
+            try {
+                PostData bad_ctor(nullptr, "");
+            } catch (const std::runtime_error &ex) {
+                threw = true;
+                err_msg = ex.what();
+            }
+            assert(threw);
+            assert(err_msg == "Configuration file path is empty!");
+        }
+
+        // 2. Non-existent configFile
+        const std::string missing_cfg = "/tmp/gala_test_ctor_missing.json";
+        unlink(missing_cfg.c_str());
+        {
+            bool threw = false;
+            std::string err_msg;
+            try {
+                PostData bad_ctor(nullptr, missing_cfg);
+            } catch (const std::runtime_error &ex) {
+                threw = true;
+                err_msg = ex.what();
+            }
+            assert(threw);
+            assert(err_msg.find("Configuration file does not exist or is not accessible:") != std::string::npos);
+        }
+
+        // 3a. load_config failure due to malformed JSON
+        const std::string bad_json_cfg = "/tmp/gala_test_ctor_badjson.json";
+        {
+            std::ofstream out(bad_json_cfg);
+            out << "not a valid json {";
+        }
+        {
+            bool threw = false;
+            std::string err_msg;
+            try {
+                PostData bad_ctor(nullptr, bad_json_cfg);
+            } catch (const std::runtime_error &ex) {
+                threw = true;
+                err_msg = ex.what();
+            }
+            assert(threw);
+            assert(err_msg == "Configuration load failed");
+        }
+
+        // 3b. load_config failure due to invalid config content (empty config_list)
+        const std::string invalid_cfg = "/tmp/gala_test_ctor_invalidcfg.json";
+        {
+            std::ofstream out(invalid_cfg);
+            out << R"({"host_id":"h1","domain_name":"d1","ragdoll_api":"http://127.0.0.1:1/api","config_list":[]})";
+        }
+        {
+            bool threw = false;
+            std::string err_msg;
+            try {
+                PostData bad_ctor(nullptr, invalid_cfg);
+            } catch (const std::runtime_error &ex) {
+                threw = true;
+                err_msg = ex.what();
+            }
+            assert(threw);
+            assert(err_msg == "Configuration load failed");
+        }
+
+        // 4. Valid configFile but skel == nullptr
+        const std::string valid_cfg = "/tmp/gala_test_ctor_valid.json";
+        const std::string ctor_log = "/tmp/gala_test_ctor.log";
+        unlink(ctor_log.c_str());
+        {
+            std::ofstream out(valid_cfg);
+            out << R"({
+  "host_id": "h1",
+  "domain_name": "d1",
+  "ragdoll_api": "http://127.0.0.1:1/api",
+  "config_list": ["/etc/hosts"],
+  "skip_processes_list": ["bash"],
+  "log_level": "info",
+  "log_file": "/tmp/gala_test_ctor.log",
+  "server": "127.0.0.1"
+})";
+        }
+        {
+            bool threw = false;
+            std::string err_msg;
+            try {
+                PostData bad_ctor(nullptr, valid_cfg, true, "/etc/hosts");
+            } catch (const std::runtime_error &ex) {
+                threw = true;
+                err_msg = ex.what();
+            }
+            assert(threw);
+            assert(err_msg == "eBPF skeleton is null!");
+        }
+
+        // 5. Non-null skel with null exec_map (bpf_map__fd returns -EINVAL < 0)
+        {
+            struct filetrace_bpf dummy_skel{};
+            bool threw = false;
+            std::string err_msg;
+            try {
+                PostData bad_ctor(&dummy_skel, valid_cfg);
+            } catch (const std::runtime_error &ex) {
+                threw = true;
+                err_msg = ex.what();
+            }
+            assert(threw);
+            assert(err_msg == "Failed to get exec_map fd!");
+        }
+
+        unlink(bad_json_cfg.c_str());
+        unlink(invalid_cfg.c_str());
+        unlink(valid_cfg.c_str());
+        unlink(ctor_log.c_str());
+        std::cout << "  PASS: PostData parameterized constructor exception paths" << std::endl;
+    }
+
     // cache_event: disabled, and FIFO eviction beyond max_event_queue_size
     {
         PostData pc;
