@@ -2,6 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unistd.h>
 #include <nlohmann/json.hpp>
@@ -739,6 +740,64 @@ int main()
         assert(PostData::sanitize_utf8(stat_line) == "1234 (proc_" + REPL + REPL + "_test) S 1 1234 0 0");
 
         std::cout << "  PASS: sanitize_utf8 comprehensive tests" << std::endl;
+    }
+
+    // exporter_start: throws when exporter_address is empty; initializes
+    // exporter_ptr and file_access_counter when given a valid address
+    {
+        // Empty exporter_address must throw std::runtime_error and leave exporter_ptr null
+        {
+            PostData pe_empty;
+            pe_empty.cache_timeout_seconds = 30;
+            pe_empty.exporter_address.clear();
+
+            bool threw = false;
+            try {
+                pe_empty.exporter_start();
+            } catch (const std::runtime_error &ex) {
+                threw = true;
+                assert(std::string(ex.what()) == "Exporter address is empty!");
+            }
+            assert(threw);
+            assert(pe_empty.exporter_ptr == nullptr);
+        }
+
+        // Valid exporter_address initializes exporter_ptr, registry, and file_access_counter
+        {
+            PostData pe_ok;
+            pe_ok.exporter_address = "127.0.0.1:0";
+            pe_ok.cache_timeout_seconds = 30;
+            assert(pe_ok.exporter_start() == true);
+            assert(pe_ok.exporter_ptr != nullptr);
+            assert(pe_ok.exporter_ptr->registry != nullptr);
+            assert(pe_ok.exporter_ptr->cache_timeout_seconds == 30);
+            assert(pe_ok.exporter_ptr->file_access_counter != nullptr);
+            assert(pe_ok.exporter_ptr->file_access_counter->Value() == 0.0);
+
+            bool found_counter_family = false;
+            for (const auto &family : pe_ok.exporter_ptr->registry->Collect()) {
+                if (family.name == "file_access_total") {
+                    found_counter_family = true;
+                    assert(family.help == "File access events");
+                    assert(family.metric.size() == 1);
+                    assert(family.metric[0].counter.value == 0.0);
+                }
+            }
+            assert(found_counter_family);
+
+            // Verify file_access_counter is wired up and incremented by process_event()
+            pe_ok.conf_list = {"/etc/hosts"};
+            struct event ev{};
+            ev.pid = 101;
+            ev.flag = SYS_write;
+            strncpy(ev.cmd, "writer", sizeof(ev.cmd) - 1);
+            strncpy(ev.dir1, "etc", sizeof(ev.dir1) - 1);
+            strncpy(ev.filename, "hosts", sizeof(ev.filename) - 1);
+            assert(pe_ok.process_event(ev) == 0);
+            assert(pe_ok.exporter_ptr->file_access_counter->Value() == 1.0);
+        }
+
+        std::cout << "  PASS: exporter_start unit tests" << std::endl;
     }
 
     // filetrace.cpp handle_event() tests (see test_filetrace.cpp)
