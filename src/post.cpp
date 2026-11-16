@@ -1,6 +1,36 @@
 #include  "post.hpp"
 #include "logger.hpp"
 #include <cstring>
+#include <unistd.h>
+
+namespace {
+
+unsigned long long user_hz_value()
+{
+    static const unsigned long long hz = []() {
+        long v = sysconf(_SC_CLK_TCK);
+        return v > 0 ? static_cast<unsigned long long>(v) : 100ULL;
+    }();
+    return hz;
+}
+
+// task->start_boottime is in nanoseconds; /proc/<pid>/stat reports starttime
+// in USER_HZ clock ticks. Convert without overflowing on long uptimes.
+unsigned long long nsec_to_ticks(unsigned long long ns)
+{
+    const unsigned long long hz = user_hz_value();
+    return (ns / 1000000000ULL) * hz +
+           (ns % 1000000000ULL) * hz / 1000000000ULL;
+}
+
+unsigned long long ticks_to_nsec(unsigned long long ticks)
+{
+    const unsigned long long hz = user_hz_value();
+    return (ticks / hz) * 1000000000ULL +
+           (ticks % hz) * 1000000000ULL / hz;
+}
+
+} // namespace
 
 
 // Replace invalid UTF-8 sequences with the Unicode replacement character (U+FFFD)
@@ -518,10 +548,17 @@ void PostData::add_ptrace(json& j, const std::string cmd, int pid)
     j["ptrace"].push_back({{"cmd", cmd}, {"pid", pid}});
 }
 
-void PostData::generate_proc_trace(unsigned int &pid, json &json_data) 
+void PostData::generate_proc_trace(unsigned int &pid, json &json_data,
+                                   unsigned long long start_time)
 {
     LOG_DEBUG("Generating process trace for PID: " + std::to_string(pid));
     unsigned int proc_id = pid;
+    // Generation expected for the next lookup. start_time == 0 means the
+    // event did not carry one (older caller/test or a failed probe read), so
+    // skip generation validation for the whole chain instead of risking a
+    // half-validated tree.
+    unsigned long long expected_start = start_time;
+    bool check_generation = start_time != 0;
     if (proc_id  <= 1) {
         LOG_ERROR("Invalid PID: " + std::to_string(pid));
         return; 
@@ -531,8 +568,6 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
         LOG_ERROR("Failed to allocate memory for pinfo_t");
         return; 
     }
-    // zero-init to avoid uninitialized garbage bytes (which can produce invalid UTF-8)
-    memset(pinfo, 0, sizeof(struct pinfo_t));
     // A recycled PID in exec_map can form a cycle (a -> b -> a); cap the walk
     // so a stale entry cannot loop forever or build an unbounded JSON array.
     const unsigned int max_trace_depth = 32;
@@ -542,9 +577,29 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
             break;
         }
         LOG_INFO("Generating proc trace for PID: " + std::to_string(proc_id));
+        // A map miss leaves the previous iteration's args in pinfo; clear it
+        // so a /proc fallback never mixes two processes.
+        memset(pinfo, 0, sizeof(struct pinfo_t));
+        if (check_generation && expected_start == 0) {
+            check_generation = false;
+        }
         int ret = get_procinfo_by_pid_from_map(pinfo, proc_id);
+        if (ret == 0 && check_generation) {
+            if (pinfo->start_time == 0) {
+                // 0 means the generation is unknown (entry written without
+                // start_boottime). Accept it and stop validating the rest of
+                // the chain instead of dropping the whole tree.
+                check_generation = false;
+            } else if (nsec_to_ticks(pinfo->start_time) !=
+                       nsec_to_ticks(expected_start)) {
+                LOG_DEBUG("exec_map entry for PID " + std::to_string(proc_id) +
+                          " belongs to a different process (start_time mismatch)");
+                ret = -1;
+            }
+        }
         if (ret) {
-            ret = get_procinfo_by_pid_from_system(pinfo, proc_id);
+            ret = get_procinfo_by_pid_from_system(
+                pinfo, proc_id, check_generation ? expected_start : 0);
             if (ret) {
                 break;
             }
@@ -557,7 +612,13 @@ void PostData::generate_proc_trace(unsigned int &pid, json &json_data)
     // sanitize invalid UTF-8 bytes 
     pinfo_cmd = sanitize_utf8(pinfo_cmd);
     add_ptrace(json_data, std::move(pinfo_cmd), proc_id);
-        proc_id = pinfo->pid; 
+        proc_id = pinfo->pid;
+        if (check_generation) {
+            expected_start = pinfo->parent_start_time;
+            if (expected_start == 0) {
+                check_generation = false;
+            }
+        }
     }
     free(pinfo);
     return;
@@ -570,7 +631,7 @@ std::string PostData::convert_to_string(struct event &e)
     std::string groupname = get_groupname_by_gid(e.gid);
     int flag = e.flag;
     json_data["ptrace"] = json::array();
-    generate_proc_trace(e.pid, json_data);
+    generate_proc_trace(e.pid, json_data, e.start_time);
 
     json_data["host_id"] = host_id;
     json_data["domain_name"] = domain_name;
@@ -777,7 +838,8 @@ std::vector<std::string> PostData::split_stat_line(const std::string &line)
     return result;
 }
 
-int PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned int &pid)
+int PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned int &pid,
+                                               unsigned long long expected_start_time)
 {
     char proc_path[1024];
     //get ppid and comm from /proc/<pid>/stat
@@ -806,12 +868,61 @@ int PostData::get_procinfo_by_pid_from_system(struct pinfo_t *pinfo ,unsigned in
         LOG_ERROR(std::string(proc_path) + " content invalid.");
         return -1;
     }
+    // Field 22 (index 21, after pid/comm) is starttime in clock ticks since
+    // boot. It identifies this process incarnation and must match the
+    // generation carried by the event before we trust /proc.
+    unsigned long long proc_start = 0;
+    if (expected_start_time != 0) {
+        if (fields.size() <= 21) {
+            LOG_ERROR(std::string(proc_path) + " has no starttime field.");
+            return -1;
+        }
+        try {
+            proc_start = std::stoull(fields[21]);
+        } catch (const std::exception &ex) {
+            LOG_ERROR("Failed to parse starttime from " + std::string(proc_path) +
+                      ": " + ex.what());
+            return -1;
+        }
+        // Compare at USER_HZ resolution: the event carries nanoseconds
+        // (start_boottime), /proc carries ticks, and the kernel truncates to
+        // ticks as well. This also tolerates a /proc-derived parent value.
+        if (proc_start != nsec_to_ticks(expected_start_time)) {
+            LOG_DEBUG(std::string(proc_path) +
+                      " belongs to a different process (starttime mismatch).");
+            return -1;
+        }
+    }
     // pid, comm, ppid
     try {
         pinfo->pid = std::stoul(fields[3]);
     } catch (const std::exception &ex) {
         LOG_ERROR("Failed to parse ppid from " + std::string(proc_path) + ": " + ex.what());
         return -1;
+    }
+    // Fill the parent's generation as well, so the next level can still be
+    // validated when the parent is absent from exec_map (e.g. it started
+    // before the tracer). If /proc/<ppid> is already gone, leave 0 and the
+    // next lookup will skip the check.
+    pinfo->parent_start_time = 0;
+    // Only needed to validate the next level; skip the extra /proc read when
+    // generation checking is already disabled (expected_start_time == 0).
+    if (expected_start_time != 0 && pinfo->pid > 1) {
+        char parent_path[1024];
+        snprintf(parent_path, sizeof(parent_path), "/proc/%u/stat", pinfo->pid);
+        std::ifstream parent_file(parent_path);
+        std::string parent_line;
+        if (parent_file.is_open() && std::getline(parent_file, parent_line)) {
+            auto parent_fields = split_stat_line(parent_line);
+            if (parent_fields.size() > 21) {
+                try {
+                    pinfo->parent_start_time =
+                        ticks_to_nsec(std::stoull(parent_fields[21]));
+                } catch (const std::exception &) {
+                    // keep 0: skip generation validation for this level
+                }
+            }
+        }
     }
     strncpy(pinfo->comm, fields[1].c_str(), sizeof(pinfo->comm) - 1);
     pinfo->comm[sizeof(pinfo->comm) - 1] = '\0';

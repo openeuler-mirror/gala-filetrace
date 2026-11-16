@@ -11,11 +11,16 @@ char _license[] SEC("license") = "GPL";
 // handling an event can recursively generate more file events.
 const volatile __u32 self_tgid = 0;
 
+// Process info used to rebuild the process tree of an event. Entries are kept
+// after the process exits so a short-lived process (sh -c, cp, ...) can still
+// be resolved when user space consumes the event later; each entry carries the
+// process start_time so a recycled PID is rejected instead of reusing stale
+// command/ancestry data. LRU eviction bounds a host that never execs again.
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, u32);
     __type(value, struct pinfo_t);
-    __uint(max_entries, 4096); 
+    __uint(max_entries, 8192);
 } exec_map SEC(".maps");
 
 // Define a ring buffer map for events
@@ -37,6 +42,53 @@ static __inline struct event* bpf_create_ringbuf(void)
     }
     __builtin_memset(e, 0, sizeof(struct event));
     return e;
+}
+
+// Generation of a process keyed by tgid: use the thread group leader's
+// start_boottime. task->start_boottime is per-thread and /proc/<tgid>/stat
+// reports the leader's value, so both sides of the comparison agree.
+//
+// start_boottime is resolved through CO-RE: bpf_core_field_exists() is
+// checked against the *running* kernel's BTF at load time, so a kernel
+// without the field degrades to "unknown" (0) instead of reading at a
+// wrong offset and failing every generation comparison.
+static __always_inline unsigned long long leader_start_boottime(struct task_struct *leader)
+{
+    if (!bpf_core_field_exists(leader->start_boottime)) {
+        return 0;
+    }
+    unsigned long long start = 0;
+    if (bpf_core_read(&start, sizeof(start), &leader->start_boottime) < 0) {
+        // 0 means unknown: user space then skips generation validation
+        // instead of dropping the whole process tree.
+        return 0;
+    }
+    return start;
+}
+
+// Generation of an arbitrary task (e.g. the real_parent), which may be any
+// thread of its process: resolve the group leader first.
+static __always_inline unsigned long long task_start_boottime(struct task_struct *t)
+{
+    struct task_struct *leader = NULL;
+    if (bpf_core_read(&leader, sizeof(leader), &t->group_leader) < 0 ||
+        !leader) {
+        leader = t;
+    }
+    return leader_start_boottime(leader);
+}
+
+// Generation of the current task. When this thread already is the group
+// leader - the common single-threaded case for the hot openat/write hooks -
+// the tid/tgid pair from bpf_get_current_pid_tgid() proves it without the
+// extra group_leader dereference.
+static __always_inline unsigned long long current_start_boottime(struct task_struct *t)
+{
+    unsigned long long pid_tgid = bpf_get_current_pid_tgid();
+    if ((u32)pid_tgid == (u32)(pid_tgid >> 32)) {
+        return leader_start_boottime(t);
+    }
+    return task_start_boottime(t);
 }
 
 // Walk up to MAX_DEPTH levels of dentry->d_parent starting from `dentry`,
@@ -189,6 +241,7 @@ int enter_openat(const struct trace_event_raw_sys_enter *ctx)
     //bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
     unsigned long pid_tgid = bpf_get_current_pid_tgid();
     e->pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID）
+    e->start_time = current_start_boottime(t);
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
@@ -227,6 +280,7 @@ int enter_unlinkat(const struct trace_event_raw_sys_enter *ctx)
 
     t = (struct task_struct*)bpf_get_current_task();
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
+    e->start_time = current_start_boottime(t);
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
@@ -281,6 +335,7 @@ static __always_inline struct event *create_file_event(struct file *file, int fl
     struct task_struct *p = NULL;
 
     //fill pid cmd ppid pcmd
+    e->start_time = current_start_boottime(t);
     bpf_probe_read(&e->pid, sizeof(e->pid), &t->tgid);
     bpf_probe_read(&e->cmd, sizeof(e->cmd), &t->comm);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
@@ -425,6 +480,7 @@ static __always_inline int handle_rename(struct event *e,
     unsigned long pid_tgid = bpf_get_current_pid_tgid();
     e->pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID）
     bpf_get_current_comm(&e->cmd, sizeof(e->cmd));
+    e->start_time = current_start_boottime(t);
     bpf_probe_read(&p, sizeof(p), &t->real_parent);
     bpf_probe_read(&e->ppid, sizeof(e->ppid), &p->tgid);
     bpf_probe_read(&e->pcmd, sizeof(e->pcmd), &p->comm);
@@ -537,7 +593,9 @@ int enter_execve(struct trace_event_raw_sys_enter *ctx)
     pid = pid_tgid >> 32; 
     struct task_struct *p_parent;
     bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
-    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
+    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->tgid);
+    p.start_time = current_start_boottime(t);
+    p.parent_start_time = task_start_boottime(p_parent);
 
     bpf_get_current_comm(&p.comm, sizeof(p.comm));
     #ifdef GALA_DEBUG
@@ -558,7 +616,9 @@ int sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
     pid = pid_tgid >> 32;  // 获取 tgid（用户空间 PID
     struct task_struct *p_parent;
     bpf_probe_read(&p_parent, sizeof(p_parent), &t->real_parent);
-    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->pid);
+    bpf_probe_read(&p.pid, sizeof(p.pid), &p_parent->tgid);
+    p.start_time = current_start_boottime(t);
+    p.parent_start_time = task_start_boottime(p_parent);
 
     bpf_get_current_comm(&p.comm, sizeof(p.comm));
     #ifdef GALA_DEBUG
@@ -610,6 +670,7 @@ int BPF_PROG(trace_write, struct file *file, int mask)
     u32 gid = (u32)(uid_gid >> 32);
     e->uid = uid;
     e->gid = gid;
+    e->start_time = current_start_boottime(t);
 
     unsigned long pid_tgid = bpf_get_current_pid_tgid();
     e->pid = pid_tgid >> 32;
@@ -680,6 +741,7 @@ int write(const struct trace_event_raw_sys_enter *ctx)
     bpf_probe_read(&e->uid, sizeof(e->uid), &uid);
     bpf_probe_read(&e->gid, sizeof(e->gid), &gid);
     int fd = (__s32)ctx->args[0];
+    e->start_time = current_start_boottime(t);
 
     //get file struct from task_struct
     struct files_struct *f = NULL;

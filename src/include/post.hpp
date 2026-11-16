@@ -71,8 +71,10 @@ class PostData {
         std::string get_username_by_uid(unsigned int &uid);
         std::string get_groupname_by_gid(unsigned int &gid);
         int get_procinfo_by_pid_from_map(struct pinfo_t *pinfo, unsigned int &pid);
-        int get_procinfo_by_pid_from_system(struct pinfo_t *pinfo, unsigned int &pid);
-        void generate_proc_trace(unsigned int &pid, json &json_data);
+        int get_procinfo_by_pid_from_system(struct pinfo_t *pinfo, unsigned int &pid,
+                                            unsigned long long expected_start_time = 0);
+        void generate_proc_trace(unsigned int &pid, json &json_data,
+                                 unsigned long long start_time = 0);
         void add_ptrace(json& j, const std::string cmd, int pid);
         std::string get_full_path(const struct event *event);
         std::string get_old_full_path(const struct event *event);
