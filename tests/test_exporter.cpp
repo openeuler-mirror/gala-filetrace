@@ -126,6 +126,33 @@ static size_t info_metric_count(PrometheusExporter& exp)
     return count;
 }
 
+// Return the "file" label of the info gauge for the given PID, or "" if the
+// gauge is absent.
+static std::string info_file_label(PrometheusExporter& exp, unsigned int pid)
+{
+    const std::string want_pid = std::to_string(pid);
+    for (const auto& family : exp.registry->Collect()) {
+        if (family.name != "filetrace_info_record") {
+            continue;
+        }
+        for (const auto& metric : family.metric) {
+            bool pid_matches = false;
+            std::string file;
+            for (const auto& label : metric.label) {
+                if (label.name == "pid" && label.value == want_pid) {
+                    pid_matches = true;
+                } else if (label.name == "file") {
+                    file = label.value;
+                }
+            }
+            if (pid_matches) {
+                return file;
+            }
+        }
+    }
+    return std::string();
+}
+
 // Expiration must remove the series from the Registry, including after the
 // same PID returns with a new timestamp label.
 static void test_expired_gauge_removed()
@@ -256,14 +283,21 @@ static void test_set_metrics_file_access_counter()
 // ---- Test: set_metrics for rename events (SYS_rename, SYS_renameat, SYS_renameat2) ----
 static void test_set_metrics_rename()
 {
+    // The caller resolves the reported side (same path as the JSON "file"
+    // field) and passes it in: the metric must use it, not the destination.
     PrometheusExporter exp("127.0.0.1:19104", 30);
-    const int rename_flags[] = {SYS_rename, SYS_renameat, SYS_renameat2};
-    for (int rf : rename_flags) {
-        // e.filename should be used directly without get_full_path alteration
-        struct event e = make_event(400, 1, "mv", "/etc/hosts", "dir_a", "dir_b", "", "",
-                                    rf, 0, 0, 8000);
-        exp.set_metrics(e);
-    }
+    struct event e = make_event(400, 1, "mv", "/tmp/hosts.bak", nullptr, nullptr,
+                                nullptr, nullptr, SYS_renameat2, 0, 0, 8000);
+    exp.set_metrics(e, "/etc/hosts");
+    assert(info_file_label(exp, 400) == "/etc/hosts");
+
+    // Without an explicit path the historical destination fallback remains.
+    PrometheusExporter fallback("127.0.0.1:19105", 30);
+    struct event f = make_event(401, 1, "mv", "/tmp/hosts.bak", nullptr, nullptr,
+                                nullptr, nullptr, SYS_renameat2, 0, 0, 8001);
+    fallback.set_metrics(f);
+    assert(info_file_label(fallback, 401) == "/tmp/hosts.bak");
+
     std::cout << "  PASS: set_metrics for SYS_rename* events" << std::endl;
 }
 

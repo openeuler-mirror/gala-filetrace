@@ -38,7 +38,7 @@ public:
 
     void inc_counter(prometheus::Counter& counter, double v = 1.0);
     std::shared_ptr<prometheus::Registry> registry;
-    void set_metrics(struct event& e);
+    void set_metrics(struct event& e, const std::string& reported_file = std::string());
     prometheus::Counter* file_access_counter = nullptr;
     std::string get_full_path(const struct event *event);
     //add a thread check cache gauge timeout and remove it after some time

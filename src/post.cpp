@@ -317,7 +317,13 @@ int PostData::process_event(struct event e)
 int PostData::send(struct event e)
 {
     LOG_DEBUG("Send event to Aops.");
-    exporter_ptr->set_metrics(e);
+    // Renames report the monitored side in the JSON "file" field; pass the
+    // same path to the exporter so the metric label does not diverge.
+    std::string reported_file;
+    if (e.flag == SYS_rename || e.flag == SYS_renameat || e.flag == SYS_renameat2) {
+        reported_file = get_reported_path(&e);
+    }
+    exporter_ptr->set_metrics(e, reported_file);
     print_event(&e);
     std::string data = convert_to_string(e);
     if (data.empty()) {
@@ -568,16 +574,23 @@ std::string PostData::convert_to_string(struct event &e)
 
     json_data["host_id"] = host_id;
     json_data["domain_name"] = domain_name;
-    json_data["cluster_id"] = cluster_id;  
+    json_data["cluster_id"] = cluster_id;
     json_data["flag"] = e.flag;
     json_data["syscall"] = nr_map[e.flag];
-    // SYS_write, SYS_unlinkat and SYS_copy_file_range are matched against the
-    // rebuilt full path (see is_valid_event), so report the same string that
-    // was matched - a relative unlinkat pathname would otherwise be published
-    // as e.g. "hosts" while it was matched as "/etc/hosts".
-    if(e.flag == SYS_write || e.flag == SYS_unlinkat || e.flag == SYS_copy_file_range)
-    {
+    // SYS_write, SYS_unlinkat, SYS_copy_file_range and the rename family are
+    // matched against the rebuilt full path (see is_valid_event), so report
+    // the same string that was matched - a relative unlinkat pathname would
+    // otherwise be published as e.g. "hosts" while it was matched as
+    // "/etc/hosts". For renames also expose the source path: a "mv away" event
+    // reports the removed file under "file" while still recording where it
+    // came from.
+    if (e.flag == SYS_write || e.flag == SYS_unlinkat ||
+        e.flag == SYS_copy_file_range) {
         json_data["file"] = get_full_path(&e);
+    } else if (e.flag == SYS_rename || e.flag == SYS_renameat || e.flag == SYS_renameat2) {
+        std::string oldpath;
+        json_data["file"] = get_reported_path(&e, &oldpath);
+        json_data["old_file"] = oldpath;
     } else {
         json_data["file"] = e.filename;
     }
@@ -591,6 +604,14 @@ std::string PostData::convert_to_string(struct event &e)
 }
 bool PostData::compare_config_file(const vector<string> &v, const std::string &config) 
 {
+    // An empty path can never be a monitored file. Check this before the
+    // verbose monitor_file_path shortcut below: with no -f target that
+    // shortcut would otherwise match an empty path against the empty
+    // monitor_file_path and report a rename with an empty source as valid.
+    if (config.empty()) {
+        return false;
+    }
+
     if (verbose) {
         LOG_INFO("Comparing config file: " + config + " with " + monitor_file_path);
         if (monitor_file_path == config) {
@@ -599,7 +620,7 @@ bool PostData::compare_config_file(const vector<string> &v, const std::string &c
     }
 
     std::lock_guard<std::mutex> lk(config_mutex);
-    if (v.empty() || config.empty()) {
+    if (v.empty()) {
         return false; 
     }
 
@@ -645,9 +666,6 @@ bool PostData::is_valid_filename(const std::string &filename)
 }
 bool PostData::is_valid_event(struct event &e) 
 {
-   if (!is_valid_filename(e.filename)) {
-        return false;
-   }
    std::string fullpath = "";
     if (e.pid == 0) {
         return false; 
@@ -658,6 +676,11 @@ bool PostData::is_valid_event(struct event &e)
     }
     switch (e.flag) {
         case SYS_unlinkat:
+            // Non-rename events carry the basename in filename; dotfiles and
+            // empty names are still filtered here.
+            if (!is_valid_filename(e.filename)) {
+                return false;
+            }
             fullpath = get_full_path(&e);
             if(!compare_config_file(conf_list, fullpath)) {
                 return false; 
@@ -665,18 +688,29 @@ bool PostData::is_valid_event(struct event &e)
             break;
         case SYS_rename:
         case SYS_renameat:
-
-        case SYS_renameat2:
-            if(!compare_config_file(conf_list, e.filename)) {
-                return false; 
+        case SYS_renameat2: {
+            // Either side of the rename may be the monitored file: moving a
+            // monitored file away must be reported too, not only overwrites.
+            // Do NOT gate this on is_valid_filename(e.filename): a destina-
+            // tion such as "." (``mv /etc/hosts .``) or a dotfile is a valid
+            // rename target and the source may be the monitored path.
+            std::string oldpath = get_old_full_path(&e);
+            std::string newpath = get_full_path(&e);
+            if (!compare_config_file(conf_list, newpath) &&
+                !compare_config_file(conf_list, oldpath)) {
+                return false;
             }
-            break;       
+            break;
+        }
         // copy_file_range and write only carry the basename in filename and
         // rebuild the path from dir1..dir4, so they must be matched against
         // the full path - a basename never equals an entry of conf_list, which
         // holds absolute paths.
         case SYS_copy_file_range:
         case SYS_write:
+            if (!is_valid_filename(e.filename)) {
+                return false;
+            }
             fullpath = get_full_path(&e);
             if(!compare_config_file(conf_list, fullpath)) {
                 return false; 
@@ -823,6 +857,56 @@ std::string PostData::get_full_path(const struct event *event)
 
     LOG_INFO("Constructed full path: " + fullpath);
     return fullpath;
+}
+
+// dir:/odir4/odir3/odir2/odir1/oldfilename — the old-path counterpart of
+// get_full_path(), used to match the source side of a rename.
+std::string PostData::get_old_full_path(const struct event *event)
+{
+    std::string fullpath;
+    const char *parts[] = {event->odir4, event->odir3, event->odir2, event->odir1, event->oldfilename};
+    for (const char *part : parts) {
+        if (part[0] == '\0' || (part[0] == '/' && part[1] == '\0')) {
+            continue;
+        }
+        if (!fullpath.empty()) {
+            fullpath.push_back('/');
+        }
+        fullpath += part;
+    }
+
+    if (!fullpath.empty() && fullpath.front() != '/') {
+        fullpath.insert(fullpath.begin(), '/');
+    }
+
+    LOG_INFO("Constructed old full path: " + fullpath);
+    return fullpath;
+}
+
+// Path reported for an event. For renames this is the monitored side (the
+// destination when it is monitored, otherwise the source), matching the JSON
+// "file" field; for basename-only events it is the rebuilt path.
+std::string PostData::get_reported_path(const struct event *event,
+                                        std::string *old_full_path)
+{
+    switch (event->flag) {
+        case SYS_rename:
+        case SYS_renameat:
+        case SYS_renameat2: {
+            std::string newpath = get_full_path(event);
+            std::string oldpath = get_old_full_path(event);
+            if (old_full_path != nullptr) {
+                *old_full_path = oldpath;
+            }
+            return compare_config_file(conf_list, newpath) ? newpath : oldpath;
+        }
+        case SYS_write:
+        case SYS_unlinkat:
+        case SYS_copy_file_range:
+            return get_full_path(event);
+        default:
+            return event->filename;
+    }
 }
 
 std::string PostData::get_loginip_by_username(const std::string& username) 

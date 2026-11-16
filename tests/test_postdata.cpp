@@ -63,6 +63,12 @@ int main()
     p.monitor_file_path = "/tmp/monitor.conf";
     assert(p.compare_config_file(std::vector<std::string>{}, "/tmp/monitor.conf") == true);
 
+    // An empty path must never match, even in verbose mode without a -f
+    // target: "" == monitor_file_path must not make it look monitored.
+    p.monitor_file_path.clear();
+    assert(p.compare_config_file(std::vector<std::string>{"/etc/hosts"}, "") == false);
+    p.monitor_file_path = "/tmp/monitor.conf";
+
     // add_ptrace
     json j;
     j["ptrace"] = json::array();
@@ -126,18 +132,20 @@ int main()
 
     // =========================================================================
     // SYS_rename, SYS_renameat, SYS_renameat2 tests:
-    // 1. is_valid_event matches directly against e.filename (destination path),
-    //    unlike SYS_write / SYS_copy_file_range / SYS_unlinkat which match
-    //    against get_full_path(&e).
-    // 2. Legal monitored path matching.
+    // 1. is_valid_event matches EITHER side of the rename through
+    //    get_full_path(&e) / get_old_full_path(&e), so moving a monitored file
+    //    away and renaming onto a monitored path are both reported.
+    // 2. Legal monitored path matching (source or destination), including
+    //    relative pathnames rebuilt from the dir/odir chains.
     // 3. Illegal event filtering:
-    //    - unmonitored destination path rejected (even if oldfilename matches)
-    //    - bare basename rejected when conf_list has absolute path (no get_full_path fallback)
+    //    - both sides unmonitored -> rejected
     //    - invalid filename (empty or starting with '.') rejected
     //    - invalid pid (0) rejected
     //    - process in skip_processes rejected
-    // 4. convert_to_string reporting: JSON field "file" must equal e.filename
-    //    (destination), "flag" matches the syscall flag, and "syscall" matches nr_map.
+    // 4. convert_to_string reporting: "file" is the monitored side (the
+    //    destination when it is monitored, otherwise the source), "old_file" is
+    //    always the source, "flag" matches the syscall flag and "syscall"
+    //    matches nr_map.
     // =========================================================================
     {
         const int rename_flags[] = {SYS_rename, SYS_renameat, SYS_renameat2};
@@ -154,31 +162,37 @@ int main()
             strncpy(ren.cmd, "mv", sizeof(ren.cmd) - 1);
             strncpy(ren.filename, "/etc/hosts", sizeof(ren.filename) - 1);
             strncpy(ren.oldfilename, "/tmp/hosts.tmp", sizeof(ren.oldfilename) - 1);
-            // Non-empty dir fields must not alter matching: rename* uses e.filename directly
-            strncpy(ren.dir1, "var", sizeof(ren.dir1) - 1);
-            strncpy(ren.dir2, "log", sizeof(ren.dir2) - 1);
+            // Absolute pathnames carry their own path; the BPF side only fills
+            // the dir chains for relative ones, so no dir fields are set here.
 
-            // 1. Legal monitored path matching
+            // 1. Legal monitored destination
             assert(p.is_valid_event(ren) == true);
 
             // Another legal path in conf_list
             strncpy(ren.filename, "/data/app.conf", sizeof(ren.filename) - 1);
             assert(p.is_valid_event(ren) == true);
 
-            // 2. Illegal filtering: unmonitored destination path
-            strncpy(ren.filename, "/etc/shadow", sizeof(ren.filename) - 1);
-            assert(p.is_valid_event(ren) == false);
-
-            // Illegal filtering: oldfilename is monitored, but destination is unmonitored -> rejected
-            strncpy(ren.oldfilename, "/etc/hosts", sizeof(ren.oldfilename) - 1);
+            // 2. Legal monitored source: moving a monitored file away
             strncpy(ren.filename, "/tmp/hosts.bak", sizeof(ren.filename) - 1);
+            strncpy(ren.oldfilename, "/etc/hosts", sizeof(ren.oldfilename) - 1);
+            assert(p.is_valid_event(ren) == true);
+
+            // Illegal filtering: neither side is monitored
+            strncpy(ren.oldfilename, "/tmp/hosts.tmp", sizeof(ren.oldfilename) - 1);
             assert(p.is_valid_event(ren) == false);
 
-            // Illegal filtering: bare basename "hosts" with dir1="etc" must NOT match "/etc/hosts"
-            // (rename does not invoke get_full_path in is_valid_event)
+            // Relative destination is rebuilt from dir1..dir4
             strncpy(ren.filename, "hosts", sizeof(ren.filename) - 1);
             strncpy(ren.dir1, "etc", sizeof(ren.dir1) - 1);
-            assert(p.is_valid_event(ren) == false);
+            assert(p.is_valid_event(ren) == true);
+
+            // Relative source is rebuilt from odir1..odir4
+            memset(ren.dir1, 0, sizeof(ren.dir1));
+            strncpy(ren.filename, "/tmp/hosts.bak", sizeof(ren.filename) - 1);
+            strncpy(ren.oldfilename, "hosts", sizeof(ren.oldfilename) - 1);
+            strncpy(ren.odir1, "etc", sizeof(ren.odir1) - 1);
+            assert(p.is_valid_event(ren) == true);
+            memset(ren.odir1, 0, sizeof(ren.odir1));
 
             // Illegal filtering: empty filename
             memset(ren.filename, 0, sizeof(ren.filename));
@@ -206,26 +220,52 @@ int main()
             // Reset fields for JSON serialization test
             strncpy(ren.filename, "/etc/hosts", sizeof(ren.filename) - 1);
             strncpy(ren.oldfilename, "/tmp/hosts.tmp", sizeof(ren.oldfilename) - 1);
-            strncpy(ren.dir1, "dir_a", sizeof(ren.dir1) - 1);
-            strncpy(ren.dir2, "dir_b", sizeof(ren.dir2) - 1);
+            memset(ren.dir1, 0, sizeof(ren.dir1));
+            memset(ren.dir2, 0, sizeof(ren.dir2));
+            memset(ren.odir1, 0, sizeof(ren.odir1));
 
             json ren_json = json::parse(p.convert_to_string(ren));
-            // "file" must be the target filename e.filename, NOT get_full_path(&e)
+            // The monitored destination is reported under "file"; the source
+            // is kept under "old_file".
             assert(ren_json["file"].get<std::string>() == "/etc/hosts");
-            assert(ren_json["file"].get<std::string>() == ren.filename);
+            assert(ren_json["old_file"].get<std::string>() == "/tmp/hosts.tmp");
             assert(ren_json["flag"].get<int>() == rf);
             assert(ren_json["syscall"].get<std::string>() == nr_map[rf]);
             assert(ren_json["cmd"].get<std::string>() == "mv");
             assert(ren_json["pid"].get<int>() == 100);
             assert(ren_json["inode"].get<unsigned long>() == 1001);
 
-            // Contrast with SYS_write: write reports get_full_path(&e)
+            // Moving a monitored file away: the monitored source becomes
+            // "file" and "old_file" carries the same path.
+            strncpy(ren.filename, "/tmp/hosts.bak", sizeof(ren.filename) - 1);
+            strncpy(ren.oldfilename, "/etc/hosts", sizeof(ren.oldfilename) - 1);
+            json mv_away = json::parse(p.convert_to_string(ren));
+            assert(mv_away["file"].get<std::string>() == "/etc/hosts");
+            assert(mv_away["old_file"].get<std::string>() == "/etc/hosts");
+
+            // Contrast with SYS_write: write has no source side and reports
+            // get_full_path(&e) only.
             struct event wr = ren;
             wr.flag = SYS_write;
+            strncpy(wr.filename, "/etc/hosts", sizeof(wr.filename) - 1);
+            memset(wr.dir1, 0, sizeof(wr.dir1));
+            memset(wr.dir2, 0, sizeof(wr.dir2));
             json wr_json = json::parse(p.convert_to_string(wr));
-            assert(wr_json["file"].get<std::string>() == "/dir_b/dir_a//etc/hosts");
-            assert(wr_json["file"].get<std::string>() != ren_json["file"].get<std::string>());
+            assert(wr_json["file"].get<std::string>() == "/etc/hosts");
+            assert(wr_json.find("old_file") == wr_json.end());
         }
+
+        // "mv /etc/hosts ." targets the current directory: the dotfile/
+        // directory destination must not hide the monitored source.
+        struct event mv_dot{};
+        mv_dot.pid = 100;
+        mv_dot.flag = SYS_renameat2;
+        strncpy(mv_dot.filename, ".", sizeof(mv_dot.filename) - 1);
+        strncpy(mv_dot.oldfilename, "/etc/hosts", sizeof(mv_dot.oldfilename) - 1);
+        assert(p.is_valid_event(mv_dot) == true);
+        json mv_dot_json = json::parse(p.convert_to_string(mv_dot));
+        assert(mv_dot_json["file"].get<std::string>() == "/etc/hosts");
+        assert(mv_dot_json["old_file"].get<std::string>() == "/etc/hosts");
     }
 
     // Rejected events must not write a log entry: the logger's write is also
