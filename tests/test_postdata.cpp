@@ -43,6 +43,11 @@ int main()
     assert(fields[0] == "123");
     assert(fields[1].find("(bash)") != std::string::npos);
 
+    // A malformed or empty stat line (the process can exit between open and
+    // read) must yield an empty result, not throw out of the caller.
+    assert(p.split_stat_line("").empty());
+    assert(p.split_stat_line("no parens here").empty());
+
     // get_dir_level
     assert(p.get_dir_level("/a/b/c") == 3);
     assert(p.get_dir_level("/") == 0);
