@@ -10,9 +10,10 @@
 #include "filetrace.h"
 #include "logger.hpp"
 
-// The filetrace.cpp handle_event() tests live in test_filetrace.cpp. That file
-// is included here (it defines no main() of its own) so they run inside this
-// binary without any Makefile changes.
+// The filetrace.cpp unit tests (handle_event(), running_kernel_at_least(),
+// sig_handler()) live in test_filetrace.cpp. That file is included here (it
+// defines no main() of its own) so they run inside this binary without any
+// Makefile changes.
 #include "test_filetrace.cpp"
 
 using json = nlohmann::json;
@@ -972,9 +973,12 @@ int main()
         std::cout << "  PASS: exporter_start unit tests" << std::endl;
     }
 
-    // filetrace.cpp handle_event() tests (see test_filetrace.cpp)
+    // filetrace.cpp tests (see test_filetrace.cpp)
     run_filetrace_handle_event_tests();
+    run_filetrace_tui_stats_tests();
+    run_filetrace_kernel_version_tests();
+    run_filetrace_sig_handler_tests();
 
-    std::cout << "All PostData and filetrace handle_event unit tests passed." << std::endl;
+    std::cout << "All PostData and filetrace unit tests passed." << std::endl;
     return 0;
 }
