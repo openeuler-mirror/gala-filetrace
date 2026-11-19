@@ -45,6 +45,15 @@ public:
     size_t gauge_series_add_count = 0;
     // Number of last-access series ever registered (separate timestamp metric).
     size_t last_access_series_add_count = 0;
+    // Hard cap on live identities, so Prometheus cardinality stays bounded even
+    // if a very high number of distinct (process,file) tuples appear inside one
+    // cache-timeout window. When exceeded, the least-recently-updated identity
+    // is evicted. 0 disables the cap. Exposed so tests can exercise eviction.
+    size_t max_series = 4096;
+    // Number of series removed by the capacity cap (observable in tests).
+    size_t evicted_series_count = 0;
+    // Test-only view of the live identity count (cache internals are private).
+    size_t gauge_cache_size_for_test() const { return gauge_cache.size(); }
     std::string get_full_path(const struct event *event);
     //add a thread check cache gauge timeout and remove it after some time
     prometheus::Gauge* thread_check_cache_gauge = nullptr;
@@ -59,6 +68,9 @@ private:
     // the series identity, so a hit always means the labels are identical and
     // the hot path is a plain Set() -- the series is never Remove+Add churned.
     static std::string make_series_key(const std::map<std::string, std::string>& labels);
+    // Remove one identity (info + last-access series + timestamp entry) from
+    // the families and the caches. Caller must hold gauge_cache_mutex.
+    void evict_series_locked(const std::string& key);
 
     std::unique_ptr<prometheus::Exposer> exposer;
     prometheus::Family<prometheus::Gauge>* info_gauge_family = nullptr;

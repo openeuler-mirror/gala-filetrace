@@ -97,6 +97,28 @@ std::string PrometheusExporter::make_series_key(
     return key;
 }
 
+void PrometheusExporter::evict_series_locked(const std::string& key)
+{
+    // The Family owns each gauge; erasing the cached pointer alone leaves the
+    // labeled series registered and exported, so Remove it from the family
+    // first. Caller holds gauge_cache_mutex.
+    auto gauge_it = gauge_cache.find(key);
+    if (gauge_it != gauge_cache.end()) {
+        if (info_gauge_family && gauge_it->second) {
+            info_gauge_family->Remove(gauge_it->second);
+        }
+        gauge_cache.erase(gauge_it);
+    }
+    auto ts_it = last_access_cache.find(key);
+    if (ts_it != last_access_cache.end()) {
+        if (last_access_family && ts_it->second) {
+            last_access_family->Remove(ts_it->second);
+        }
+        last_access_cache.erase(ts_it);
+    }
+    gauge_cache_timestamps.erase(key);
+}
+
 // dir:/dir4/dir3/dir2/dir1/filename
 std::string PrometheusExporter::get_full_path(const struct event *event) 
 {
@@ -179,6 +201,23 @@ void PrometheusExporter::set_metrics(struct event& e, const std::string& reporte
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
         auto it = gauge_cache.find(series_key);
         if (it == gauge_cache.end()) {
+            // Cap live identities so cardinality cannot grow without bound even
+            // when many distinct tuples arrive inside one timeout window. Evict
+            // the least-recently-updated identity (oldest timestamp) first.
+            // Never evict more than one per event: the hot path stays O(n) only
+            // at the cap boundary, not on every call.
+            if (max_series > 0 && gauge_cache.size() >= max_series &&
+                !gauge_cache_timestamps.empty()) {
+                auto oldest = gauge_cache_timestamps.begin();
+                for (auto ts_it = gauge_cache_timestamps.begin();
+                     ts_it != gauge_cache_timestamps.end(); ++ts_it) {
+                    if (ts_it->second < oldest->second) {
+                        oldest = ts_it;
+                    }
+                }
+                evict_series_locked(oldest->first);
+                ++evicted_series_count;
+            }
             if (!info_gauge_family) {
                 info_gauge_family = &prometheus::BuildGauge()
                     .Name("filetrace_info_record")
@@ -223,35 +262,16 @@ void PrometheusExporter::task_gauge_cache_timeout() {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
         for (auto it = gauge_cache_timestamps.begin(); it != gauge_cache_timestamps.end(); ) {
-            const std::string& key = it->first;
-            std::cout << "Checking gauge cache key: " << key << std::endl;
-            const std::string& timestamp_str = it->second;
-            std::time_t timestamp = std::stol(timestamp_str);
+            const std::string key = it->first;      // copy: evict erases this element
+            auto next = it; ++next;                 // successor survives the erase
+            std::time_t timestamp = std::stol(it->second);
             std::time_t now = std::time(nullptr);
             if (now - timestamp > cache_timeout_seconds) {
-                // The Family owns each gauge; erasing the cached pointer alone
-                // leaves the labeled series registered and exported. Remove it
-                // from the family first, for both the info and last-access
-                // series that share this identity key.
-                auto gauge_it = gauge_cache.find(key);
-                if (gauge_it != gauge_cache.end()) {
-                    if (info_gauge_family && gauge_it->second) {
-                        info_gauge_family->Remove(gauge_it->second);
-                    }
-                    gauge_cache.erase(gauge_it);
-                }
-                auto ts_it = last_access_cache.find(key);
-                if (ts_it != last_access_cache.end()) {
-                    if (last_access_family && ts_it->second) {
-                        last_access_family->Remove(ts_it->second);
-                    }
-                    last_access_cache.erase(ts_it);
-                }
-                LOG_INFO("Removed stale gauge from cache: " + key);
-                it = gauge_cache_timestamps.erase(it);
-            }
-            else 
-            {
+                // Do not print per key while holding the mutex: on a busy host
+                // this amplifies both lock contention and /metrics scrape delay.
+                evict_series_locked(key);           // removes info + last-access + timestamp
+                it = next;
+            } else {
                 ++it;
             }
         }

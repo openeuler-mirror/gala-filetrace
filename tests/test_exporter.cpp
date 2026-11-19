@@ -437,15 +437,87 @@ static void test_last_access_time_is_a_value_not_a_label()
     }
 
     // The last-access gauge exists under the stable labels and its value is a
-    // sane unix timestamp; repeated events update the value, not the identity.
+    // sane unix timestamp.
     double access_time = 0.0;
     int found = last_access_value_for_file(exp, "/etc/access.txt", access_time);
     assert(found == 1);
     assert(access_time >= before && access_time <= after);
-    exp.set_metrics(e);
-    assert(exp.last_access_series_add_count == 1);
 
-    std::cout << "  PASS: last-access time is a value, not a ts label" << std::endl;
+    // A repeated event must UPDATE the value while keeping the identity: sleep
+    // past a second boundary, re-emit, and read the value back. This catches
+    // the stale-timestamp variant where a cache hit skips Set(now).
+    const double first_value = access_time;
+    assert(exp.last_access_series_add_count == 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    exp.set_metrics(e);
+    double updated_value = 0.0;
+    found = last_access_value_for_file(exp, "/etc/access.txt", updated_value);
+    assert(found == 1);
+    assert(updated_value > first_value);
+    assert(exp.last_access_series_add_count == 1);  // value changed, identity did not
+    assert(info_metric_count(exp) == 1);
+
+    std::cout << "  PASS: last-access time is a value (refreshed), not a ts label" << std::endl;
+}
+
+// When one PID produces several identities, a timeout must remove ALL of their
+// series from both families, not just the first. Otherwise old identities leak
+// and /metrics grows monotonically on a long-running process.
+static void test_expired_removes_all_series_for_one_pid()
+{
+    PrometheusExporter exp("127.0.0.1:19110", 0);
+    struct event a = make_event(900, 1, "bash", "a.txt", "etc", nullptr,
+                                nullptr, nullptr, SYS_write, 0, 0, 9300);
+    struct event b = make_event(900, 1, "bash", "b.txt", "etc", nullptr,
+                                nullptr, nullptr, SYS_write, 0, 0, 9301);
+    exp.set_metrics(a);
+    exp.set_metrics(b);
+    assert(info_metric_count(exp) == 2);
+    assert(exp.gauge_series_add_count == 2);
+    assert(exp.last_access_series_add_count == 2);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (info_metric_count(exp) != 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    // Both info series AND both last-access series must be gone from the registry.
+    assert(info_metric_count(exp) == 0);
+    size_t last_access_count = 0;
+    for (const auto& family : exp.registry->Collect()) {
+        if (family.name == "filetrace_info_last_access_seconds") {
+            last_access_count += family.metric.size();
+        }
+    }
+    assert(last_access_count == 0);
+    assert(exp.gauge_cache_size_for_test() == 0);
+
+    std::cout << "  PASS: timeout removes all series for one PID" << std::endl;
+}
+
+// A hard cap on live identities keeps Prometheus cardinality bounded even when
+// many distinct tuples arrive within one timeout window. The oldest identity
+// is evicted first; repeated events on a live identity never trigger eviction.
+static void test_capacity_cap_evicts_oldest()
+{
+    PrometheusExporter exp("127.0.0.1:19111", 3600);
+    exp.max_series = 3;
+    for (int i = 0; i < 3; ++i) {
+        struct event e = make_event(1000 + i, 1, "bash", "f.txt", "var", "tmp",
+                                    nullptr, nullptr, SYS_write, 0, 0, 9400 + i);
+        exp.set_metrics(e);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));  // distinct timestamps
+    }
+    assert(info_metric_count(exp) == 3);
+    assert(exp.evicted_series_count == 0);
+
+    // A 4th distinct identity evicts exactly the oldest, keeping the cap.
+    struct event d = make_event(2000, 1, "bash", "f.txt", "var", "tmp",
+                                nullptr, nullptr, SYS_write, 0, 0, 9500);
+    exp.set_metrics(d);
+    assert(info_metric_count(exp) == 3);
+    assert(exp.evicted_series_count == 1);
+
+    std::cout << "  PASS: capacity cap evicts oldest identity" << std::endl;
 }
 
 // A wall-clock "ts" label makes every event a new Prometheus series, so the
@@ -498,6 +570,8 @@ int main()
     test_set_metrics_distinct_labels_get_distinct_series();
     test_set_metrics_identical_events_no_churn();
     test_last_access_time_is_a_value_not_a_label();
+    test_expired_removes_all_series_for_one_pid();
+    test_capacity_cap_evicts_oldest();
     test_info_gauge_has_no_ts_label();
 
     std::cout << "All PrometheusExporter unit tests passed." << std::endl;
