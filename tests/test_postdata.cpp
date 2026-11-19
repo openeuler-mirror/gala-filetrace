@@ -840,6 +840,32 @@ int main()
         // Disallowed prefix 0xF8..0xFD
         assert(PostData::sanitize_utf8("\xF8") == REPL);
         assert(PostData::sanitize_utf8("\xFC") == REPL);
+        // 0xF5..0xF7 are 4-byte leads beyond the Unicode range (max is 0xF4).
+        // A well-formed F5 sequence must be rejected, not passed through:
+        // nlohmann::json::dump() rejects such bytes and would abort the daemon.
+        assert(PostData::sanitize_utf8("\xF5\x80\x80\x80") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF6\x8F\xBF\xBF") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF7\xBF\xBF\xBF") == REPL + REPL + REPL + REPL);
+        // Overlong 2-byte forms (0xC0/0xC1) encode ASCII and are invalid.
+        assert(PostData::sanitize_utf8("\xC0\x80") == REPL + REPL);
+        assert(PostData::sanitize_utf8("\xC1\xBF") == REPL + REPL);
+        // Overlong 3/4-byte forms: E0 80..9F and F0 80..8F.
+        assert(PostData::sanitize_utf8("\xE0\x80\x80") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xE0\x9F\xBF") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF0\x80\x80\x80") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF0\x8F\xBF\xBF") == REPL + REPL + REPL + REPL);
+        // UTF-16 surrogates U+D800..U+DFFF (ED A0..BF) are not scalar values.
+        assert(PostData::sanitize_utf8("\xED\xA0\x80") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xED\xBF\xBF") == REPL + REPL + REPL);
+        // Code points above U+10FFFF (F4 90..BF) are outside Unicode.
+        assert(PostData::sanitize_utf8("\xF4\x90\x80\x80") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF4\xBF\xBF\xBF") == REPL + REPL + REPL + REPL);
+        // Boundary values that ARE valid must survive unchanged.
+        assert(PostData::sanitize_utf8("\xC2\x80") == "\xC2\x80");
+        assert(PostData::sanitize_utf8("\xE0\xA0\x80") == "\xE0\xA0\x80");
+        assert(PostData::sanitize_utf8("\xED\x9F\xBF") == "\xED\x9F\xBF");
+        assert(PostData::sanitize_utf8("\xF0\x90\x80\x80") == "\xF0\x90\x80\x80");
+        assert(PostData::sanitize_utf8("\xF4\x8F\xBF\xBF") == "\xF4\x8F\xBF\xBF");
         // Lone continuation bytes (0x80..0xBF)
         assert(PostData::sanitize_utf8("\x80") == REPL);
         assert(PostData::sanitize_utf8("\xBF") == REPL);
