@@ -582,6 +582,26 @@ int main()
         PostData pc9;
         assert(pc9.load_config(no_api) == -1);
 
+        // A port outside the TCP range cannot be bound; load_config must
+        // reject it rather than accept a config whose API never comes up.
+        const std::string bad_port_high = "/tmp/gala_test_loadcfg_porthigh.json";
+        {
+            std::ofstream out(bad_port_high);
+            out << R"({"host_id":"h","domain_name":"d","ragdoll_api":"u",)"
+                   R"("config_list":["/etc/hosts"],"skip_processes_list":[],"port":70000})";
+        }
+        PostData pcp1;
+        assert(pcp1.load_config(bad_port_high) == -1);
+
+        const std::string bad_port_zero = "/tmp/gala_test_loadcfg_portzero.json";
+        {
+            std::ofstream out(bad_port_zero);
+            out << R"({"host_id":"h","domain_name":"d","ragdoll_api":"u",)"
+                   R"("config_list":["/etc/hosts"],"skip_processes_list":[],"port":0})";
+        }
+        PostData pcp2;
+        assert(pcp2.load_config(bad_port_zero) == -1);
+
         unlink(good_cfg.c_str());
         unlink(bad_json.c_str());
         unlink(empty_list.c_str());
@@ -590,6 +610,8 @@ int main()
         unlink(empty_host.c_str());
         unlink(bad_server.c_str());
         unlink(no_api.c_str());
+        unlink(bad_port_high.c_str());
+        unlink(bad_port_zero.c_str());
     }
 
     // Parameterized constructor exception paths (src/post.cpp):
