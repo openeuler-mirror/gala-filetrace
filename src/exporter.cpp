@@ -78,6 +78,25 @@ prometheus::Histogram& PrometheusExporter::add_histogram(
     //return family.Add(labels);
     return family.Add(labels, buckets);
 }
+std::string PrometheusExporter::make_series_key(
+        const std::map<std::string, std::string>& labels)
+{
+    // std::map iterates in key order, so this encoding is canonical: identical
+    // label sets always produce the same key. Length prefixes make it
+    // injective even when a label value itself contains '=' or ';'.
+    std::string key;
+    for (const auto& kv : labels) {
+        key += std::to_string(kv.first.size());
+        key += ':';
+        key += kv.first;
+        key += std::to_string(kv.second.size());
+        key += ':';
+        key += kv.second;
+        key += ';';
+    }
+    return key;
+}
+
 // dir:/dir4/dir3/dir2/dir1/filename
 std::string PrometheusExporter::get_full_path(const struct event *event) 
 {
@@ -141,52 +160,24 @@ void PrometheusExporter::set_metrics(struct event& e, const std::string& reporte
     detailed_labels.insert({"inode", std::to_string(e.i_ino)});
     detailed_labels.insert({"file", filename});
     // "cmd" is already present via base_labels; inserting it again is a no-op.
-    //
-    // A wall-clock "ts" label is deliberately NOT included. Prometheus
-    // identifies a series by its complete label set, so attaching time(nullptr)
-    // would register a brand-new series for every event: cardinality grows with
-    // (active PIDs x time) and old series linger for the whole retention window.
-    // The timestamp is tracked only in gauge_cache_timestamps, for expiry.
+    // No wall-clock "ts" label: Prometheus keys a series by its full label set,
+    // so a per-event timestamp would register a brand-new series every time and
+    // grow cardinality without bound. "When" is exported as the VALUE of a
+    // separate filetrace_info_last_access_seconds gauge instead (see below).
     const std::string time_now = std::to_string(std::time(nullptr));
+    const double access_time = static_cast<double>(std::time(nullptr));
 
-    std::string pid_gauge_key = "filetrace_info_record_" + std::to_string(e.pid);
-    prometheus::Gauge* pid_gauge = nullptr;
+    // The cache key is the full, ts-free label set. This is the series
+    // identity: a key hit means the labels are already exactly what we want,
+    // so the hot path is a plain Set() with no Remove+Add re-registration.
+    // Series are bounded by distinct identities still alive in the cache and
+    // are pruned by task_gauge_cache_timeout().
+    const std::string series_key = make_series_key(detailed_labels);
+
     // Protect cache access with mutex to avoid races with the cleanup thread
     {
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
-        auto it = gauge_cache.find(pid_gauge_key);
-        auto lit = gauge_cache_labels.find(pid_gauge_key);
-        if (it != gauge_cache.end()) {
-            // The gauge is keyed by PID only, but its labels (file, operation,
-            // cmd, uid, ...) belong to a single event. Reusing a gauge whose
-            // labels changed leaves the first event's labels exported for every
-            // later event of the same PID, so metrics silently describe the
-            // wrong file. Re-register a fresh labeled gauge in that case.
-            //
-            // set_metrics() runs on every syscall. Removing and re-adding a
-            // series is O(P) (P = active series in the family) plus a heap
-            // allocation, so only do it when the labels actually differ. With
-            // "ts" removed from the label set, repeated events on the same file
-            // now take the O(1) Set() fast path instead of churning the family.
-            const bool labels_changed =
-                (lit == gauge_cache_labels.end()) || (lit->second != detailed_labels);
-            if (labels_changed) {
-                LOG_INFO("Refreshing gauge labels for PID: " + pid_gauge_key);
-                // A cached gauge implies the family exists; still guard it so a
-                // null family can never be dereferenced by Add() below.
-                if (info_gauge_family) {
-                    if (it->second) {
-                        info_gauge_family->Remove(it->second);
-                    }
-                    pid_gauge = &info_gauge_family->Add(detailed_labels);
-                    ++gauge_series_add_count;
-                    it->second = pid_gauge;
-                    gauge_cache_labels[pid_gauge_key] = detailed_labels;
-                }
-            } else {
-                pid_gauge = it->second;
-            }
-        }
+        auto it = gauge_cache.find(series_key);
         if (it == gauge_cache.end()) {
             if (!info_gauge_family) {
                 info_gauge_family = &prometheus::BuildGauge()
@@ -194,19 +185,36 @@ void PrometheusExporter::set_metrics(struct event& e, const std::string& reporte
                     .Help("filetrace info")
                     .Register(*registry);
             }
-            pid_gauge = &info_gauge_family->Add(detailed_labels);
+            prometheus::Gauge* gauge = &info_gauge_family->Add(detailed_labels);
             ++gauge_series_add_count;
-            gauge_cache[pid_gauge_key] = pid_gauge;
-            gauge_cache_labels[pid_gauge_key] = detailed_labels;
+            it = gauge_cache.emplace(series_key, gauge).first;
+        }
+        // Cache hit (or just created): labels are fixed by the key, so there is
+        // never a stale-label case and never a need to Remove+Add.
+        if (it->second) {
+            it->second->Set(static_cast<double>(e.pid));
         }
 
-        // Update the gauge and timestamp while holding the lock to ensure visibility
-        if (pid_gauge) {
-            pid_gauge->Set(static_cast<double>(e.pid));
+        // Last-access time as a metric value under the same stable labels.
+        auto ts_it = last_access_cache.find(series_key);
+        if (ts_it == last_access_cache.end()) {
+            if (!last_access_family) {
+                last_access_family = &prometheus::BuildGauge()
+                    .Name("filetrace_info_last_access_seconds")
+                    .Help("unix timestamp of the most recent access for this filetrace identity")
+                    .Register(*registry);
+            }
+            prometheus::Gauge* ts_gauge = &last_access_family->Add(detailed_labels);
+            ++last_access_series_add_count;
+            ts_it = last_access_cache.emplace(series_key, ts_gauge).first;
         }
-        gauge_cache_timestamps[pid_gauge_key] = time_now;
+        if (ts_it->second) {
+            ts_it->second->Set(access_time);
+        }
+
+        gauge_cache_timestamps[series_key] = time_now;
     }
-    LOG_INFO("Updated PID gauge for PID " + std::to_string(e.pid));
+    LOG_INFO("Updated gauge for PID " + std::to_string(e.pid));
 }
 
 void PrometheusExporter::task_gauge_cache_timeout() {
@@ -220,18 +228,26 @@ void PrometheusExporter::task_gauge_cache_timeout() {
             const std::string& timestamp_str = it->second;
             std::time_t timestamp = std::stol(timestamp_str);
             std::time_t now = std::time(nullptr);
-            if (now - timestamp > cache_timeout_seconds) { 
+            if (now - timestamp > cache_timeout_seconds) {
+                // The Family owns each gauge; erasing the cached pointer alone
+                // leaves the labeled series registered and exported. Remove it
+                // from the family first, for both the info and last-access
+                // series that share this identity key.
                 auto gauge_it = gauge_cache.find(key);
                 if (gauge_it != gauge_cache.end()) {
-                    // The Family owns the gauge; erasing the cached pointer alone
-                    // leaves the old labeled series registered and exported.
                     if (info_gauge_family && gauge_it->second) {
                         info_gauge_family->Remove(gauge_it->second);
                     }
-                    gauge_cache.erase(key);
-                    gauge_cache_labels.erase(key);
-                    LOG_INFO("Removed stale gauge from cache: " + key);
+                    gauge_cache.erase(gauge_it);
                 }
+                auto ts_it = last_access_cache.find(key);
+                if (ts_it != last_access_cache.end()) {
+                    if (last_access_family && ts_it->second) {
+                        last_access_family->Remove(ts_it->second);
+                    }
+                    last_access_cache.erase(ts_it);
+                }
+                LOG_INFO("Removed stale gauge from cache: " + key);
                 it = gauge_cache_timestamps.erase(it);
             }
             else 

@@ -41,8 +41,10 @@ public:
     void set_metrics(struct event& e, const std::string& reported_file = std::string());
     prometheus::Counter* file_access_counter = nullptr;
     // Number of info-gauge series ever registered. Exposed so tests can prove
-    // that repeated identical events reuse a series (no Remove+Add churn).
+    // that repeated identical events reuse a series (no re-registration churn).
     size_t gauge_series_add_count = 0;
+    // Number of last-access series ever registered (separate timestamp metric).
+    size_t last_access_series_add_count = 0;
     std::string get_full_path(const struct event *event);
     //add a thread check cache gauge timeout and remove it after some time
     prometheus::Gauge* thread_check_cache_gauge = nullptr;
@@ -53,14 +55,20 @@ public:
     std::thread cache_timeout_thread_;
     void stop_cache_timeout_thread();
 private:
+    // Build a canonical cache key from the full, ts-free label set. The key is
+    // the series identity, so a hit always means the labels are identical and
+    // the hot path is a plain Set() -- the series is never Remove+Add churned.
+    static std::string make_series_key(const std::map<std::string, std::string>& labels);
+
     std::unique_ptr<prometheus::Exposer> exposer;
     prometheus::Family<prometheus::Gauge>* info_gauge_family = nullptr;
+    // The last-access time is a metric VALUE in its own right (never a label),
+    // so observing "when" does not multiply cardinality. Same stable labels as
+    // the info gauge; one series per identity, pruned by the same timeout.
+    prometheus::Family<prometheus::Gauge>* last_access_family = nullptr;
     //std::map<std::string, prometheus::Counter*> op_counter_cache;
     std::map<std::string, prometheus::Gauge*> gauge_cache;
-    // Labels attached to each cached gauge. set_metrics() is a per-syscall hot
-    // path; keeping the last labels lets us skip the O(P) Remove+Add when the
-    // event describes the same series (e.g. repeated writes to one file).
-    std::map<std::string, std::map<std::string, std::string>> gauge_cache_labels;
+    std::map<std::string, prometheus::Gauge*> last_access_cache;
     std::map<std::string, std::string> gauge_cache_timestamps;
     std::mutex gauge_cache_mutex;
 };

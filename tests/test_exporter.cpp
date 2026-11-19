@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string>
 #include <cstring>
+#include <ctime>
 #include <thread>
 #include <chrono>
 #include "exporter.hpp"
@@ -156,6 +157,48 @@ static std::string info_file_label(PrometheusExporter& exp, unsigned int pid)
     return std::string();
 }
 
+// Whether any filetrace_info_record series carries the given stable "file" label.
+static bool info_has_file(PrometheusExporter& exp, const std::string& file)
+{
+    for (const auto& family : exp.registry->Collect()) {
+        if (family.name != "filetrace_info_record") {
+            continue;
+        }
+        for (const auto& metric : family.metric) {
+            for (const auto& label : metric.label) {
+                if (label.name == "file" && label.value == file) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// Value of the last-access gauge for the series whose "file" label matches.
+static bool last_access_value_for_file(PrometheusExporter& exp,
+                                       const std::string& file, double& out)
+{
+    for (const auto& family : exp.registry->Collect()) {
+        if (family.name != "filetrace_info_last_access_seconds") {
+            continue;
+        }
+        for (const auto& metric : family.metric) {
+            bool matches = false;
+            for (const auto& label : metric.label) {
+                if (label.name == "file" && label.value == file) {
+                    matches = true;
+                }
+            }
+            if (matches) {
+                out = metric.gauge.value;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Expiration must remove the series from the Registry, including after the
 // same PID returns with a new timestamp label.
 static void test_expired_gauge_removed()
@@ -304,60 +347,105 @@ static void test_set_metrics_rename()
     std::cout << "  PASS: set_metrics for SYS_rename* events" << std::endl;
 }
 
-// ---- Test: set_metrics refreshes labels when a PID is seen again ----
-static void test_set_metrics_refreshes_labels_on_cache_hit()
+// ---- Test: distinct label sets get distinct stable series (no stale labels) ----
+// The cache is keyed by the full, ts-free label tuple. Repeated events for the
+// SAME identity reuse one series; a DIFFERENT identity (e.g. the same PID
+// touching another file) gets its own series with its own stable labels. No
+// series is ever Remove+Add recycled, so one event can never rewrite another
+// event's labels, and cardinality stays bounded by live identities.
+static void test_set_metrics_distinct_labels_get_distinct_series()
 {
     PrometheusExporter exp("127.0.0.1:19106", 30);
 
-    // First event for the PID: labels describe "first.txt".
     struct event first = make_event(500, 1, "bash", "first.txt", "etc", nullptr,
                                     nullptr, nullptr, SYS_write, 0, 0, 9000);
     exp.set_metrics(first);
     assert(info_metric_count(exp) == 1);
     assert(info_file_label(exp, 500) == "/etc/first.txt");
 
-    // Same PID, different file. The gauge is cached by PID, so without a
-    // label refresh the exported "file" label would still say "first.txt"
-    // even though this event is about "second.txt".
+    // Same identity: reuse the existing series (no new registration).
+    exp.set_metrics(first);
+    assert(info_metric_count(exp) == 1);
+    assert(exp.gauge_series_add_count == 1);
+
+    // Same PID, different file: a genuinely different identity. Both series
+    // must coexist with their own correct "file" label -- the old bug was a
+    // single PID-keyed series whose label silently described the wrong file.
     struct event second = make_event(500, 1, "bash", "second.txt", "etc", nullptr,
                                      nullptr, nullptr, SYS_write, 0, 0, 9001);
     exp.set_metrics(second);
-    assert(info_metric_count(exp) == 1);
-    assert(info_file_label(exp, 500) == "/etc/second.txt");
+    assert(info_metric_count(exp) == 2);
+    assert(exp.gauge_series_add_count == 2);
+    assert(info_has_file(exp, "/etc/first.txt"));
+    assert(info_has_file(exp, "/etc/second.txt"));
 
-    std::cout << "  PASS: set_metrics refreshes cached gauge labels" << std::endl;
+    std::cout << "  PASS: distinct labels get distinct stable series" << std::endl;
 }
 
-// ---- Test: repeated identical events keep one series and still refresh later ----
-// set_metrics() is a per-syscall hot path. Repeated events with identical labels
-// must not churn the family (Remove+Add), yet a later event that does change a
-// label must still be reflected. This also guards the labels-cache bookkeeping.
-static void test_set_metrics_identical_events_then_change()
+// ---- Test: repeated identical events never churn the family ----
+// set_metrics() is a per-syscall hot path. With the full label tuple as the
+// cache key, a hit always means identical labels, so the path is a plain Set()
+// and the series is never removed/re-added. gauge_series_add_count makes that
+// observable: if the hot path regressed to re-registration, it would grow.
+static void test_set_metrics_identical_events_no_churn()
 {
     PrometheusExporter exp("127.0.0.1:19107", 30);
 
     struct event a = make_event(600, 1, "bash", "same.txt", "etc", nullptr,
                                 nullptr, nullptr, SYS_write, 0, 0, 9100);
     exp.set_metrics(a);
-    // "ts" is not a label, so identical events must reuse the same series.
-    // gauge_series_add_count makes the fast path observable: if the hot path
-    // regressed to Remove+Add on every event, this count would keep growing.
-    const size_t adds_after_first = exp.gauge_series_add_count;
-    assert(adds_after_first == 1);
-    exp.set_metrics(a);  // identical labels -> O(1) Set() fast path
-    exp.set_metrics(a);
-    assert(exp.gauge_series_add_count == adds_after_first);  // no series churn
+    assert(exp.gauge_series_add_count == 1);
+    for (int i = 0; i < 5; ++i) {
+        exp.set_metrics(a);  // identical labels -> O(1) Set() fast path
+    }
+    assert(exp.gauge_series_add_count == 1);  // no re-registration churn
+    assert(exp.last_access_series_add_count == 1);
     assert(info_metric_count(exp) == 1);
-    assert(info_file_label(exp, 600) == "/etc/same.txt");
+    assert(info_has_file(exp, "/etc/same.txt"));
 
+    // A different identity adds exactly one series to each family, and never
+    // re-registers the existing one.
     struct event b = make_event(600, 1, "bash", "next.txt", "etc", nullptr,
                                 nullptr, nullptr, SYS_write, 0, 0, 9101);
-    exp.set_metrics(b);  // label changed -> one Remove+Add refresh
-    assert(exp.gauge_series_add_count == adds_after_first + 1);
-    assert(info_metric_count(exp) == 1);
-    assert(info_file_label(exp, 600) == "/etc/next.txt");
+    exp.set_metrics(b);
+    assert(exp.gauge_series_add_count == 2);
+    assert(exp.last_access_series_add_count == 2);
+    assert(info_metric_count(exp) == 2);
 
-    std::cout << "  PASS: set_metrics identical events then change" << std::endl;
+    std::cout << "  PASS: identical events do not churn the gauge family" << std::endl;
+}
+
+// ---- Test: last-access time is a metric value, never a high-cardinality label ----
+// "When" must stay observable after removing the ts label, but as the VALUE of
+// a separate gauge under the same stable labels -- not as a per-event label.
+static void test_last_access_time_is_a_value_not_a_label()
+{
+    PrometheusExporter exp("127.0.0.1:19109", 30);
+    struct event e = make_event(800, 1, "bash", "access.txt", "etc", nullptr,
+                                nullptr, nullptr, SYS_write, 0, 0, 9200);
+    const double before = static_cast<double>(std::time(nullptr));
+    exp.set_metrics(e);
+    const double after = static_cast<double>(std::time(nullptr));
+
+    // No high-cardinality ts label anywhere in the registry.
+    for (const auto& family : exp.registry->Collect()) {
+        for (const auto& metric : family.metric) {
+            for (const auto& label : metric.label) {
+                assert(label.name != "ts");
+            }
+        }
+    }
+
+    // The last-access gauge exists under the stable labels and its value is a
+    // sane unix timestamp; repeated events update the value, not the identity.
+    double access_time = 0.0;
+    int found = last_access_value_for_file(exp, "/etc/access.txt", access_time);
+    assert(found == 1);
+    assert(access_time >= before && access_time <= after);
+    exp.set_metrics(e);
+    assert(exp.last_access_series_add_count == 1);
+
+    std::cout << "  PASS: last-access time is a value, not a ts label" << std::endl;
 }
 
 // A wall-clock "ts" label makes every event a new Prometheus series, so the
@@ -368,16 +456,21 @@ static void test_info_gauge_has_no_ts_label()
     struct event e = make_event(700, 1, "bash", "file.txt", "etc", nullptr,
                                 nullptr, nullptr, SYS_write, 0, 0, 9200);
     exp.set_metrics(e);
+    // Assert a series was actually inspected, so this test cannot vacuously
+    // pass when the family is missing or the label set is empty.
+    size_t series_checked = 0;
     for (const auto& family : exp.registry->Collect()) {
         if (family.name != "filetrace_info_record") {
             continue;
         }
         for (const auto& metric : family.metric) {
+            ++series_checked;
             for (const auto& label : metric.label) {
                 assert(label.name != "ts");
             }
         }
     }
+    assert(series_checked == 1);
 
     std::cout << "  PASS: info gauge has no ts label" << std::endl;
 }
@@ -402,8 +495,9 @@ int main()
     test_cache_timeout_thread();
     test_destructor_stops_thread();
     test_set_metrics_file_access_counter();
-    test_set_metrics_refreshes_labels_on_cache_hit();
-    test_set_metrics_identical_events_then_change();
+    test_set_metrics_distinct_labels_get_distinct_series();
+    test_set_metrics_identical_events_no_churn();
+    test_last_access_time_is_a_value_not_a_label();
     test_info_gauge_has_no_ts_label();
 
     std::cout << "All PrometheusExporter unit tests passed." << std::endl;
