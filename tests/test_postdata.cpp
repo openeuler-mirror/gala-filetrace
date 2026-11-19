@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <fstream>
 #include <iostream>
@@ -597,6 +598,23 @@ int main()
         assert(pc.port == 8080);
         assert(pc.max_dir_level == 4);
         assert(pc.log_level == "debug");
+
+        // A config file that already contains a trailing-slash entry must be
+        // normalized on load, otherwise the runtime remove API (which normalizes
+        // its request) can never match it: remove would report success while the
+        // entry stays in memory and on disk. Normalizing on load also keeps
+        // duplicate detection consistent between "/etc/hosts" and "/etc/hosts/".
+        const std::string slash_cfg = "/tmp/gala_test_loadcfg_slash.json";
+        {
+            std::ofstream out(slash_cfg);
+            out << R"({"host_id":"h","domain_name":"d","ragdoll_api":"u",)"
+                   R"("config_list":["/etc/hosts/"],"skip_processes_list":[],)"
+                   R"("server":"127.0.0.1"})";
+        }
+        PostData pc_slash;
+        assert(pc_slash.load_config(slash_cfg) == 0);
+        assert(pc_slash.conf_list.size() == 1);
+        assert(pc_slash.conf_list[0] == "/etc/hosts");
 
         PostData pc2;
         assert(pc2.load_config("/tmp/gala_test_loadcfg_missing.json") == -1);

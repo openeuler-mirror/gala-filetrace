@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <cstring>
 
+// Defined near update_config(); declared here so load_config() can apply the
+// same trailing-slash normalization to paths read from the config file.
+static std::string normalize_monitor_path(const std::string &path);
+
 
 // Replace invalid UTF-8 sequences with the Unicode replacement character (U+FFFD)
 std::string PostData::sanitize_utf8(const std::string &s) {
@@ -186,6 +190,15 @@ int PostData::load_config(const std::string& configFile)
         file >> config_json_obj;
         file.close();
         conf_list = config_json_obj["config_list"].get<std::vector<std::string>>();
+        // Normalize paths loaded from disk exactly as update_config() does.
+        // Otherwise an existing "/etc/hosts/" entry (accepted by the level
+        // check, which strips one trailing slash) could never be removed: the
+        // remove API normalizes the request to "/etc/hosts", which would not
+        // match the raw stored string. Normalizing on both sides keeps add,
+        // remove and de-duplication consistent for pre-existing config files.
+        for (std::string &conf : conf_list) {
+            conf = normalize_monitor_path(conf);
+        }
         if (conf_list.empty()) 
         {
             LOG_ERROR("Configuration list is empty, please check your config file.");
@@ -957,10 +970,9 @@ int PostData::update_config(const json &j)
     // otherwise a relative path, an empty string or a path deeper than the
     // configured limit enters conf_list and can never be matched by any
     // event (all rebuilt event paths are absolute). Reject it here instead
-    // of silently persisting an unusable entry.
-    // get_dir_level() returns -1 for an empty or non-absolute path.
-    int level = get_dir_level(conf);
-    if (level < 0 || level > max_dir_level) {
+    // of silently persisting an unusable entry. is_valid_monitor_path() is the
+    // single shared rule used by load_config and the HTTP handler as well.
+    if (!is_valid_monitor_path(conf)) {
         LOG_ERROR("Invalid monitor path in config update: " + conf);
         return -1;
     }
@@ -1021,9 +1033,9 @@ void PostData::handle_update_config_request(const std::string &body, httplib::Re
 
         // A malformed monitor path is a client error, not a server failure.
         // Validate it here so it maps to 400 instead of the 500 that update_config
-        // returns for genuine persistence failures.
-        const std::string norm_conf = normalize_monitor_path(j["conf"].get<std::string>());
-        if (get_dir_level(norm_conf) < 0 || get_dir_level(norm_conf) > max_dir_level) {
+        // returns for genuine persistence failures. Use the same helper as
+        // update_config/load_config, calling get_dir_level() only once.
+        if (!is_valid_monitor_path(j["conf"].get<std::string>())) {
             res.status = 400;
             res.set_content("Invalid monitor path", "text/plain");
             return;
@@ -1107,6 +1119,15 @@ int PostData::get_dir_level(const std::string &path)
        tmp_path = tmp_path.substr(0, tmp_path.size() - 1);
     }
     return std::count(tmp_path.begin(), tmp_path.end(), '/'); 
+}
+
+bool PostData::is_valid_monitor_path(const std::string &path)
+{
+    // Normalize once here (not at each caller) so the check and the value
+    // ultimately stored stay identical. get_dir_level() is called exactly once.
+    const std::string normalized = normalize_monitor_path(path);
+    const int level = get_dir_level(normalized);
+    return level >= 0 && level <= max_dir_level;
 }
 json PostData::get_events_from_queue(int count)
 {

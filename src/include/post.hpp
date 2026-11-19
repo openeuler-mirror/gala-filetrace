@@ -113,6 +113,10 @@ class PostData {
         bool compare_config_file(const vector<string> &v, const std::string &config);
         bool match_process_name(const std::vector<std::string> &skip_processes, const std::string &cmd);
         int get_dir_level(const std::string &path);
+        // Single source of truth for monitor-path validation, shared by
+        // load_config, update_config and handle_update_config_request so the
+        // rules cannot drift apart.
+        bool is_valid_monitor_path(const std::string &path);
         bool exporter_start();
         json get_events_from_queue(int count = 10);
         bool is_valid_filename(const std::string &filename);
