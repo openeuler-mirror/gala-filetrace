@@ -454,6 +454,41 @@ int main()
             assert(saved.value("host_id", std::string()) == "1");
         }
 
+        // Invalid monitor paths must be rejected without touching the file:
+        // empty, relative, and deeper than max_dir_level can never be matched.
+        json bad_empty;
+        bad_empty["conf"] = "";
+        bad_empty["action"] = "add";
+        assert(p2.update_config(bad_empty) == -1);
+        json bad_relative;
+        bad_relative["conf"] = "etc/profile";
+        bad_relative["action"] = "add";
+        assert(p2.update_config(bad_relative) == -1);
+        json bad_deep;
+        bad_deep["conf"] = "/a/b/c/d/e/f";
+        bad_deep["action"] = "add";
+        assert(p2.update_config(bad_deep) == -1);
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 1);
+            assert(saved["config_list"][0] == "/etc/hosts");
+        }
+
+        // Adding a path already configured is a no-op, not a duplicate.
+        json dup;
+        dup["conf"] = "/etc/hosts";
+        dup["action"] = "add";
+        assert(p2.update_config(dup) == 0);
+        assert(p2.conf_list.size() == 1);
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 1);
+        }
+
         // The HTTP request contract uses conf/action. It must not try to read a
         // non-existent "key", and client-side JSON errors must return 400.
         httplib::Response response;

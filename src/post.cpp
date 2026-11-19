@@ -1,5 +1,6 @@
 #include  "post.hpp"
 #include "logger.hpp"
+#include <algorithm>
 #include <cstring>
 
 
@@ -940,7 +941,24 @@ int PostData::update_config(const json &j)
 
     const std::string conf = j["conf"].get<std::string>();
     const std::string action = j["action"].get<std::string>();
+    // The runtime API must enforce the same path rules as load_config():
+    // otherwise a relative path, an empty string or a path deeper than the
+    // configured limit enters conf_list and can never be matched by any
+    // event (all rebuilt event paths are absolute). Reject it here instead
+    // of silently persisting an unusable entry.
+    // get_dir_level() returns -1 for an empty or non-absolute path.
+    int level = get_dir_level(conf);
+    if (level < 0 || level > max_dir_level) {
+        LOG_ERROR("Invalid monitor path in config update: " + conf);
+        return -1;
+    }
     if (action == "add") {
+        // Adding the same path twice only duplicates a devices_/match entry
+        // in consumers and wastes a config_list slot; keep the list a set.
+        if (std::find(conf_list.begin(), conf_list.end(), conf) != conf_list.end()) {
+            LOG_WARN("Monitor path already configured, ignoring: " + conf);
+            return 0;
+        }
         conf_list.push_back(conf);
     } else if (action == "remove") {
         conf_list.erase(std::remove(conf_list.begin(), conf_list.end(), conf), conf_list.end());
