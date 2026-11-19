@@ -593,23 +593,37 @@ std::string PostData::convert_to_string(struct event &e)
     // "/etc/hosts". For renames also expose the source path: a "mv away" event
     // reports the removed file under "file" while still recording where it
     // came from.
+    // Field names below come from the kernel (BPF bpf_probe_read_str on dentry
+    // names and task->comm). Linux filenames and commands may contain arbitrary
+    // non-NUL bytes, so every such string must be sanitized before it reaches
+    // json::dump() - otherwise a single invalid sequence throws type_error.316
+    // out of the ring-buffer callback and terminates the daemon. sanitize_utf8()
+    // is idempotent on already-valid text, so re-sanitizing is harmless.
     if (e.flag == SYS_write || e.flag == SYS_unlinkat ||
         e.flag == SYS_copy_file_range) {
-        json_data["file"] = get_full_path(&e);
+        json_data["file"] = sanitize_utf8(get_full_path(&e));
     } else if (e.flag == SYS_rename || e.flag == SYS_renameat || e.flag == SYS_renameat2) {
         std::string oldpath;
-        json_data["file"] = get_reported_path(&e, &oldpath);
-        json_data["old_file"] = oldpath;
+        json_data["file"] = sanitize_utf8(get_reported_path(&e, &oldpath));
+        json_data["old_file"] = sanitize_utf8(oldpath);
     } else {
-        json_data["file"] = e.filename;
+        json_data["file"] = sanitize_utf8(std::string(e.filename));
     }
-    json_data["user"] = username;
-    json_data["group"] = groupname;
+    json_data["user"] = sanitize_utf8(username);
+    json_data["group"] = sanitize_utf8(groupname);
     json_data["pid"] = e.pid;
     json_data["inode"] = e.i_ino;
-    json_data["cmd"] = e.cmd;
-    json_data["loginip"] = get_loginip_by_username(username);
-    return json_data.dump(); 
+    json_data["cmd"] = sanitize_utf8(std::string(e.cmd));
+    json_data["loginip"] = sanitize_utf8(get_loginip_by_username(username));
+    // Final safety net: configuration-derived strings (host_id, domain_name,
+    // cluster_id) are outside this function's control. Never let a serialization
+    // exception escape into the ring-buffer callback.
+    try {
+        return json_data.dump();
+    } catch (const json::exception &ex) {
+        LOG_ERROR(std::string("Failed to serialize event to JSON: ") + ex.what());
+        return std::string();
+    }
 }
 bool PostData::compare_config_file(const vector<string> &v, const std::string &config) 
 {

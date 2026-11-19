@@ -940,6 +940,38 @@ int main()
         std::cout << "  PASS: sanitize_utf8 comprehensive tests" << std::endl;
     }
 
+    // sanitize must also be applied at the JSON serialization boundary: kernel
+    // strings (filename / cmd) can carry invalid UTF-8 that would make
+    // json::dump() throw type_error.316 and abort the daemon via the callback.
+    {
+        struct event bad;
+        memset(&bad, 0, sizeof(bad));
+        bad.flag = SYS_openat;          // else-branch: file = e.filename
+        bad.pid = 424242;               // no real proc trace / no ptrace reads
+        bad.uid = bad.gid = 0;
+        // Invalid sequences in a filename and in the command (task->comm).
+        strncpy(bad.filename, "bad_\xF5\x80\x80\x80\xFF.txt", sizeof(bad.filename) - 1);
+        strncpy(bad.cmd, "proc_\xED\xA0\x80", sizeof(bad.cmd) - 1);
+        bad.filename[sizeof(bad.filename) - 1] = '\0';
+        bad.cmd[sizeof(bad.cmd) - 1] = '\0';
+
+        const std::string replacement = "\xEF\xBF\xBD";  // U+FFFD
+        bool threw = false;
+        std::string serialized;
+        try {
+            serialized = p.convert_to_string(bad);
+        } catch (...) {
+            threw = true;
+        }
+        assert(!threw);
+        assert(!serialized.empty());
+        // The document must be valid JSON and contain no raw invalid bytes.
+        json doc = json::parse(serialized);
+        assert(doc["file"].get<std::string>().find(replacement) != std::string::npos);
+        assert(doc["cmd"].get<std::string>().find(replacement) != std::string::npos);
+        std::cout << "  PASS: convert_to_string sanitizes kernel strings" << std::endl;
+    }
+
     // exporter_start: throws when exporter_address is empty; initializes
     // exporter_ptr and file_access_counter when given a valid address
     {
