@@ -10,8 +10,9 @@
 // See the Mulan PSL v2 for more details.
 // ******************************************************************************/
 // Unit tests for the filetrace-tui entry point helpers (load_config_list,
-// demo_feed). The entry file's main() is renamed at include time so its
-// static helpers become linkable from this test binary.
+// demo_feed, tui_sig_handler). The entry file's main() is renamed at include
+// time so its static helpers and g_tui global become linkable from this test
+// binary.
 //
 // Checks go through CHECK(), not assert(): assert() compiles away under
 // -DNDEBUG, which would leave a binary that prints "passed" without checking
@@ -19,16 +20,26 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "stats.hpp"
+
+// Open TuiApp::running_ before tui_main.cpp includes tui.hpp (all data members
+// live in one contiguous private block, so layout matches tui.o).
+#define private public
+#include "tui.hpp"
+#undef private
 
 #define main tui_unused_main
 #include "../src/tui_main.cpp"
@@ -139,6 +150,36 @@ std::string write_config(TempDir &dir, const std::string &content)
 {
     return dir.write_file("cfg.json", content);
 }
+
+// Restores g_tui and SIGINT/SIGTERM dispositions when leaving a test scope,
+// so a failing check cannot leave the signal handler pointing at a dead TuiApp.
+class SignalGuard {
+public:
+    SignalGuard()
+        : have_int_(sigaction(SIGINT, nullptr, &prev_int_) == 0),
+          have_term_(sigaction(SIGTERM, nullptr, &prev_term_) == 0)
+    {}
+
+    ~SignalGuard()
+    {
+        g_tui.store(nullptr, std::memory_order_release);
+        if (have_int_) {
+            sigaction(SIGINT, &prev_int_, nullptr);
+        }
+        if (have_term_) {
+            sigaction(SIGTERM, &prev_term_, nullptr);
+        }
+    }
+
+    SignalGuard(const SignalGuard &) = delete;
+    SignalGuard &operator=(const SignalGuard &) = delete;
+
+private:
+    struct sigaction prev_int_{};
+    struct sigaction prev_term_{};
+    bool have_int_;
+    bool have_term_;
+};
 
 }  // namespace
 
@@ -260,6 +301,51 @@ static void test_demo_feed_should_generate_events_while_running()
     std::cout << "test_demo_feed_should_generate_events_while_running passed" << std::endl;
 }
 
+static void test_tui_sig_handler_should_return_safely_when_g_tui_is_null()
+{
+    SignalGuard guard;
+    g_tui.store(nullptr, std::memory_order_release);
+
+    tui_sig_handler(SIGINT);
+    tui_sig_handler(SIGTERM);
+
+    CHECK(signal(SIGINT, tui_sig_handler) != SIG_ERR);
+    CHECK(raise(SIGINT) == 0);
+    CHECK(signal(SIGTERM, tui_sig_handler) != SIG_ERR);
+    CHECK(raise(SIGTERM) == 0);
+    CHECK(g_tui.load(std::memory_order_acquire) == nullptr);
+    std::cout << "test_tui_sig_handler_should_return_safely_when_g_tui_is_null passed" << std::endl;
+}
+
+static void test_tui_sig_handler_should_request_stop_when_g_tui_published()
+{
+    SignalGuard guard;
+    TraceStats stats({"/etc/hosts"});
+    TuiOptions opts;
+
+    CHECK(signal(SIGINT, tui_sig_handler) != SIG_ERR);
+    CHECK(signal(SIGTERM, tui_sig_handler) != SIG_ERR);
+
+    TuiApp tui_int(stats, opts);
+    CHECK(tui_int.running_.load());
+    g_tui.store(&tui_int, std::memory_order_release);
+    CHECK(raise(SIGINT) == 0);
+    CHECK(!tui_int.running_.load());
+
+    TuiApp tui_term(stats, opts);
+    CHECK(tui_term.running_.load());
+    g_tui.store(&tui_term, std::memory_order_release);
+    CHECK(raise(SIGTERM) == 0);
+    CHECK(!tui_term.running_.load());
+
+    // After unpublishing g_tui, subsequent signals must no longer touch tui_term.
+    tui_term.running_.store(true);
+    g_tui.store(nullptr, std::memory_order_release);
+    CHECK(raise(SIGINT) == 0);
+    CHECK(tui_term.running_.load());
+    std::cout << "test_tui_sig_handler_should_request_stop_when_g_tui_published passed" << std::endl;
+}
+
 int main()
 {
     test_load_config_list_should_return_empty_when_file_missing();
@@ -270,6 +356,8 @@ int main()
     test_load_config_list_should_return_empty_on_non_string_entries();
     test_demo_feed_should_do_nothing_when_not_running();
     test_demo_feed_should_generate_events_while_running();
+    test_tui_sig_handler_should_return_safely_when_g_tui_is_null();
+    test_tui_sig_handler_should_request_stop_when_g_tui_published();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed" << std::endl;

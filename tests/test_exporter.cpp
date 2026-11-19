@@ -1,9 +1,11 @@
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <cstring>
 #include <thread>
 #include <chrono>
+#include <vector>
 #include "exporter.hpp"
 
 // Helper: build an event with the given fields
@@ -126,31 +128,58 @@ static size_t info_metric_count(PrometheusExporter& exp)
     return count;
 }
 
-// Return the "file" label of the info gauge for the given PID, or "" if the
-// gauge is absent.
-static std::string info_file_label(PrometheusExporter& exp, unsigned int pid)
+static const prometheus::ClientMetric& find_info_metric_by_pid(
+    const std::vector<prometheus::MetricFamily>& families,
+    unsigned int pid)
 {
-    const std::string want_pid = std::to_string(pid);
-    for (const auto& family : exp.registry->Collect()) {
+    const std::string pid_str = std::to_string(pid);
+    for (const auto& family : families) {
         if (family.name != "filetrace_info_record") {
             continue;
         }
+        assert(family.type == prometheus::MetricType::Gauge);
         for (const auto& metric : family.metric) {
-            bool pid_matches = false;
-            std::string file;
             for (const auto& label : metric.label) {
-                if (label.name == "pid" && label.value == want_pid) {
-                    pid_matches = true;
-                } else if (label.name == "file") {
-                    file = label.value;
+                if (label.name == "pid" && label.value == pid_str) {
+                    return metric;
                 }
-            }
-            if (pid_matches) {
-                return file;
             }
         }
     }
-    return std::string();
+    assert(false && "Expected filetrace_info_record metric for pid not found");
+    std::abort();
+}
+
+static std::string get_label_value(const prometheus::ClientMetric& metric,
+                                   const std::string& name)
+{
+    for (const auto& label : metric.label) {
+        if (label.name == name) {
+            return label.value;
+        }
+    }
+    assert(false && "Expected label not found on metric");
+    return "";
+}
+
+static void assert_info_metric_labels(PrometheusExporter& exp,
+                                      const struct event& e,
+                                      const std::string& expected_file,
+                                      const std::string& expected_operation)
+{
+    const auto families = exp.registry->Collect();
+    const auto& metric = find_info_metric_by_pid(families, e.pid);
+
+    assert(metric.gauge.value == static_cast<double>(e.pid));
+    assert(get_label_value(metric, "file") == expected_file);
+    assert(get_label_value(metric, "operation") == expected_operation);
+    assert(get_label_value(metric, "pid") == std::to_string(e.pid));
+    assert(get_label_value(metric, "ppid") == std::to_string(e.ppid));
+    assert(get_label_value(metric, "uid") == std::to_string(e.uid));
+    assert(get_label_value(metric, "gid") == std::to_string(e.gid));
+    assert(get_label_value(metric, "inode") == std::to_string(e.i_ino));
+    assert(get_label_value(metric, "cmd") == std::string(e.cmd));
+    assert(!get_label_value(metric, "ts").empty());
 }
 
 // Expiration must remove the series from the Registry, including after the
@@ -213,27 +242,61 @@ static void test_set_metrics_write()
 {
     PrometheusExporter exp("127.0.0.1:19098", 30);
     struct event e = make_event(100, 1, "bash", "output.log", "var", "log", "", "",
-                                SYS_write, 1000, 1000, 5000);
+                                SYS_write, 1000, 2000, 5000);
     exp.set_metrics(e);
+    assert(info_metric_count(exp) == 1);
+    assert_info_metric_labels(exp, e, "/log/var/output.log", "sys_enter_write");
 
-    // file_access_counter should have been incremented
-    // (set_metrics increments it if non-null; it is nullptr by default, so skip that check)
-
-    // A gauge should be created for pid=100
-    // The gauge_cache is private, so we verify indirectly by calling set_metrics again
-    // without crashing (reuses the cached gauge).
+    // Calling set_metrics again for the same PID reuses the cached gauge.
     exp.set_metrics(e);
+    assert(info_metric_count(exp) == 1);
+    assert_info_metric_labels(exp, e, "/log/var/output.log", "sys_enter_write");
 
     std::cout << "  PASS: set_metrics for SYS_write event" << std::endl;
+}
+
+// ---- Test: set_metrics for SYS_unlinkat event ----
+static void test_set_metrics_unlinkat()
+{
+    PrometheusExporter exp("127.0.0.1:19105", 30);
+    struct event e = make_event(150, 10, "rm", "stale.tmp", "tmp", "app", "var", "",
+                                SYS_unlinkat, 1001, 2001, 5500);
+    exp.set_metrics(e);
+    assert(info_metric_count(exp) == 1);
+    assert_info_metric_labels(exp, e, "/var/app/tmp/stale.tmp", "sys_enter_unlinkat");
+
+    struct event e_all = make_event(151, 11, "unlink", "lock", "run", "svc", "opt", "mnt",
+                                    SYS_unlinkat, 1002, 2002, 5501);
+    exp.set_metrics(e_all);
+    assert(info_metric_count(exp) == 2);
+    assert_info_metric_labels(exp, e_all, "/mnt/opt/svc/run/lock", "sys_enter_unlinkat");
+
+    std::cout << "  PASS: set_metrics for SYS_unlinkat event" << std::endl;
+}
+
+// ---- Test: set_metrics for SYS_copy_file_range event ----
+static void test_set_metrics_copy_file_range()
+{
+    PrometheusExporter exp("127.0.0.1:19106", 30);
+    struct event e = make_event(160, 12, "cp", "dest.bin", "dst", "data", "mnt", "",
+                                SYS_copy_file_range, 1003, 2003, 5600);
+    exp.set_metrics(e);
+    assert(info_metric_count(exp) == 1);
+    assert_info_metric_labels(exp, e, "/mnt/data/dst/dest.bin", "sys_enter_copy_file_range");
+
+    std::cout << "  PASS: set_metrics for SYS_copy_file_range event" << std::endl;
 }
 
 // ---- Test: set_metrics for non-write event (e.g. openat) ----
 static void test_set_metrics_openat()
 {
     PrometheusExporter exp("127.0.0.1:19099", 30);
+    // e.filename should be used directly without get_full_path alteration
     struct event e = make_event(200, 1, "vim", "edit.conf", "etc", "", "", "",
-                                SYS_openat, 0, 0, 6000);
+                                SYS_openat, 1004, 2004, 6000);
     exp.set_metrics(e);
+    assert(info_metric_count(exp) == 1);
+    assert_info_metric_labels(exp, e, "edit.conf", "sys_enter_openat");
 
     std::cout << "  PASS: set_metrics for SYS_openat event" << std::endl;
 }
@@ -286,18 +349,31 @@ static void test_set_metrics_rename()
     // The caller resolves the reported side (same path as the JSON "file"
     // field) and passes it in: the metric must use it, not the destination.
     PrometheusExporter exp("127.0.0.1:19104", 30);
-    struct event e = make_event(400, 1, "mv", "/tmp/hosts.bak", nullptr, nullptr,
-                                nullptr, nullptr, SYS_renameat2, 0, 0, 8000);
-    exp.set_metrics(e, "/etc/hosts");
-    assert(info_file_label(exp, 400) == "/etc/hosts");
+    const struct {
+        int flag;
+        const char* op;
+    } rename_cases[] = {
+        {SYS_rename, "sys_enter_rename"},
+        {SYS_renameat, "sys_enter_renameat"},
+        {SYS_renameat2, "sys_enter_renameat2"},
+    };
+    for (size_t i = 0; i < sizeof(rename_cases) / sizeof(rename_cases[0]); ++i) {
+        // Use distinct PIDs so each path case registers its own cached gauge.
+        unsigned int pid = 400 + 2 * static_cast<unsigned int>(i);
+        struct event e = make_event(pid, 1, "mv", "/tmp/hosts.bak", "dir_a", "dir_b", "", "",
+                                    rename_cases[i].flag, 1010 + static_cast<unsigned int>(i),
+                                    2010 + static_cast<unsigned int>(i), 8000 + 2 * i);
+        exp.set_metrics(e, "/etc/hosts");
+        assert_info_metric_labels(exp, e, "/etc/hosts", rename_cases[i].op);
 
-    // Without an explicit path the historical destination fallback remains.
-    PrometheusExporter fallback("127.0.0.1:19105", 30);
-    struct event f = make_event(401, 1, "mv", "/tmp/hosts.bak", nullptr, nullptr,
-                                nullptr, nullptr, SYS_renameat2, 0, 0, 8001);
-    fallback.set_metrics(f);
-    assert(info_file_label(fallback, 401) == "/tmp/hosts.bak");
-
+        // Without an explicit path the historical destination fallback remains.
+        struct event f = make_event(pid + 1, 1, "mv", "/tmp/hosts.bak", nullptr, nullptr,
+                                    nullptr, nullptr, rename_cases[i].flag, e.uid, e.gid,
+                                    8001 + 2 * i);
+        exp.set_metrics(f);
+        assert_info_metric_labels(exp, f, "/tmp/hosts.bak", rename_cases[i].op);
+    }
+    assert(info_metric_count(exp) == 6);
     std::cout << "  PASS: set_metrics for SYS_rename* events" << std::endl;
 }
 
@@ -316,6 +392,8 @@ int main()
     test_get_full_path_no_dirs();
     test_get_full_path_slash_dir();
     test_set_metrics_write();
+    test_set_metrics_unlinkat();
+    test_set_metrics_copy_file_range();
     test_set_metrics_openat();
     test_set_metrics_rename();
     test_cache_timeout_thread();

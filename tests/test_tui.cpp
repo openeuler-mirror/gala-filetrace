@@ -93,6 +93,34 @@ static void test_sample_once_should_populate_rows_and_usage()
     std::cout << "test_sample_once_should_populate_rows_and_usage passed" << std::endl;
 }
 
+static void test_sample_once_should_clamp_device_scroll()
+{
+    // A single configured path: the device panel has one row. Simulate a
+    // scroll offset left over from a previously larger table/window.
+    TraceStats stats({"/dev0"});
+    event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.pid = 12345;
+    ev.flag = SYS_write;
+    strncpy(ev.filename, "f", sizeof(ev.filename) - 1);
+    stats.on_event(ev, "/dev0");
+
+    TuiOptions opts;
+    TuiApp app(stats, opts);
+    app.dev_height_ = 12;               // tall panel, few device rows
+    app.device_scroll_ = 50;            // stale offset past the end
+    app.sample_once();
+
+    int visible = app.dev_height_ - 2 - 1;  // DEV_HEADER=2
+    int max_scroll = (int)app.snap_.devices.size() - visible;
+    if (max_scroll < 0) {
+        max_scroll = 0;
+    }
+    assert(app.device_scroll_ <= max_scroll);
+    assert(app.device_scroll_ >= 0);
+    std::cout << "test_sample_once_should_clamp_device_scroll passed" << std::endl;
+}
+
 static void test_usage_of_should_not_insert_missing_pid()
 {
     TraceStats stats({"/etc/hosts"});
@@ -310,6 +338,7 @@ int main()
     test_constructor_should_clamp_refresh_ms();
     test_request_stop_should_clear_running();
     test_sample_once_should_populate_rows_and_usage();
+    test_sample_once_should_clamp_device_scroll();
     test_usage_of_should_not_insert_missing_pid();
     test_sample_once_should_sort_rows_by_ops_desc();
     test_move_proc_cursor_should_track_row_pid_and_clamp();
