@@ -39,7 +39,12 @@ static void rotate_log_file() {
         g_log_ofs.close();
     }
     
-    // Create backup filename with timestamp
+    // Create backup filename with a timestamp. A single rotation appends to
+    // an already-open full file, so several rotations can happen within one
+    // second; a second-only name would make each rename overwrite the prior
+    // backup and silently lose history. Include microseconds and a monotonic
+    // counter so every backup name is unique even under a burst of rotations.
+    static unsigned long rotation_seq = 0;
     time_t now = std::time(nullptr);
     struct tm tm_info{};
     localtime_r(&now, &tm_info);
@@ -47,11 +52,20 @@ static void rotate_log_file() {
     std::ostringstream backup_name;
     backup_name << g_log_filepath << ".";
     backup_name << std::put_time(&tm_info, "%Y%m%d_%H%M%S");
+    backup_name << "_" << ++rotation_seq;
+
+    const std::string candidate = backup_name.str();
+    // As a final guard (e.g. after a process restart reuses the counter with
+    // the same timestamp), append further numeric suffixes until free.
+    std::string target = candidate;
+    for (unsigned long extra = 1; std::ifstream(target).good(); ++extra) {
+        target = candidate + "_" + std::to_string(extra);
+    }
     
     // Rename current log file to backup
-    if (std::rename(g_log_filepath.c_str(), backup_name.str().c_str()) != 0) {
+    if (std::rename(g_log_filepath.c_str(), target.c_str()) != 0) {
         std::cerr << "Logger: failed to rotate log file from '" << g_log_filepath 
-                  << "' to '" << backup_name.str() << "'" << std::endl;
+                  << "' to '" << target << "'" << std::endl;
     }
     
     // Open new log file

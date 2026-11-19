@@ -88,10 +88,18 @@ int main()
                 backups++;
             }
         }
-        assert(backups >= 1);
+        // Each rotation must produce its own backup. With many small writes
+        // several rotations land in the same second; a second-only timestamp
+        // would overwrite earlier backups and lose log history.
+        assert(backups >= 2);
         // a fresh file must have been created and hold the most recent line
         std::string content = read_file(rpath);
         assert(content.find("rotation test line 11") != std::string::npos);
+        for (const auto &entry : std::filesystem::directory_iterator("/tmp")) {
+            if (entry.path().filename().string().rfind("gala_test_rotate.log.", 0) == 0) {
+                std::filesystem::remove(entry.path());
+            }
+        }
         unlink(rpath.c_str());
     }
 
