@@ -238,7 +238,14 @@ int PostData::load_config(const std::string& configFile)
             LOG_ERROR("Invalid server IP address: " + server);
             return -1; 
         }
+        // A port outside 1..65535 cannot be bound by the HTTP server; failing
+        // here makes a bad config explicit instead of starting a daemon whose
+        // API is silently unreachable.
         port = config_json_obj.value("port", 8080);
+        if (port < 1 || port > 65535) {
+            LOG_ERROR("Invalid server port: " + std::to_string(port));
+            return -1;
+        }
         exporter_address = config_json_obj.value("exporter_address", "0.0.0.0:8080");
         cache_timeout_seconds = config_json_obj.value("cache_timeout_seconds", 30);
         if (cache_timeout_seconds <= 0) {
