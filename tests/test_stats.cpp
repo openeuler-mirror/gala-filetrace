@@ -511,6 +511,44 @@ static void test_devices_cap_under_config_saturation()
     std::cout << "test_devices_cap_under_config_saturation passed" << std::endl;
 }
 
+static void test_device_eviction_prefers_unconfigured_when_config_saturates()
+{
+    // Configured set saturates the device table exactly. Seeded configured
+    // paths all carry last_seq == 0, so a veto-blind LRU sweep evicts them
+    // before any newer unconfigured entry. Once at least one unconfigured
+    // entry exists, it must be the preferred victim instead.
+    std::vector<std::string> paths;
+    paths.reserve(MAX_DEVICE_ENTRIES);
+    for (size_t i = 0; i < MAX_DEVICE_ENTRIES; i++) {
+        paths.push_back("/cfg" + std::to_string(i));
+    }
+    TraceStats stats(paths);
+    assert(stats.snapshot().devices.size() == MAX_DEVICE_ENTRIES);
+
+    // Feed many distinct unconfigured paths; each batch triggers an eviction.
+    for (unsigned int pid = 2; pid < 2 + MAX_DEVICE_ENTRIES / 2; pid++) {
+        struct event e = make_event(pid, "p", "hosts", SYS_write);
+        stats.on_event(e, "/new" + std::to_string(pid));
+    }
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.devices.size() <= MAX_DEVICE_ENTRIES);
+    size_t configured = 0;
+    for (const auto &d : snap.devices) {
+        if (d.path.rfind("/cfg", 0) == 0) {
+            configured++;
+        }
+    }
+    // Only the very first sweep (when no unconfigured entry existed yet) may
+    // evict configured paths. Later sweeps must prefer unconfigured entries,
+    // so the vast majority of configured paths survive. The broken
+    // size() > monitor_paths_.size() guard skipped that preference and let
+    // plain LRU keep evicting cold configured paths.
+    assert(configured > MAX_DEVICE_ENTRIES * 3 / 4);
+    std::cout << "test_device_eviction_prefers_unconfigured_when_config_saturates passed"
+              << std::endl;
+}
+
 static void test_concurrent_access()
 {
     TraceStats stats({"/etc/hosts"});
@@ -772,6 +810,7 @@ int main()
     test_snapshot_copy_on_write();
     test_table_eviction();
     test_devices_cap_under_config_saturation();
+    test_device_eviction_prefers_unconfigured_when_config_saturates();
     test_config_saturation_reports_ignored();
     test_concurrent_access();
     std::cout << "All TraceStats tests passed" << std::endl;
