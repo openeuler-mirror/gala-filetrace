@@ -7,6 +7,8 @@
 #include <iostream>
 #include <sys/stat.h>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 
 static std::ofstream g_log_ofs;
 static std::mutex g_log_mutex;
@@ -85,7 +87,13 @@ void Logger::init(const std::string &filepath, const std::string &level, size_t 
         std::string dir = filepath.substr(0, pos);
         struct stat st;
         if (stat(dir.c_str(), &st) != 0) {
-            mkdir(dir.c_str(), 0755);
+            // A single mkdir() fails when any parent component is missing
+            // (e.g. /var/log/filetrace/run.log), leaving the log file
+            // unopenable and all output redirected to stderr. Create the
+            // whole chain instead; ignore errors here and report via the
+            // open() failure below.
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
         }
     }
     // Close before reopening: on libstdc++ calling open() on an already-open

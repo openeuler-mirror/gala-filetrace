@@ -16,6 +16,19 @@ static std::string read_file(const std::string &path)
 
 int main()
 {
+    // A log path whose parent directories do not exist yet must be created
+    // recursively. A single mkdir() only handles one missing level and would
+    // leave the log file unopenable.
+    {
+        const std::string nested = "/tmp/gala_ft_nested/a/b/c/run.log";
+        std::filesystem::remove_all("/tmp/gala_ft_nested");
+        Logger::init(nested, "info", 0);
+        LOG_INFO("nested directory test line");
+        assert(std::ifstream(nested).good());
+        assert(read_file(nested).find("nested directory test line") != std::string::npos);
+        std::filesystem::remove_all("/tmp/gala_ft_nested");
+    }
+
     const std::string path = "/tmp/gala_test_logger.log";
     // remove existing log file if any
     unlink(path.c_str());
