@@ -1,9 +1,10 @@
 #undef NDEBUG  // keep every assert active even if built with -DNDEBUG
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
-#include <atomic>
 #include <thread>
 #include <vector>
 
@@ -53,6 +54,22 @@ static void test_event_path_root()
     std::cout << "test_event_path_root passed" << std::endl;
 }
 
+static void test_event_path_empty_and_relative()
+{
+    // completely empty path fields: returns ""
+    struct event empty_ev = make_event(1, "test", "", SYS_write);
+    assert(TraceStats::event_path(empty_ev) == "");
+
+    // only a relative filename with empty dir1..dir4: prepends '/'
+    struct event rel_ev = make_event(1, "test", "hosts", SYS_write);
+    assert(TraceStats::event_path(rel_ev) == "/hosts");
+
+    // "/" in dir1 is skipped, relative filename still rebuilds to "/hosts"
+    snprintf(rel_ev.dir1, sizeof(rel_ev.dir1), "/");
+    assert(TraceStats::event_path(rel_ev) == "/hosts");
+    std::cout << "test_event_path_empty_and_relative passed" << std::endl;
+}
+
 static void test_aggregation()
 {
     TraceStats stats({"/etc/hosts"});
@@ -100,10 +117,63 @@ static void test_trailing_slash_normalized()
 
     struct event e = make_event(100, "bash", "hosts", SYS_write);
     stats.on_event(e, "/etc/hosts");
+    stats.on_event(e, "/etc/hosts/");
+    stats.on_event(e, "/etc/hosts///");
+    stats.on_event(e, "/var/log/test/");
+    stats.on_event(e, "/var/log/test");
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.devices.size() == 2);
+    assert(snap.devices[0].path == "/etc/hosts");
+    assert(snap.devices[0].ops == 3);
+    assert(snap.devices[1].path == "/var/log/test");
+    assert(snap.devices[1].ops == 2);
+    assert(snap.procs.size() == 1);
+    assert(snap.procs[0].per_file->at("/etc/hosts") == 3);
+    assert(snap.procs[0].per_file->at("/var/log/test") == 2);
+    std::cout << "test_trailing_slash_normalized passed" << std::endl;
+}
+
+static void test_duplicate_monitor_paths_dedup()
+{
+    TraceStats stats({"/etc/hosts", "/etc/hosts/", "/etc/hosts"});
+    assert(stats.monitor_paths().size() == 1);
+    assert(stats.monitor_paths()[0] == "/etc/hosts");
+    assert(stats.ignored_monitor_paths() == 0);
+
+    StatsSnapshot initial = stats.snapshot();
+    assert(initial.devices.size() == 1);
+    assert(initial.devices[0].path == "/etc/hosts");
+
+    struct event e = make_event(100, "bash", "hosts", SYS_write);
+    stats.on_event(e, "/etc/hosts/");
     StatsSnapshot snap = stats.snapshot();
     assert(snap.devices.size() == 1);
     assert(snap.devices[0].ops == 1);
-    std::cout << "test_trailing_slash_normalized passed" << std::endl;
+    std::cout << "test_duplicate_monitor_paths_dedup passed" << std::endl;
+}
+
+static void test_root_monitor_path()
+{
+    TraceStats stats({"/", "///"});
+    assert(stats.monitor_paths().size() == 1);
+    assert(stats.monitor_paths()[0] == "/");
+    assert(stats.ignored_monitor_paths() == 0);
+
+    struct event e = make_event(100, "bash", "", SYS_write);
+    stats.on_event(e, "/");
+    stats.on_event(e, "///");
+
+    StatsSnapshot snap = stats.snapshot();
+    assert(snap.total_events == 2);
+    assert(snap.dropped_events == 0);
+    assert(snap.devices.size() == 1);
+    assert(snap.devices[0].path == "/");
+    assert(snap.devices[0].ops == 2);
+    assert(snap.procs.size() == 1);
+    assert(snap.procs[0].per_file->size() == 1);
+    assert(snap.procs[0].per_file->at("/") == 2);
+    std::cout << "test_root_monitor_path passed" << std::endl;
 }
 
 static void test_copy_file_range_is_write()
@@ -126,16 +196,79 @@ static void test_classification()
 
     struct event e = make_event(100, "mv", "hosts", SYS_rename);
     stats.on_event(e, "/etc/hosts");
-    struct event e2 = make_event(100, "mv", "hosts", SYS_renameat2);
+    struct event e2 = make_event(100, "mv", "hosts", SYS_renameat);
     stats.on_event(e2, "/etc/hosts");
-    struct event e3 = make_event(100, "sh", "hosts", SYS_dup2);
+    struct event e3 = make_event(100, "mv", "hosts", SYS_renameat2);
     stats.on_event(e3, "/etc/hosts");
+    struct event e4 = make_event(100, "sh", "hosts", SYS_dup2);
+    stats.on_event(e4, "/etc/hosts");
+    struct event e5 = make_event(100, "sh", "hosts", SYS_NR_MAX);
+    stats.on_event(e5, "/etc/hosts");
 
     StatsSnapshot snap = stats.snapshot();
     assert(snap.devices.size() == 1);
-    assert(snap.devices[0].renames == 2);
-    assert(snap.devices[0].others == 1);
+    assert(snap.devices[0].renames == 3);
+    assert(snap.devices[0].others == 2);
     std::cout << "test_classification passed" << std::endl;
+}
+
+static void test_cmd_full_16_bytes_no_nul()
+{
+    TraceStats stats({"/etc/hosts"});
+
+    struct event e = make_event(100, "", "hosts", SYS_write);
+    static_assert(sizeof(e.cmd) == 16, "unexpected e.cmd size");
+    const char cmd1[16] = {'0', '1', '2', '3', '4', '5', '6', '7',
+                           '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+    memcpy(e.cmd, cmd1, sizeof(e.cmd));
+    stats.on_event(e, "/etc/hosts");
+    stats.on_event(e, "/etc/hosts");
+
+    StatsSnapshot snap1 = stats.snapshot();
+    assert(snap1.procs.size() == 1);
+    assert(snap1.procs[0].cmd.size() == 16);
+    assert(snap1.procs[0].cmd == "0123456789abcdef");
+
+    const char cmd2[16] = {'f', 'e', 'd', 'c', 'b', 'a', '9', '8',
+                           '7', '6', '5', '4', '3', '2', '1', '0'};
+    memcpy(e.cmd, cmd2, sizeof(e.cmd));
+    stats.on_event(e, "/etc/hosts");
+
+    StatsSnapshot snap2 = stats.snapshot();
+    assert(snap2.procs[0].cmd.size() == 16);
+    assert(snap2.procs[0].cmd == "fedcba9876543210");
+    assert(snap2.procs[0].ops == 3);
+    std::cout << "test_cmd_full_16_bytes_no_nul passed" << std::endl;
+}
+
+static void test_last_active_ms()
+{
+    TraceStats stats({"/etc/hosts"});
+    StatsSnapshot initial = stats.snapshot();
+    assert(initial.devices.size() == 1);
+    assert(initial.devices[0].last_active_ms == 0);
+
+    struct event e = make_event(100, "bash", "hosts", SYS_write);
+    uint64_t before = TraceStats::now_ms();
+    assert(before > 0);
+    stats.on_event(e, "/etc/hosts");
+    uint64_t after = TraceStats::now_ms();
+    assert(after >= before);
+
+    StatsSnapshot snap1 = stats.snapshot();
+    assert(snap1.procs[0].last_active_ms >= before);
+    assert(snap1.procs[0].last_active_ms <= after);
+    assert(snap1.devices[0].last_active_ms == snap1.procs[0].last_active_ms);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    stats.on_event(e, "/etc/hosts");
+    uint64_t after2 = TraceStats::now_ms();
+
+    StatsSnapshot snap2 = stats.snapshot();
+    assert(snap2.procs[0].last_active_ms > snap1.procs[0].last_active_ms);
+    assert(snap2.procs[0].last_active_ms <= after2);
+    assert(snap2.devices[0].last_active_ms == snap2.procs[0].last_active_ms);
+    std::cout << "test_last_active_ms passed" << std::endl;
 }
 
 static void test_cmd_refresh_on_exec()
@@ -582,6 +715,21 @@ static void test_match_monitor_path_basename()
 
     // the fallback only applies to single-component paths
     assert(TraceStats::match_monitor_path({"/a/b/hosts"}, "/b/hosts") == "");
+
+    // single-component suffix must match on a '/' boundary: "/etc/myhosts"
+    // must not match "/hosts", and "/" must not enter basename fallback
+    assert(TraceStats::match_monitor_path({"/etc/myhosts"}, "/hosts") == "");
+    assert(TraceStats::match_monitor_path({"/etc/myhosts", "/etc/hosts"}, "/hosts") ==
+           "/etc/hosts");
+    assert(TraceStats::match_monitor_path({"/etc/hosts"}, "/") == "");
+
+    // empty strings inside paths must be ignored cleanly
+    assert(TraceStats::match_monitor_path({""}, "/etc/hosts") == "");
+    assert(TraceStats::match_monitor_path({""}, "/hosts") == "");
+    assert(TraceStats::match_monitor_path({"", "/etc/hosts", ""}, "/etc/hosts") ==
+           "/etc/hosts");
+    assert(TraceStats::match_monitor_path({"", "/etc/hosts", ""}, "/hosts") ==
+           "/etc/hosts");
     std::cout << "test_match_monitor_path_basename passed" << std::endl;
 }
 
@@ -590,11 +738,16 @@ int main()
     test_event_path_rebuild();
     test_event_path_absolute_filename();
     test_event_path_root();
+    test_event_path_empty_and_relative();
     test_event_path_multi_dir();
     test_aggregation();
     test_trailing_slash_normalized();
+    test_duplicate_monitor_paths_dedup();
+    test_root_monitor_path();
     test_copy_file_range_is_write();
     test_classification();
+    test_cmd_full_16_bytes_no_nul();
+    test_last_active_ms();
     test_match_monitor_path_overlap();
     test_match_monitor_path_catch_all();
     test_match_monitor_path_basename();
