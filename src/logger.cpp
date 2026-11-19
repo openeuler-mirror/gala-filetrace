@@ -42,8 +42,8 @@ static void rotate_log_file() {
     // Create backup filename with a timestamp. A single rotation appends to
     // an already-open full file, so several rotations can happen within one
     // second; a second-only name would make each rename overwrite the prior
-    // backup and silently lose history. Include microseconds and a monotonic
-    // counter so every backup name is unique even under a burst of rotations.
+    // backup and silently lose history. A monotonic counter is appended so
+    // every backup name is unique even under a burst of rotations.
     static unsigned long rotation_seq = 0;
     time_t now = std::time(nullptr);
     struct tm tm_info{};
@@ -56,9 +56,16 @@ static void rotate_log_file() {
 
     const std::string candidate = backup_name.str();
     // As a final guard (e.g. after a process restart reuses the counter with
-    // the same timestamp), append further numeric suffixes until free.
+    // the same timestamp), append further numeric suffixes until the name is
+    // unused. Use stat() rather than ifstream::good(): an existing backup that
+    // is merely unreadable (chmod 0200, different owner) would still be opened
+    // by rename() and overwritten, which is the data loss this fix prevents.
+    auto path_exists = [](const std::string &p) {
+        struct stat st{};
+        return stat(p.c_str(), &st) == 0;
+    };
     std::string target = candidate;
-    for (unsigned long extra = 1; std::ifstream(target).good(); ++extra) {
+    for (unsigned long extra = 1; path_exists(target); ++extra) {
         target = candidate + "_" + std::to_string(extra);
     }
     
