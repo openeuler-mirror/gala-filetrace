@@ -182,13 +182,21 @@ std::string TraceStats::match_monitor_path(const std::vector<std::string> &paths
     // config file. "/" is the catch-all: it is only ever the match when no
     // longer path matches.
     std::string matched;
+    bool has_catch_all = false;
     for (const auto &p : paths) {
         if (p.empty()) {
             continue;
         }
+        // "/" is the catch-all: remember it, but do not let it win here.
+        // Otherwise it would short-circuit the basename fallback below even
+        // when a specific configured path ends with this basename.
+        if (p == "/") {
+            has_catch_all = true;
+            continue;
+        }
         // component-boundary prefix test: "/etc" matches "/etc" and
         // "/etc/nginx.conf", not "/etcetera"
-        bool hit = (p == "/") || full_path == p ||
+        bool hit = full_path == p ||
                    (full_path.size() > p.size() &&
                     full_path.compare(0, p.size(), p) == 0 &&
                     full_path[p.size()] == '/');
@@ -219,6 +227,11 @@ std::string TraceStats::match_monitor_path(const std::vector<std::string> &paths
         if (hits == 1) {
             return *candidate;
         }
+    }
+    // No specific match (and no unambiguous basename match): the catch-all
+    // "/" wins only now that every more specific rule has been tried.
+    if (has_catch_all) {
+        return "/";
     }
     return std::string();
 }

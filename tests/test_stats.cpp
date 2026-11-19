@@ -702,6 +702,17 @@ static void test_match_monitor_path_catch_all()
     assert(TraceStats::match_monitor_path({"/var/log"}, "/tmp/x") == "");
     assert(TraceStats::match_monitor_path({}, "/tmp/x") == "");
     assert(TraceStats::match_monitor_path(paths, "") == "");
+
+    // A catch-all must not short-circuit the basename fallback: a bare
+    // "/log" belongs to the unique configured path ending in "/log", not to
+    // "/". The old prefix loop returned "/" before the fallback could run.
+    assert(TraceStats::match_monitor_path(paths, "/log") == "/var/log");
+    // When several paths share the basename it stays ambiguous, so the
+    // catch-all legitimately wins again.
+    const std::vector<std::string> ambiguous = {"/", "/var/log", "/srv/log"};
+    assert(TraceStats::match_monitor_path(ambiguous, "/log") == "/");
+    // A catch-all alone still handles a bare basename.
+    assert(TraceStats::match_monitor_path({"/"}, "/log") == "/");
     std::cout << "test_match_monitor_path_catch_all passed" << std::endl;
 }
 
