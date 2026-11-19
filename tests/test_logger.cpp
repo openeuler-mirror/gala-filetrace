@@ -71,24 +71,64 @@ int main()
         std::filesystem::remove_all(loose);
     }
 
-    // A symlink used as a directory component must be rejected. The old code
-    // let EEXIST through unconditionally, so mkdir()/open() followed the link
-    // and wrote the log under the link target -- reintroducing exactly the
-    // arbitrary-file-write path the 0755 hardening was meant to close.
+    // A symlink directory component that resolves to a real directory is
+    // legitimate (e.g. /var/run -> /run) and must keep working. The previous
+    // lstat-based check killed all symlinks and silently degraded logging to
+    // stderr; resolving with stat() must accept this case and still write.
     {
-        const std::string root = "/tmp/gala_ft_symlink";
+        const std::string root = "/tmp/gala_ft_symlink_ok";
         const std::string target = root + "_target";
         std::filesystem::remove_all(root);
         std::filesystem::remove_all(target);
         std::filesystem::create_directories(target);
         assert(symlink(target.c_str(), root.c_str()) == 0);
-        const std::string logpath = root + "/sub/run.log";
+        const std::string logpath = root + "/run.log";
         Logger::init(logpath, "info", 0);
         LOG_INFO("symlink component line");
-        assert(!std::ifstream(logpath).good());
-        assert(!std::ifstream(target + "/sub/run.log").good());
+        assert(std::ifstream(target + "/run.log").good());
+        assert(read_file(target + "/run.log").find("symlink component line") != std::string::npos);
         std::filesystem::remove_all(root);
         std::filesystem::remove_all(target);
+    }
+
+    // A symlink component that does NOT resolve to a directory (dangling, or
+    // pointing at a regular file) must be rejected rather than followed.
+    {
+        const std::string root = "/tmp/gala_ft_symlink_bad";
+        const std::string target = root + "_file";
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+        {
+            std::ofstream ofs(target);
+            ofs << "not a directory";
+        }
+        assert(symlink(target.c_str(), root.c_str()) == 0);
+        const std::string logpath = root + "/run.log";
+        Logger::init(logpath, "info", 0);
+        LOG_INFO("bad symlink line");
+        assert(!std::ifstream(logpath).good());
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+    }
+
+    // Hardening must never WIDEN a stricter mode. A file created under umask
+    // 077 is 0600; a blind fchmod(0644) would make it world-readable. The fix
+    // strips only group/other write bits, leaving 0600 intact.
+    {
+        const std::string strict = "/tmp/gala_ft_strict.log";
+        std::filesystem::remove_all(strict);
+        mode_t old_umask = umask(077);
+        Logger::init(strict, "info", 0);
+        umask(old_umask);
+        LOG_INFO("strict umask line");
+        struct stat st{};
+        assert(stat(strict.c_str(), &st) == 0);
+        assert((st.st_mode & S_IRGRP) == 0);
+        assert((st.st_mode & S_IROTH) == 0);
+        assert((st.st_mode & S_IWGRP) == 0);
+        assert((st.st_mode & S_IWOTH) == 0);
+        assert(read_file(strict).find("strict umask line") != std::string::npos);
+        std::filesystem::remove_all(strict);
     }
 
     const std::string path = "/tmp/gala_test_logger.log";

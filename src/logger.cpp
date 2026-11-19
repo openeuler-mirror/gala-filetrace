@@ -36,24 +36,42 @@ static int severity_rank(Logger::Level level) {
     return 1;
 }
 
-// Create (or fix up) the log file with deterministic, safe permissions.
-// std::ofstream::open() creates a missing file as 0666 & ~umask, which is
-// world-writable when a daemon runs with umask 0; it also follows symlinks, so
-// a planted run.log symlink can redirect a root daemon's writes. Pre-creating
-// with O_NOFOLLOW and an explicit 0644 mode, then fchmod()-ing the descriptor,
-// closes both holes. Returning false keeps ofstream from ever opening the path.
+// Create (or fix up) the log file with safe permissions and no symlink
+// indirection. std::ofstream::open() alone creates a missing file as 0666 &
+// ~umask (world-writable when umask is 0) and follows symlinks, so a planted
+// run.log symlink can redirect a root daemon's writes to an arbitrary file.
+// Pre-create with O_NOFOLLOW, then strip only the group/other WRITE bits from
+// the resulting mode. Crucially we do NOT force 0644: a file created under a
+// strict umask (077) is 0600 and must stay 0600, not be widened to readable by
+// everyone. Returning false keeps ofstream from ever opening an unsafe path.
 static bool ensure_log_file(const std::string &filepath) {
     struct stat st{};
     if (lstat(filepath.c_str(), &st) == 0 && S_ISLNK(st.st_mode)) {
-        return false;  // refuse to follow a symlink planted at the log path
+        std::cerr << "Logger: refusing symlink log file '" << filepath << "'" << std::endl;
+        return false;  // never follow a symlink planted at the log path itself
     }
     int fd = ::open(filepath.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0644);
     if (fd < 0) {
+        std::cerr << "Logger: cannot open log file '" << filepath << "': "
+                  << std::strerror(errno) << std::endl;
         return false;
     }
-    // Tighten the mode even when the file already existed with a loose one.
-    fchmod(fd, 0644);
-    close(fd);
+    // Only clear group/other write bits; preserve stricter modes such as 0600.
+    if (fstat(fd, &st) != 0) {
+        std::cerr << "Logger: cannot stat log file '" << filepath << "'" << std::endl;
+        close(fd);
+        return false;
+    }
+    const mode_t safe_mode = st.st_mode & ~static_cast<mode_t>(S_IWGRP | S_IWOTH);
+    if ((st.st_mode & 07777) != safe_mode && fchmod(fd, safe_mode) != 0) {
+        std::cerr << "Logger: cannot tighten mode of log file '" << filepath << "'" << std::endl;
+        close(fd);
+        return false;
+    }
+    if (close(fd) != 0) {
+        std::cerr << "Logger: close failed for log file '" << filepath << "'" << std::endl;
+        return false;
+    }
     return true;
 }
 
@@ -105,7 +123,14 @@ static bool should_rotate_log() {
 // which applies 0777 & ~umask: with a permissive umask (0/002) the log dir
 // would become world-writable, and a local user could plant a run.log symlink
 // for a root daemon to follow. Keep the original 0755 boundary explicitly.
-static void create_log_directories(const std::string &dir) {
+//
+// Symlinks in the path are resolved with stat() (not lstat()): common system
+// links such as /var/run -> /run or /var/lock -> /run/lock are legitimate and
+// must keep working, otherwise logging silently degrades to stderr. A symlink
+// is accepted only when it resolves to a real directory; a dangling link or a
+// link to a regular file is rejected. The end-to-end safety boundary is that
+// the log FILE itself is never opened through a symlink (see ensure_log_file).
+static bool create_log_directories(const std::string &dir) {
     std::string current;
     size_t start = 0;
     if (!dir.empty() && dir[0] == '/') {
@@ -121,20 +146,20 @@ static void create_log_directories(const std::string &dir) {
                 current += '/';
             }
             current += part;
-            if (mkdir(current.c_str(), 0755) != 0) {
-                if (errno != EEXIST) {
-                    return;  // open() below reports the failure
+            struct stat comp_st{};
+            if (stat(current.c_str(), &comp_st) == 0) {
+                // Exists (possibly via a symlink): accept only real directories.
+                // Never chmod an existing component -- it may be a system dir
+                // whose mode is intentionally managed elsewhere.
+                if (!S_ISDIR(comp_st.st_mode)) {
+                    std::cerr << "Logger: log dir component is not a directory: '"
+                              << current << "'" << std::endl;
+                    return false;
                 }
-                // EEXIST is not necessarily a real directory: it can be a
-                // symlink. lstat() deliberately does not follow symlinks, so a
-                // planted symlink component is rejected instead of granting a
-                // path through the 0755 boundary. Do not chmod() an existing
-                // component: it may be a system dir (e.g. /var/log) whose mode
-                // is intentionally managed elsewhere.
-                struct stat comp_st{};
-                if (lstat(current.c_str(), &comp_st) != 0 || !S_ISDIR(comp_st.st_mode)) {
-                    return;
-                }
+            } else if (mkdir(current.c_str(), 0755) != 0) {
+                std::cerr << "Logger: cannot create log dir '" << current << "': "
+                          << std::strerror(errno) << std::endl;
+                return false;
             }
         }
         if (slash == std::string::npos) {
@@ -142,6 +167,7 @@ static void create_log_directories(const std::string &dir) {
         }
         start = slash + 1;
     }
+    return true;
 }
 
 void Logger::init(const std::string &filepath, const std::string &level, size_t max_size) {
@@ -152,15 +178,12 @@ void Logger::init(const std::string &filepath, const std::string &level, size_t 
     
     size_t pos = filepath.rfind('/');
     if (pos != std::string::npos && pos > 0) {
+        // Always walk the chain: a bare stat(dir) short-circuits when an
+        // intermediate component is a symlink or a non-directory, hiding the
+        // validation and leaving the log file unopenable. create_log_directories
+        // is idempotent for components that already exist.
         std::string dir = filepath.substr(0, pos);
-        struct stat st;
-        if (stat(dir.c_str(), &st) != 0) {
-            // A single mkdir() fails when any parent component is missing
-            // (e.g. /var/log/filetrace/run.log), leaving the log file
-            // unopenable and all output redirected to stderr. Create the
-            // whole chain with explicit 0755 permissions instead.
-            create_log_directories(dir);
-        }
+        create_log_directories(dir);
     }
     // Close before reopening: on libstdc++ calling open() on an already-open
     // stream leaves failbit set, and every later write is silently dropped.
