@@ -489,6 +489,48 @@ int main()
             assert(saved["config_list"].size() == 1);
         }
 
+        // A duplicate add must STILL persist the whole object: if a previous
+        // add updated memory but its write-back failed, a retry must repair the
+        // stale on-disk file rather than silently returning success.
+        {
+            std::ofstream out(cfg_path, std::ios::trunc);
+            out << "{\"host_id\":\"1\",\"config_list\":[]}";
+        }
+        json dup_retry;
+        dup_retry["conf"] = "/etc/hosts";
+        dup_retry["action"] = "add";
+        assert(p2.update_config(dup_retry) == 0);
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 1);
+            assert(saved["config_list"][0] == "/etc/hosts");
+            assert(saved.value("host_id", std::string()) == "1");
+        }
+
+        // A trailing slash is normalized before store: "/etc/hosts/" is the
+        // same entry as "/etc/hosts" and never becomes an unmatchable path.
+        json trail;
+        trail["conf"] = "/etc/profile/";
+        trail["action"] = "add";
+        assert(p2.update_config(trail) == 0);
+        assert(std::find(p2.conf_list.begin(), p2.conf_list.end(), "/etc/profile") !=
+               p2.conf_list.end());
+        assert(std::find(p2.conf_list.begin(), p2.conf_list.end(), "/etc/profile/") ==
+               p2.conf_list.end());
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 2);
+        }
+        json trail_dup;
+        trail_dup["conf"] = "/etc/profile";
+        trail_dup["action"] = "add";
+        assert(p2.update_config(trail_dup) == 0);
+        assert(p2.conf_list.size() == 2);  // normalized duplicate is a no-op
+
         // The HTTP request contract uses conf/action. It must not try to read a
         // non-existent "key", and client-side JSON errors must return 400.
         httplib::Response response;
@@ -509,6 +551,16 @@ int main()
         response = httplib::Response();
         p2.handle_update_config_request(
             R"({"conf":"/etc/profile"})", response);
+        assert(response.status == 400);
+
+        // An invalid monitor path is a client error (400), not a server failure.
+        response = httplib::Response();
+        p2.handle_update_config_request(
+            R"({"conf":"relative/path","action":"add"})", response);
+        assert(response.status == 400);
+        response = httplib::Response();
+        p2.handle_update_config_request(
+            R"({"conf":"/a/b/c/d/e/f","action":"add"})", response);
         assert(response.status == 400);
 
         unlink(cfg_path.c_str());

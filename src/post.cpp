@@ -929,6 +929,18 @@ std::string PostData::get_loginip_by_username(const std::string& username)
     endutxent();
     return clientip;
 }
+// Event-side paths are rebuilt as absolute paths without a trailing slash, so
+// a configured path with a trailing slash would be persisted yet never match.
+// Normalize it (keeping root "/") before validation, de-duplication and store.
+static std::string normalize_monitor_path(const std::string &path)
+{
+    std::string result = path;
+    while (result.size() > 1 && result.back() == '/') {
+        result.pop_back();
+    }
+    return result;
+}
+
 int PostData::update_config(const json &j)
 {
     LOG_INFO("Updating configuration with JSON: " + j.dump());
@@ -939,7 +951,7 @@ int PostData::update_config(const json &j)
         return -1;
     }
 
-    const std::string conf = j["conf"].get<std::string>();
+    const std::string conf = normalize_monitor_path(j["conf"].get<std::string>());
     const std::string action = j["action"].get<std::string>();
     // The runtime API must enforce the same path rules as load_config():
     // otherwise a relative path, an empty string or a path deeper than the
@@ -955,11 +967,14 @@ int PostData::update_config(const json &j)
     if (action == "add") {
         // Adding the same path twice only duplicates a devices_/match entry
         // in consumers and wastes a config_list slot; keep the list a set.
+        // Do NOT return early here: the write-back below must still run so a
+        // retried request can repair a config file left stale by a failed
+        // write/rename, and so a duplicate add keeps the file in sync.
         if (std::find(conf_list.begin(), conf_list.end(), conf) != conf_list.end()) {
             LOG_WARN("Monitor path already configured, ignoring: " + conf);
-            return 0;
+        } else {
+            conf_list.push_back(conf);
         }
-        conf_list.push_back(conf);
     } else if (action == "remove") {
         conf_list.erase(std::remove(conf_list.begin(), conf_list.end(), conf), conf_list.end());
     } else {
@@ -1001,6 +1016,16 @@ void PostData::handle_update_config_request(const std::string &body, httplib::Re
         if (action != "add" && action != "remove") {
             res.status = 400;
             res.set_content("'action' must be 'add' or 'remove'", "text/plain");
+            return;
+        }
+
+        // A malformed monitor path is a client error, not a server failure.
+        // Validate it here so it maps to 400 instead of the 500 that update_config
+        // returns for genuine persistence failures.
+        const std::string norm_conf = normalize_monitor_path(j["conf"].get<std::string>());
+        if (get_dir_level(norm_conf) < 0 || get_dir_level(norm_conf) > max_dir_level) {
+            res.status = 400;
+            res.set_content("Invalid monitor path", "text/plain");
             return;
         }
 
