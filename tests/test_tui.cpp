@@ -93,6 +93,48 @@ static void test_sample_once_should_populate_rows_and_usage()
     std::cout << "test_sample_once_should_populate_rows_and_usage passed" << std::endl;
 }
 
+static void test_handle_mouse_blank_row_should_clear_selection()
+{
+    TraceStats stats({"/etc/hosts"});
+    struct {
+        unsigned int pid;
+        uint64_t ops;
+    } procs[] = {{100, 1}};
+    for (const auto &p : procs) {
+        event ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.pid = p.pid;
+        ev.flag = SYS_write;
+        strncpy(ev.filename, "hosts", sizeof(ev.filename) - 1);
+        strncpy(ev.dir1, "etc", sizeof(ev.dir1) - 1);
+        for (uint64_t i = 0; i < p.ops; i++) {
+            stats.on_event(ev, "/etc/hosts");
+        }
+    }
+
+    TuiOptions opts;
+    TuiApp app(stats, opts);
+    app.sample_once();
+
+    // Make an active selection first (as if the one row had been clicked).
+    app.selection_active_ = true;
+    app.selected_pid_ = 100;
+    app.proc_cursor_ = 0;
+    app.proc_top_ = 2;
+    app.proc_height_ = 12;  // room for 11 rows, but only 1 process exists
+
+    // Click a blank row inside the panel: row index 3 maps to a nonexistent
+    // process, so the selection must be cleared.
+    MouseEvent click;
+    click.x = 0;
+    click.y = app.proc_top_ + 1 + 3;
+    app.handle_mouse(click);
+
+    assert(!app.selection_active_);
+    assert(app.selected_pid_ == 0);
+    std::cout << "test_handle_mouse_blank_row_should_clear_selection passed" << std::endl;
+}
+
 static void test_usage_of_should_not_insert_missing_pid()
 {
     TraceStats stats({"/etc/hosts"});
@@ -310,6 +352,7 @@ int main()
     test_constructor_should_clamp_refresh_ms();
     test_request_stop_should_clear_running();
     test_sample_once_should_populate_rows_and_usage();
+    test_handle_mouse_blank_row_should_clear_selection();
     test_usage_of_should_not_insert_missing_pid();
     test_sample_once_should_sort_rows_by_ops_desc();
     test_move_proc_cursor_should_track_row_pid_and_clamp();

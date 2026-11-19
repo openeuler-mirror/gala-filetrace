@@ -836,6 +836,14 @@ void TuiApp::handle_mouse(const MouseEvent &ev)
             proc_cursor_ = idx;
             selected_pid_ = proc_rows_[idx].pid;
             selection_active_ = true;
+        } else {
+            // Clicking an empty row inside the panel (e.g. the table has
+            // fewer rows than fit on screen) must clear the selection just
+            // like a click below the table. Returning here without clearing
+            // left a stale selection pointing at a process the user did not
+            // click.
+            selection_active_ = false;
+            selected_pid_ = 0;
         }
         return;
     }
