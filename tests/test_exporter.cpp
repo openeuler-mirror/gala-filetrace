@@ -325,6 +325,31 @@ static void test_set_metrics_refreshes_labels_on_cache_hit()
     std::cout << "  PASS: set_metrics refreshes cached gauge labels" << std::endl;
 }
 
+// ---- Test: repeated identical events keep one series and still refresh later ----
+// set_metrics() is a per-syscall hot path. Repeated events with identical labels
+// must not churn the family (Remove+Add), yet a later event that does change a
+// label must still be reflected. This also guards the labels-cache bookkeeping.
+static void test_set_metrics_identical_events_then_change()
+{
+    PrometheusExporter exp("127.0.0.1:19107", 30);
+
+    struct event a = make_event(600, 1, "bash", "same.txt", "etc", nullptr,
+                                nullptr, nullptr, SYS_write, 0, 0, 9100);
+    exp.set_metrics(a);
+    exp.set_metrics(a);  // identical labels -> O(1) Set() fast path
+    exp.set_metrics(a);
+    assert(info_metric_count(exp) == 1);
+    assert(info_file_label(exp, 600) == "/etc/same.txt");
+
+    struct event b = make_event(600, 1, "bash", "next.txt", "etc", nullptr,
+                                nullptr, nullptr, SYS_write, 0, 0, 9101);
+    exp.set_metrics(b);  // label changed -> Remove+Add refresh
+    assert(info_metric_count(exp) == 1);
+    assert(info_file_label(exp, 600) == "/etc/next.txt");
+
+    std::cout << "  PASS: set_metrics identical events then change" << std::endl;
+}
+
 int main()
 {
     std::cout << "Running PrometheusExporter unit tests..." << std::endl;
@@ -346,6 +371,7 @@ int main()
     test_destructor_stops_thread();
     test_set_metrics_file_access_counter();
     test_set_metrics_refreshes_labels_on_cache_hit();
+    test_set_metrics_identical_events_then_change();
 
     std::cout << "All PrometheusExporter unit tests passed." << std::endl;
     return 0;

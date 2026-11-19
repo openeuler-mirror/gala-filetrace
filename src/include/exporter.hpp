@@ -54,6 +54,10 @@ private:
     prometheus::Family<prometheus::Gauge>* info_gauge_family = nullptr;
     //std::map<std::string, prometheus::Counter*> op_counter_cache;
     std::map<std::string, prometheus::Gauge*> gauge_cache;
+    // Labels attached to each cached gauge. set_metrics() is a per-syscall hot
+    // path; keeping the last labels lets us skip the O(P) Remove+Add when the
+    // event describes the same series (e.g. repeated writes to one file).
+    std::map<std::string, std::map<std::string, std::string>> gauge_cache_labels;
     std::map<std::string, std::string> gauge_cache_timestamps;
     std::mutex gauge_cache_mutex;
 };
