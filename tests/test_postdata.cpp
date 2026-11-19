@@ -273,6 +273,17 @@ int main()
         assert(mv_dot_json["old_file"].get<std::string>() == "/etc/hosts");
     }
 
+    // get_old_full_path mirrors get_full_path on the odir fields
+    {
+        PostData pc;
+        struct event rn{};
+        strncpy(rn.odir1, "c", sizeof(rn.odir1) - 1);
+        strncpy(rn.odir2, "b", sizeof(rn.odir2) - 1);
+        strncpy(rn.odir3, "a", sizeof(rn.odir3) - 1);
+        strncpy(rn.oldfilename, "oldfile", sizeof(rn.oldfilename) - 1);
+        assert(pc.get_old_full_path(&rn) == "/a/b/c/oldfile");
+    }
+
     // Rejected events must not write a log entry: the logger's write is also
     // observed by the BPF program and would otherwise feed events back into
     // this path indefinitely.
