@@ -151,8 +151,19 @@ void PrometheusExporter::set_metrics(struct event& e, const std::string& reporte
         std::lock_guard<std::mutex> lock(gauge_cache_mutex);
         auto it = gauge_cache.find(pid_gauge_key);
         if (it != gauge_cache.end()) {
-            LOG_INFO("Reusing existing gauge for PID: " + pid_gauge_key);
-            pid_gauge = it->second;
+            // The gauge is keyed by PID only, but its labels (file, operation,
+            // cmd, uid, ts, ...) belong to a single event. Reusing it and only
+            // calling Set() leaves the first event's labels exported for every
+            // later event of the same PID, so metrics silently describe the
+            // wrong file. Re-register a fresh labeled gauge and drop the old
+            // series from the family to keep both the cache and Prometheus
+            // consistent.
+            LOG_INFO("Refreshing gauge for PID: " + pid_gauge_key);
+            if (info_gauge_family && it->second) {
+                info_gauge_family->Remove(it->second);
+            }
+            pid_gauge = &info_gauge_family->Add(detailed_labels);
+            it->second = pid_gauge;
         } else {
             if (!info_gauge_family) {
                 info_gauge_family = &prometheus::BuildGauge()

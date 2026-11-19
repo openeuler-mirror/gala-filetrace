@@ -301,6 +301,30 @@ static void test_set_metrics_rename()
     std::cout << "  PASS: set_metrics for SYS_rename* events" << std::endl;
 }
 
+// ---- Test: set_metrics refreshes labels when a PID is seen again ----
+static void test_set_metrics_refreshes_labels_on_cache_hit()
+{
+    PrometheusExporter exp("127.0.0.1:19106", 30);
+
+    // First event for the PID: labels describe "first.txt".
+    struct event first = make_event(500, 1, "bash", "first.txt", "etc", nullptr,
+                                    nullptr, nullptr, SYS_write, 0, 0, 9000);
+    exp.set_metrics(first);
+    assert(info_metric_count(exp) == 1);
+    assert(info_file_label(exp, 500) == "/etc/first.txt");
+
+    // Same PID, different file. The gauge is cached by PID, so without a
+    // label refresh the exported "file" label would still say "first.txt"
+    // even though this event is about "second.txt".
+    struct event second = make_event(500, 1, "bash", "second.txt", "etc", nullptr,
+                                     nullptr, nullptr, SYS_write, 0, 0, 9001);
+    exp.set_metrics(second);
+    assert(info_metric_count(exp) == 1);
+    assert(info_file_label(exp, 500) == "/etc/second.txt");
+
+    std::cout << "  PASS: set_metrics refreshes cached gauge labels" << std::endl;
+}
+
 int main()
 {
     std::cout << "Running PrometheusExporter unit tests..." << std::endl;
@@ -321,6 +345,7 @@ int main()
     test_cache_timeout_thread();
     test_destructor_stops_thread();
     test_set_metrics_file_access_counter();
+    test_set_metrics_refreshes_labels_on_cache_hit();
 
     std::cout << "All PrometheusExporter unit tests passed." << std::endl;
     return 0;
