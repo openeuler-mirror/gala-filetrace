@@ -44,32 +44,41 @@ std::string PostData::sanitize_utf8(const std::string &s) {
         if (c < 0x80) {
             out.push_back(static_cast<char>(c));
             ++i;
-        } else if ((c >> 5) == 0x6) {
-            if (i + 1 < n && (data[i+1] & 0xC0) == 0x80) {
-                out.append(reinterpret_cast<const char*>(&data[i]), 2);
-                i += 2;
-            } else {
-
-                out.append("\xEF\xBF\xBD");
-                ++i;
-            }
-        } else if ((c >> 4) == 0xE) {
-            if (i + 2 < n && (data[i+1] & 0xC0) == 0x80 && (data[i+2] & 0xC0) == 0x80) {
-                out.append(reinterpret_cast<const char*>(&data[i]), 3);
-                i += 3;
-            } else {
-                out.append("\xEF\xBF\xBD");
-                ++i;
-            }
-        } else if ((c >> 3) == 0x1E) {
-            if (i + 3 < n && (data[i+1] & 0xC0) == 0x80 && (data[i+2] & 0xC0) == 0x80 && (data[i+3] & 0xC0) == 0x80) {
-                out.append(reinterpret_cast<const char*>(&data[i]), 4);
-                i += 4;
-            } else {
-                out.append("\xEF\xBF\xBD");
-                ++i;
-            }
+            continue;
+        }
+        // Derive the sequence length from the lead byte. This rejects the
+        // reserved 5/6-byte leads (0xF8-0xFD), bare continuation bytes used
+        // as leads (0x80-0xBF), and 0xFE/0xFF. 0xC0/0xC1 are excluded because
+        // they can only start an overlong 2-byte encoding, and 0xF5-0xF7
+        // because no Unicode scalar value needs four bytes beyond 0xF4.
+        size_t len = 0;
+        if (c >= 0xC2 && c <= 0xDF) {
+            len = 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            len = 3;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            len = 4;
+        }
+        bool valid = len != 0 && i + len <= n;
+        for (size_t k = 1; valid && k < len; ++k) {
+            valid = (data[i + k] & 0xC0) == 0x80;
+        }
+        // Reject code points that are structurally well-formed but invalid
+        // Unicode: overlong forms and UTF-16 surrogates. Without these
+        // checks the result is still rejected by nlohmann::json::dump().
+        if (valid && len == 3) {
+            valid = !(c == 0xE0 && data[i + 1] < 0xA0) &&
+                    !(c == 0xED && data[i + 1] >= 0xA0);
+        } else if (valid && len == 4) {
+            valid = !(c == 0xF0 && data[i + 1] < 0x90) &&
+                    !(c == 0xF4 && data[i + 1] >= 0x90);
+        }
+        if (valid) {
+            out.append(reinterpret_cast<const char*>(&data[i]), len);
+            i += len;
         } else {
+            // One invalid lead byte becomes one U+FFFD; any continuation
+            // bytes after it are handled on the following iterations.
             out.append("\xEF\xBF\xBD");
             ++i;
         }
@@ -645,23 +654,37 @@ std::string PostData::convert_to_string(struct event &e)
     // "/etc/hosts". For renames also expose the source path: a "mv away" event
     // reports the removed file under "file" while still recording where it
     // came from.
+    // Field names below come from the kernel (BPF bpf_probe_read_str on dentry
+    // names and task->comm). Linux filenames and commands may contain arbitrary
+    // non-NUL bytes, so every such string must be sanitized before it reaches
+    // json::dump() - otherwise a single invalid sequence throws type_error.316
+    // out of the ring-buffer callback and terminates the daemon. sanitize_utf8()
+    // is idempotent on already-valid text, so re-sanitizing is harmless.
     if (e.flag == SYS_write || e.flag == SYS_unlinkat ||
         e.flag == SYS_copy_file_range) {
-        json_data["file"] = get_full_path(&e);
+        json_data["file"] = sanitize_utf8(get_full_path(&e));
     } else if (e.flag == SYS_rename || e.flag == SYS_renameat || e.flag == SYS_renameat2) {
         std::string oldpath;
-        json_data["file"] = get_reported_path(&e, &oldpath);
-        json_data["old_file"] = oldpath;
+        json_data["file"] = sanitize_utf8(get_reported_path(&e, &oldpath));
+        json_data["old_file"] = sanitize_utf8(oldpath);
     } else {
-        json_data["file"] = e.filename;
+        json_data["file"] = sanitize_utf8(std::string(e.filename));
     }
-    json_data["user"] = username;
-    json_data["group"] = groupname;
+    json_data["user"] = sanitize_utf8(username);
+    json_data["group"] = sanitize_utf8(groupname);
     json_data["pid"] = e.pid;
     json_data["inode"] = e.i_ino;
-    json_data["cmd"] = e.cmd;
-    json_data["loginip"] = get_loginip_by_username(username);
-    return json_data.dump(); 
+    json_data["cmd"] = sanitize_utf8(std::string(e.cmd));
+    json_data["loginip"] = sanitize_utf8(get_loginip_by_username(username));
+    // Final safety net: configuration-derived strings (host_id, domain_name,
+    // cluster_id) are outside this function's control. Never let a serialization
+    // exception escape into the ring-buffer callback.
+    try {
+        return json_data.dump();
+    } catch (const json::exception &ex) {
+        LOG_ERROR(std::string("Failed to serialize event to JSON: ") + ex.what());
+        return std::string();
+    }
 }
 bool PostData::compare_config_file(const vector<string> &v, const std::string &config) 
 {

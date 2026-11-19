@@ -852,6 +852,32 @@ int main()
         // Disallowed prefix 0xF8..0xFD
         assert(PostData::sanitize_utf8("\xF8") == REPL);
         assert(PostData::sanitize_utf8("\xFC") == REPL);
+        // 0xF5..0xF7 are 4-byte leads beyond the Unicode range (max is 0xF4).
+        // A well-formed F5 sequence must be rejected, not passed through:
+        // nlohmann::json::dump() rejects such bytes and would abort the daemon.
+        assert(PostData::sanitize_utf8("\xF5\x80\x80\x80") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF6\x8F\xBF\xBF") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF7\xBF\xBF\xBF") == REPL + REPL + REPL + REPL);
+        // Overlong 2-byte forms (0xC0/0xC1) encode ASCII and are invalid.
+        assert(PostData::sanitize_utf8("\xC0\x80") == REPL + REPL);
+        assert(PostData::sanitize_utf8("\xC1\xBF") == REPL + REPL);
+        // Overlong 3/4-byte forms: E0 80..9F and F0 80..8F.
+        assert(PostData::sanitize_utf8("\xE0\x80\x80") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xE0\x9F\xBF") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF0\x80\x80\x80") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF0\x8F\xBF\xBF") == REPL + REPL + REPL + REPL);
+        // UTF-16 surrogates U+D800..U+DFFF (ED A0..BF) are not scalar values.
+        assert(PostData::sanitize_utf8("\xED\xA0\x80") == REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xED\xBF\xBF") == REPL + REPL + REPL);
+        // Code points above U+10FFFF (F4 90..BF) are outside Unicode.
+        assert(PostData::sanitize_utf8("\xF4\x90\x80\x80") == REPL + REPL + REPL + REPL);
+        assert(PostData::sanitize_utf8("\xF4\xBF\xBF\xBF") == REPL + REPL + REPL + REPL);
+        // Boundary values that ARE valid must survive unchanged.
+        assert(PostData::sanitize_utf8("\xC2\x80") == "\xC2\x80");
+        assert(PostData::sanitize_utf8("\xE0\xA0\x80") == "\xE0\xA0\x80");
+        assert(PostData::sanitize_utf8("\xED\x9F\xBF") == "\xED\x9F\xBF");
+        assert(PostData::sanitize_utf8("\xF0\x90\x80\x80") == "\xF0\x90\x80\x80");
+        assert(PostData::sanitize_utf8("\xF4\x8F\xBF\xBF") == "\xF4\x8F\xBF\xBF");
         // Lone continuation bytes (0x80..0xBF)
         assert(PostData::sanitize_utf8("\x80") == REPL);
         assert(PostData::sanitize_utf8("\xBF") == REPL);
@@ -924,6 +950,38 @@ int main()
         assert(PostData::sanitize_utf8(stat_line) == "1234 (proc_" + REPL + REPL + "_test) S 1 1234 0 0");
 
         std::cout << "  PASS: sanitize_utf8 comprehensive tests" << std::endl;
+    }
+
+    // sanitize must also be applied at the JSON serialization boundary: kernel
+    // strings (filename / cmd) can carry invalid UTF-8 that would make
+    // json::dump() throw type_error.316 and abort the daemon via the callback.
+    {
+        struct event bad;
+        memset(&bad, 0, sizeof(bad));
+        bad.flag = SYS_openat;          // else-branch: file = e.filename
+        bad.pid = 424242;               // no real proc trace / no ptrace reads
+        bad.uid = bad.gid = 0;
+        // Invalid sequences in a filename and in the command (task->comm).
+        strncpy(bad.filename, "bad_\xF5\x80\x80\x80\xFF.txt", sizeof(bad.filename) - 1);
+        strncpy(bad.cmd, "proc_\xED\xA0\x80", sizeof(bad.cmd) - 1);
+        bad.filename[sizeof(bad.filename) - 1] = '\0';
+        bad.cmd[sizeof(bad.cmd) - 1] = '\0';
+
+        const std::string replacement = "\xEF\xBF\xBD";  // U+FFFD
+        bool threw = false;
+        std::string serialized;
+        try {
+            serialized = p.convert_to_string(bad);
+        } catch (...) {
+            threw = true;
+        }
+        assert(!threw);
+        assert(!serialized.empty());
+        // The document must be valid JSON and contain no raw invalid bytes.
+        json doc = json::parse(serialized);
+        assert(doc["file"].get<std::string>().find(replacement) != std::string::npos);
+        assert(doc["cmd"].get<std::string>().find(replacement) != std::string::npos);
+        std::cout << "  PASS: convert_to_string sanitizes kernel strings" << std::endl;
     }
 
     // exporter_start: throws when exporter_address is empty; initializes
