@@ -7,6 +7,7 @@
 #include <iostream>
 #include <sys/stat.h>
 #include <cstring>
+#include <cerrno>
 #include <filesystem>
 #include <system_error>
 
@@ -76,6 +77,40 @@ static bool should_rotate_log() {
     return false;
 }
 
+// Create every missing component of dir, each with an explicit 0755 mode.
+// std::filesystem::create_directories() uses 0777 & ~umask; when a daemon runs
+// with a permissive umask (0/002) that makes the log directory world-writable.
+// Since the log file is later opened through a symlink-following open(), a
+// world-writable directory lets a local user plant a run.log symlink and have
+// a root daemon write to an arbitrary file. Preserve the original 0755
+// boundary explicitly instead of relying on the process umask.
+static void create_log_directories(const std::string &dir) {
+    std::string current;
+    size_t start = 0;
+    if (!dir.empty() && dir[0] == '/') {
+        current = "/";
+        start = 1;
+    }
+    while (start <= dir.size()) {
+        size_t slash = dir.find('/', start);
+        std::string part = (slash == std::string::npos)
+            ? dir.substr(start) : dir.substr(start, slash - start);
+        if (!part.empty()) {
+            if (!current.empty() && current.back() != '/') {
+                current += '/';
+            }
+            current += part;
+            if (mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
+                return;  // open() below reports the failure
+            }
+        }
+        if (slash == std::string::npos) {
+            break;
+        }
+        start = slash + 1;
+    }
+}
+
 void Logger::init(const std::string &filepath, const std::string &level, size_t max_size) {
     std::lock_guard<std::mutex> lk(g_log_mutex);
     g_log_level = parse_level(level);
@@ -90,10 +125,8 @@ void Logger::init(const std::string &filepath, const std::string &level, size_t 
             // A single mkdir() fails when any parent component is missing
             // (e.g. /var/log/filetrace/run.log), leaving the log file
             // unopenable and all output redirected to stderr. Create the
-            // whole chain instead; ignore errors here and report via the
-            // open() failure below.
-            std::error_code ec;
-            std::filesystem::create_directories(dir, ec);
+            // whole chain with explicit 0755 permissions instead.
+            create_log_directories(dir);
         }
     }
     // Close before reopening: on libstdc++ calling open() on an already-open

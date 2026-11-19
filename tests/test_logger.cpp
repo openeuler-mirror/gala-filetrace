@@ -22,10 +22,24 @@ int main()
     {
         const std::string nested = "/tmp/gala_ft_nested/a/b/c/run.log";
         std::filesystem::remove_all("/tmp/gala_ft_nested");
+        // Run creation under a permissive umask: create_directories() would then
+        // make 0777 dirs, but explicit-0755 creation must stay safe.
+        mode_t old_umask = umask(0);
         Logger::init(nested, "info", 0);
+        umask(old_umask);
         LOG_INFO("nested directory test line");
         assert(std::ifstream(nested).good());
         assert(read_file(nested).find("nested directory test line") != std::string::npos);
+        // Created directories must not be world-writable. create_directories()
+        // applies 0777 & ~umask, so under umask 0 the log dir becomes 0777 and a
+        // local user could plant a run.log symlink for a root daemon to follow.
+        // The explicit-0755 creation keeps the "other write" bit clear.
+        {
+            const std::string dir = "/tmp/gala_ft_nested/a/b/c";
+            struct stat st{};
+            assert(stat(dir.c_str(), &st) == 0);
+            assert((st.st_mode & S_IWOTH) == 0);
+        }
         std::filesystem::remove_all("/tmp/gala_ft_nested");
     }
 
