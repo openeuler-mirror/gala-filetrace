@@ -182,13 +182,21 @@ std::string TraceStats::match_monitor_path(const std::vector<std::string> &paths
     // config file. "/" is the catch-all: it is only ever the match when no
     // longer path matches.
     std::string matched;
+    bool has_catch_all = false;
     for (const auto &p : paths) {
         if (p.empty()) {
             continue;
         }
+        // "/" is the catch-all: remember it, but do not let it win here.
+        // Otherwise it would short-circuit the basename fallback below even
+        // when a specific configured path ends with this basename.
+        if (p == "/") {
+            has_catch_all = true;
+            continue;
+        }
         // component-boundary prefix test: "/etc" matches "/etc" and
         // "/etc/nginx.conf", not "/etcetera"
-        bool hit = (p == "/") || full_path == p ||
+        bool hit = full_path == p ||
                    (full_path.size() > p.size() &&
                     full_path.compare(0, p.size(), p) == 0 &&
                     full_path[p.size()] == '/');
@@ -219,6 +227,11 @@ std::string TraceStats::match_monitor_path(const std::vector<std::string> &paths
         if (hits == 1) {
             return *candidate;
         }
+    }
+    // No specific match (and no unambiguous basename match): the catch-all
+    // "/" wins only now that every more specific rule has been tried.
+    if (has_catch_all) {
+        return "/";
     }
     return std::string();
 }
@@ -347,18 +360,19 @@ void TraceStats::on_event(const struct event &e, const std::string &path)
     // comment in stats.hpp): when the configured set alone fills the
     // table, a veto-respecting sweep can never free anything and the cap
     // would be defeated, so a second pass degrades to plain LRU eviction.
-    // The devices_.size() > monitor_paths_.size() check is kept as a
-    // fast path for pass 1: more entries than configured paths implies at
-    // least one unconfigured entry, so the scan cannot come up empty.
     if (devices_.size() >= MAX_DEVICE_ENTRIES && devices_.find(norm) == devices_.end()) {
-        if (devices_.size() > monitor_paths_.size()) {
-            // pass 1: the table holds an unconfigured entry, honor the veto
-            evict_lru(devices_, MAX_DEVICE_ENTRIES,
-                      [this](const auto &kv) {
-                          return monitor_paths_.count(kv.first) == 0;
-                      },
-                      [](const DeviceStat &) {});
-        }
+        // pass 1: prefer unconfigured entries as victims. evict_lru() already
+        // short-circuits when there is nothing evictable, so this pass is
+        // cheap even when the configured set alone fills the table. A former
+        // size() > monitor_paths_.size() guard was wrong under config
+        // saturation (configured set >= cap): the table could still hold
+        // unconfigured entries while that condition was false, which skipped
+        // this pass and let pass 2 evict a configured path instead.
+        evict_lru(devices_, MAX_DEVICE_ENTRIES,
+                  [this](const auto &kv) {
+                      return monitor_paths_.count(kv.first) == 0;
+                  },
+                  [](const DeviceStat &) {});
         if (devices_.size() >= MAX_DEVICE_ENTRIES) {
             // pass 2: only configured paths remain (or the configured set
             // itself is larger than the cap), so pass 1 freed nothing (or

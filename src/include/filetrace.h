@@ -33,6 +33,10 @@
 struct event {
     unsigned int pid;
     unsigned int ppid;
+    // start_boottime of the emitting process's thread group leader; lets
+    // user space tell this process apart from a later process that reuses
+    // the same PID. 0 means unknown and disables generation validation.
+    unsigned long long start_time;
     char cmd[16];
     char pcmd[16];
     unsigned long i_ino;
@@ -54,6 +58,11 @@ struct event {
 //save parent process info
 struct pinfo_t {
     unsigned int pid;       // parent pid
+    // Generation of this process and of its parent: user space compares the
+    // former with the event's start_time to reject an entry left behind by a
+    // process whose PID has since been recycled.
+    unsigned long long start_time;
+    unsigned long long parent_start_time;
     char comm[MAX_CMD_LEN]; //pid command
     char arg1[ARGSIZE];     // pid arguments ... 
     char arg2[ARGSIZE];
