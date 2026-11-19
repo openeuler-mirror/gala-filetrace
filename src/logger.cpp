@@ -43,47 +43,62 @@ static int severity_rank(Logger::Level level) {
 // Pre-create with O_NOFOLLOW, then strip only the group/other WRITE bits from
 // the resulting mode. Crucially we do NOT force 0644: a file created under a
 // strict umask (077) is 0600 and must stay 0600, not be widened to readable by
-// everyone. Returning false keeps ofstream from ever opening an unsafe path.
+// everyone. Permission tightening is best-effort: a failure only warns, it
+// never costs us the log file itself (see below).
 static bool ensure_log_file(const std::string &filepath) {
     struct stat st{};
-    if (lstat(filepath.c_str(), &st) == 0 && S_ISLNK(st.st_mode)) {
-        std::cerr << "Logger: refusing symlink log file '" << filepath << "'" << std::endl;
-        return false;  // never follow a symlink planted at the log path itself
+    // Reject symlinks and already-existing non-regular files BEFORE open(): a
+    // blocking O_WRONLY open() on a FIFO with no reader would hang the daemon
+    // forever, and the later S_ISREG check would never be reached.
+    if (lstat(filepath.c_str(), &st) == 0) {
+        if (S_ISLNK(st.st_mode)) {
+            std::cerr << "Logger: refusing symlink log file '" << filepath << "'" << std::endl;
+            return false;
+        }
+        if (!S_ISREG(st.st_mode)) {
+            std::cerr << "Logger: refusing non-regular log file '" << filepath << "'" << std::endl;
+            return false;
+        }
     }
-    int fd = ::open(filepath.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0644);
+    // O_NONBLOCK is a belt-and-braces guard: even if the path is swapped for a
+    // FIFO between lstat() and open(), open() returns ENXIO instead of hanging.
+    // It has no effect on regular files and is dropped when we close this fd;
+    // ofstream re-opens the path with normal blocking semantics afterwards.
+    int fd = ::open(filepath.c_str(),
+                    O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0644);
     if (fd < 0) {
         std::cerr << "Logger: cannot open log file '" << filepath << "': "
                   << std::strerror(errno) << std::endl;
         return false;
     }
-    // Only clear group/other write bits; preserve stricter modes such as 0600.
+    // fstat is best-effort: lstat already vetted the type, and a failure here
+    // must not make us abandon a file we can write to.
     if (fstat(fd, &st) != 0) {
-        std::cerr << "Logger: cannot stat log file '" << filepath << "'" << std::endl;
+        std::cerr << "Logger: cannot stat log file '" << filepath
+                  << "'; continuing with current mode" << std::endl;
         close(fd);
-        return false;
+        return true;
     }
-    // A log path must resolve to a regular file. chmod-ing a device node, FIFO
-    // or socket is wrong, and as root fchmod on e.g. /dev/null would rewrite a
-    // system device's permissions. Refuse anything that is not a regular file.
     if (!S_ISREG(st.st_mode)) {
         std::cerr << "Logger: refusing non-regular log file '" << filepath << "'" << std::endl;
         close(fd);
         return false;
     }
-    // Work on pure permission bits only. st_mode also carries the file type
-    // (S_IFREG = 0100000); folding that into safe_mode made the comparison
-    // against (st_mode & 07777) always true, so fchmod ran every time and also
-    // passed type bits to the kernel. Keep both operands on the same 07777 mask.
+    // Pure permission bits only: st_mode carries the S_IFREG type bit, so
+    // compare and fchmod on the same 07777 mask (otherwise the check is always
+    // true and type bits leak to the kernel).
     const mode_t cur_mode = static_cast<mode_t>(st.st_mode & 07777);
     const mode_t safe_mode = cur_mode & ~static_cast<mode_t>(S_IWGRP | S_IWOTH);
     if (cur_mode != safe_mode && fchmod(fd, safe_mode) != 0) {
-        std::cerr << "Logger: cannot tighten mode of log file '" << filepath << "'" << std::endl;
-        close(fd);
-        return false;
+        // Hardening is an enhancement, not a precondition for logging. If the
+        // file is not ours (EPERM) or lives on a FS without chmod (EOPNOTSUPP),
+        // failing here sends ALL logs to stderr - the very loss this PR fixes.
+        // Warn and keep using the already-opened (non-symlink) file instead.
+        std::cerr << "Logger: cannot tighten mode of log file '" << filepath
+                  << "': " << std::strerror(errno) << "; continuing" << std::endl;
     }
     if (close(fd) != 0) {
         std::cerr << "Logger: close failed for log file '" << filepath << "'" << std::endl;
-        return false;
     }
     return true;
 }
@@ -170,9 +185,21 @@ static bool create_log_directories(const std::string &dir) {
                     return false;
                 }
             } else if (mkdir(current.c_str(), 0755) != 0) {
-                std::cerr << "Logger: cannot create log dir '" << current << "': "
-                          << std::strerror(errno) << std::endl;
-                return false;
+                // EEXIST is a race (another instance created it between our
+                // stat() and mkdir()) or a dangling symlink. Re-check: only a
+                // real directory may be accepted, otherwise keep refusing.
+                if (errno == EEXIST) {
+                    if (stat(current.c_str(), &comp_st) != 0 ||
+                        !S_ISDIR(comp_st.st_mode)) {
+                        std::cerr << "Logger: log dir component is not a directory: '"
+                                  << current << "'" << std::endl;
+                        return false;
+                    }
+                } else {
+                    std::cerr << "Logger: cannot create log dir '" << current << "': "
+                              << std::strerror(errno) << std::endl;
+                    return false;
+                }
             }
         }
         if (slash == std::string::npos) {

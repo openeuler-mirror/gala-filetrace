@@ -92,24 +92,55 @@ int main()
         std::filesystem::remove_all(target);
     }
 
-    // A symlink component that does NOT resolve to a directory (dangling, or
-    // pointing at a regular file) must be rejected rather than followed.
+    // A symlink component pointing at a regular file (not a directory) must be
+    // refused. NOTE: asserting !ifstream(logpath).good() here is TAUTOLOGICAL -
+    // the kernel returns ENOTDIR for ".../root/run.log" when root is a symlink
+    // to a regular file, regardless of our own validation, so that assertion
+    // can never fail even if all symlink checks are deleted. Assert instead the
+    // security invariant that actually distinguishes implementations: the link
+    // target must never be treated as (appended to) the log file. A buggy
+    // implementation that follows the link and opens the target as the log
+    // would corrupt it, and this assertion would catch that.
     {
         const std::string root = "/tmp/gala_ft_symlink_bad";
         const std::string target = root + "_file";
+        const std::string sentinel = "not a directory\n";
         std::filesystem::remove_all(root);
         std::filesystem::remove_all(target);
         {
             std::ofstream ofs(target);
-            ofs << "not a directory";
+            ofs << sentinel;
         }
         assert(symlink(target.c_str(), root.c_str()) == 0);
         const std::string logpath = root + "/run.log";
         Logger::init(logpath, "info", 0);
         LOG_INFO("bad symlink line");
-        assert(!std::ifstream(logpath).good());
+        // The link target is a plain file, not a directory: its content must
+        // remain exactly the sentinel (no log lines appended into it).
+        assert(read_file(target) == sentinel);
         std::filesystem::remove_all(root);
         std::filesystem::remove_all(target);
+    }
+
+    // A FIFO at the log path must be rejected WITHOUT BLOCKING. The previous
+    // code called open(O_WRONLY) directly; on a FIFO with no reader that blocks
+    // forever (the S_ISREG check came too late, after open returned). The
+    // lstat pre-check must reject it before open. An alarm() guard turns a
+    // blocking-open regression into a hard test failure instead of a hang.
+    {
+        const std::string fifo = "/tmp/gala_ft_fifo.log";
+        unlink(fifo.c_str());
+        assert(mkfifo(fifo.c_str(), 0644) == 0);
+        alarm(3);
+        Logger::init(fifo, "info", 0);
+        LOG_INFO("fifo line");
+        alarm(0);
+        // The FIFO must still be a FIFO: it was refused, not replaced by a
+        // regular log file (SIGALRM default action kills us if init blocked).
+        struct stat st{};
+        assert(lstat(fifo.c_str(), &st) == 0);
+        assert(S_ISFIFO(st.st_mode));
+        unlink(fifo.c_str());
     }
 
     // The log FILE path itself being a symlink must be refused even when its
