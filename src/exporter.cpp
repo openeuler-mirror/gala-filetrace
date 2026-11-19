@@ -140,9 +140,14 @@ void PrometheusExporter::set_metrics(struct event& e, const std::string& reporte
     detailed_labels.insert({"gid", std::to_string(e.gid)});
     detailed_labels.insert({"inode", std::to_string(e.i_ino)});
     detailed_labels.insert({"file", filename});
-    detailed_labels.insert({"cmd", e.cmd});
-    std::string time_now = std::to_string(std::time(nullptr));
-    detailed_labels.insert({"ts", time_now});
+    // "cmd" is already present via base_labels; inserting it again is a no-op.
+    //
+    // A wall-clock "ts" label is deliberately NOT included. Prometheus
+    // identifies a series by its complete label set, so attaching time(nullptr)
+    // would register a brand-new series for every event: cardinality grows with
+    // (active PIDs x time) and old series linger for the whole retention window.
+    // The timestamp is tracked only in gauge_cache_timestamps, for expiry.
+    const std::string time_now = std::to_string(std::time(nullptr));
 
     std::string pid_gauge_key = "filetrace_info_record_" + std::to_string(e.pid);
     prometheus::Gauge* pid_gauge = nullptr;
@@ -153,15 +158,16 @@ void PrometheusExporter::set_metrics(struct event& e, const std::string& reporte
         auto lit = gauge_cache_labels.find(pid_gauge_key);
         if (it != gauge_cache.end()) {
             // The gauge is keyed by PID only, but its labels (file, operation,
-            // cmd, uid, ts, ...) belong to a single event. Reusing a gauge whose
+            // cmd, uid, ...) belong to a single event. Reusing a gauge whose
             // labels changed leaves the first event's labels exported for every
             // later event of the same PID, so metrics silently describe the
             // wrong file. Re-register a fresh labeled gauge in that case.
             //
-            // But set_metrics() runs on every syscall. Removing and re-adding a
+            // set_metrics() runs on every syscall. Removing and re-adding a
             // series is O(P) (P = active series in the family) plus a heap
-            // allocation, so only do it when the labels actually differ. For
-            // repeated events with identical labels, a plain Set() is O(1).
+            // allocation, so only do it when the labels actually differ. With
+            // "ts" removed from the label set, repeated events on the same file
+            // now take the O(1) Set() fast path instead of churning the family.
             const bool labels_changed =
                 (lit == gauge_cache_labels.end()) || (lit->second != detailed_labels);
             if (labels_changed) {
@@ -173,6 +179,7 @@ void PrometheusExporter::set_metrics(struct event& e, const std::string& reporte
                         info_gauge_family->Remove(it->second);
                     }
                     pid_gauge = &info_gauge_family->Add(detailed_labels);
+                    ++gauge_series_add_count;
                     it->second = pid_gauge;
                     gauge_cache_labels[pid_gauge_key] = detailed_labels;
                 }
@@ -188,6 +195,7 @@ void PrometheusExporter::set_metrics(struct event& e, const std::string& reporte
                     .Register(*registry);
             }
             pid_gauge = &info_gauge_family->Add(detailed_labels);
+            ++gauge_series_add_count;
             gauge_cache[pid_gauge_key] = pid_gauge;
             gauge_cache_labels[pid_gauge_key] = detailed_labels;
         }

@@ -40,6 +40,9 @@ public:
     std::shared_ptr<prometheus::Registry> registry;
     void set_metrics(struct event& e, const std::string& reported_file = std::string());
     prometheus::Counter* file_access_counter = nullptr;
+    // Number of info-gauge series ever registered. Exposed so tests can prove
+    // that repeated identical events reuse a series (no Remove+Add churn).
+    size_t gauge_series_add_count = 0;
     std::string get_full_path(const struct event *event);
     //add a thread check cache gauge timeout and remove it after some time
     prometheus::Gauge* thread_check_cache_gauge = nullptr;

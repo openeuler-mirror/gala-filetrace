@@ -1,3 +1,6 @@
+// Keep every assert() active even when the project is built with -DNDEBUG;
+// otherwise these regression tests would pass while checking nothing.
+#undef NDEBUG
 #include <cassert>
 #include <iostream>
 #include <string>
@@ -336,18 +339,47 @@ static void test_set_metrics_identical_events_then_change()
     struct event a = make_event(600, 1, "bash", "same.txt", "etc", nullptr,
                                 nullptr, nullptr, SYS_write, 0, 0, 9100);
     exp.set_metrics(a);
+    // "ts" is not a label, so identical events must reuse the same series.
+    // gauge_series_add_count makes the fast path observable: if the hot path
+    // regressed to Remove+Add on every event, this count would keep growing.
+    const size_t adds_after_first = exp.gauge_series_add_count;
+    assert(adds_after_first == 1);
     exp.set_metrics(a);  // identical labels -> O(1) Set() fast path
     exp.set_metrics(a);
+    assert(exp.gauge_series_add_count == adds_after_first);  // no series churn
     assert(info_metric_count(exp) == 1);
     assert(info_file_label(exp, 600) == "/etc/same.txt");
 
     struct event b = make_event(600, 1, "bash", "next.txt", "etc", nullptr,
                                 nullptr, nullptr, SYS_write, 0, 0, 9101);
-    exp.set_metrics(b);  // label changed -> Remove+Add refresh
+    exp.set_metrics(b);  // label changed -> one Remove+Add refresh
+    assert(exp.gauge_series_add_count == adds_after_first + 1);
     assert(info_metric_count(exp) == 1);
     assert(info_file_label(exp, 600) == "/etc/next.txt");
 
     std::cout << "  PASS: set_metrics identical events then change" << std::endl;
+}
+
+// A wall-clock "ts" label makes every event a new Prometheus series, so the
+// exported info gauge must never carry one. This guards the P1 cardinality fix.
+static void test_info_gauge_has_no_ts_label()
+{
+    PrometheusExporter exp("127.0.0.1:19108", 30);
+    struct event e = make_event(700, 1, "bash", "file.txt", "etc", nullptr,
+                                nullptr, nullptr, SYS_write, 0, 0, 9200);
+    exp.set_metrics(e);
+    for (const auto& family : exp.registry->Collect()) {
+        if (family.name != "filetrace_info_record") {
+            continue;
+        }
+        for (const auto& metric : family.metric) {
+            for (const auto& label : metric.label) {
+                assert(label.name != "ts");
+            }
+        }
+    }
+
+    std::cout << "  PASS: info gauge has no ts label" << std::endl;
 }
 
 int main()
@@ -372,6 +404,7 @@ int main()
     test_set_metrics_file_access_counter();
     test_set_metrics_refreshes_labels_on_cache_hit();
     test_set_metrics_identical_events_then_change();
+    test_info_gauge_has_no_ts_label();
 
     std::cout << "All PrometheusExporter unit tests passed." << std::endl;
     return 0;
