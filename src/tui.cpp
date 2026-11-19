@@ -277,6 +277,25 @@ void TuiApp::sample_once()
         }
     }
     clamp_cursors();
+
+    // The device table can shrink between ticks (LRU eviction) or the
+    // terminal can be resized. device_scroll_ is only adjusted on an explicit
+    // scroll, so without re-clamping here it can point far past the end and
+    // render_devices() then draws an entirely blank panel.
+    int dev_visible = dev_height_ - DEV_HEADER - 1;
+    if (dev_visible < 1) {
+        dev_visible = 1;
+    }
+    int dev_max_scroll = (int)snap_.devices.size() - dev_visible;
+    if (dev_max_scroll < 0) {
+        dev_max_scroll = 0;
+    }
+    if (device_scroll_ > dev_max_scroll) {
+        device_scroll_ = dev_max_scroll;
+    }
+    if (device_scroll_ < 0) {
+        device_scroll_ = 0;
+    }
 }
 
 // ---------------------------------------------------------------------------
