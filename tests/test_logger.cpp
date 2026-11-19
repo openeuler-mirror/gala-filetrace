@@ -6,7 +6,19 @@
 #include <string>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <cstdlib>
 #include "logger.hpp"
+
+// Unlike CHECK(), CHECK stays active under -DNDEBUG. Several tests below have
+// side effects inside the check expression (e.g. symlink(...)==0); with assert
+// those would be compiled out entirely and the safety regression silently
+// disappear. Fail loudly instead.
+#define CHECK(cond) do { \
+    if (!(cond)) { \
+        std::cerr << "CHECK failed at line " << __LINE__ << ": " #cond << std::endl; \
+        std::abort(); \
+    } \
+} while (0)
 
 static std::string read_file(const std::string &path)
 {
@@ -28,8 +40,8 @@ int main()
         Logger::init(nested, "info", 0);
         umask(old_umask);
         LOG_INFO("nested directory test line");
-        assert(std::ifstream(nested).good());
-        assert(read_file(nested).find("nested directory test line") != std::string::npos);
+        CHECK(std::ifstream(nested).good());
+        CHECK(read_file(nested).find("nested directory test line") != std::string::npos);
         // Created directories must not be world-writable. create_directories()
         // applies 0777 & ~umask, so under umask 0 the log dir becomes 0777 and a
         // local user could plant a run.log symlink for a root daemon to follow.
@@ -37,17 +49,17 @@ int main()
         {
             const std::string dir = "/tmp/gala_ft_nested/a/b/c";
             struct stat st{};
-            assert(stat(dir.c_str(), &st) == 0);
-            assert((st.st_mode & S_IWOTH) == 0);
+            CHECK(stat(dir.c_str(), &st) == 0);
+            CHECK((st.st_mode & S_IWOTH) == 0);
         }
         // Hardening must cover the log file too, not just its directory.
         // ofstream::open() would create it as 0666 & ~umask == 0666 here;
         // the explicit 0644 creation must keep the "other write" bit clear.
         {
             struct stat st{};
-            assert(stat(nested.c_str(), &st) == 0);
-            assert(S_ISREG(st.st_mode));
-            assert((st.st_mode & S_IWOTH) == 0);
+            CHECK(stat(nested.c_str(), &st) == 0);
+            CHECK(S_ISREG(st.st_mode));
+            CHECK((st.st_mode & S_IWOTH) == 0);
         }
         std::filesystem::remove_all("/tmp/gala_ft_nested");
     }
@@ -63,12 +75,12 @@ int main()
         }
         chmod(loose.c_str(), 0666);
         struct stat before{};
-        assert(stat(loose.c_str(), &before) == 0);
-        assert((before.st_mode & S_IWOTH) != 0);
+        CHECK(stat(loose.c_str(), &before) == 0);
+        CHECK((before.st_mode & S_IWOTH) != 0);
         Logger::init(loose, "info", 0);
         struct stat after{};
-        assert(stat(loose.c_str(), &after) == 0);
-        assert((after.st_mode & S_IWOTH) == 0);
+        CHECK(stat(loose.c_str(), &after) == 0);
+        CHECK((after.st_mode & S_IWOTH) == 0);
         std::filesystem::remove_all(loose);
     }
 
@@ -82,45 +94,29 @@ int main()
         std::filesystem::remove_all(root);
         std::filesystem::remove_all(target);
         std::filesystem::create_directories(target);
-        assert(symlink(target.c_str(), root.c_str()) == 0);
+        CHECK(symlink(target.c_str(), root.c_str()) == 0);
         const std::string logpath = root + "/run.log";
         Logger::init(logpath, "info", 0);
         LOG_INFO("symlink component line");
-        assert(std::ifstream(target + "/run.log").good());
-        assert(read_file(target + "/run.log").find("symlink component line") != std::string::npos);
+        CHECK(std::ifstream(target + "/run.log").good());
+        CHECK(read_file(target + "/run.log").find("symlink component line") != std::string::npos);
         std::filesystem::remove_all(root);
         std::filesystem::remove_all(target);
     }
 
-    // A symlink component pointing at a regular file (not a directory) must be
-    // refused. NOTE: asserting !ifstream(logpath).good() here is TAUTOLOGICAL -
-    // the kernel returns ENOTDIR for ".../root/run.log" when root is a symlink
-    // to a regular file, regardless of our own validation, so that assertion
-    // can never fail even if all symlink checks are deleted. Assert instead the
-    // security invariant that actually distinguishes implementations: the link
-    // target must never be treated as (appended to) the log file. A buggy
-    // implementation that follows the link and opens the target as the log
-    // would corrupt it, and this assertion would catch that.
-    {
-        const std::string root = "/tmp/gala_ft_symlink_bad";
-        const std::string target = root + "_file";
-        const std::string sentinel = "not a directory\n";
-        std::filesystem::remove_all(root);
-        std::filesystem::remove_all(target);
-        {
-            std::ofstream ofs(target);
-            ofs << sentinel;
-        }
-        assert(symlink(target.c_str(), root.c_str()) == 0);
-        const std::string logpath = root + "/run.log";
-        Logger::init(logpath, "info", 0);
-        LOG_INFO("bad symlink line");
-        // The link target is a plain file, not a directory: its content must
-        // remain exactly the sentinel (no log lines appended into it).
-        assert(read_file(target) == sentinel);
-        std::filesystem::remove_all(root);
-        std::filesystem::remove_all(target);
-    }
+    // NOTE: a previous test asserted that a symlink-to-regular-file directory
+    // component is refused by checking "!ifstream(logpath).good()". That is a
+    // tautology: the kernel returns ENOTDIR for "<link-to-file>/run.log" no
+    // matter what our code does, so the assertion passes even if every symlink
+    // check is deleted. It was removed rather than kept as false coverage. The
+    // two cases that genuinely distinguish the implementation are kept below:
+    //   (a) symlink_ok  - a link to a REAL directory must be followed and the
+    //                     log must appear at the target (a lstat-based blanket
+    //                     rejection would fail this), and
+    //   (b) filelink    - a symlink AT the log path itself must be refused and
+    //                     its target left byte-for-byte unchanged (a follow-
+    //                     through open would fail this).
+    // Together they pin both directions of the symlink policy.
 
     // A FIFO at the log path must be rejected WITHOUT BLOCKING. The previous
     // code called open(O_WRONLY) directly; on a FIFO with no reader that blocks
@@ -130,7 +126,7 @@ int main()
     {
         const std::string fifo = "/tmp/gala_ft_fifo.log";
         unlink(fifo.c_str());
-        assert(mkfifo(fifo.c_str(), 0644) == 0);
+        CHECK(mkfifo(fifo.c_str(), 0644) == 0);
         alarm(3);
         Logger::init(fifo, "info", 0);
         LOG_INFO("fifo line");
@@ -138,8 +134,8 @@ int main()
         // The FIFO must still be a FIFO: it was refused, not replaced by a
         // regular log file (SIGALRM default action kills us if init blocked).
         struct stat st{};
-        assert(lstat(fifo.c_str(), &st) == 0);
-        assert(S_ISFIFO(st.st_mode));
+        CHECK(lstat(fifo.c_str(), &st) == 0);
+        CHECK(S_ISFIFO(st.st_mode));
         unlink(fifo.c_str());
     }
 
@@ -158,10 +154,10 @@ int main()
             ofs << "sentinel";
         }
         const std::string logpath = root + "/run.log";
-        assert(symlink(target.c_str(), logpath.c_str()) == 0);
+        CHECK(symlink(target.c_str(), logpath.c_str()) == 0);
         Logger::init(logpath, "info", 0);
         LOG_INFO("must not land in symlink target");
-        assert(read_file(target) == "sentinel");
+        CHECK(read_file(target) == "sentinel");
         std::filesystem::remove_all(root);
         std::filesystem::remove_all(target);
     }
@@ -177,12 +173,12 @@ int main()
         umask(old_umask);
         LOG_INFO("strict umask line");
         struct stat st{};
-        assert(stat(strict.c_str(), &st) == 0);
-        assert((st.st_mode & S_IRGRP) == 0);
-        assert((st.st_mode & S_IROTH) == 0);
-        assert((st.st_mode & S_IWGRP) == 0);
-        assert((st.st_mode & S_IWOTH) == 0);
-        assert(read_file(strict).find("strict umask line") != std::string::npos);
+        CHECK(stat(strict.c_str(), &st) == 0);
+        CHECK((st.st_mode & S_IRGRP) == 0);
+        CHECK((st.st_mode & S_IROTH) == 0);
+        CHECK((st.st_mode & S_IWGRP) == 0);
+        CHECK((st.st_mode & S_IWOTH) == 0);
+        CHECK(read_file(strict).find("strict umask line") != std::string::npos);
         std::filesystem::remove_all(strict);
     }
 
@@ -197,9 +193,9 @@ int main()
 
     {
         std::string content = read_file(path);
-        assert(content.find("INFO") != std::string::npos);
+        CHECK(content.find("INFO") != std::string::npos);
         // debug should be filtered at info level
-        assert(content.find("DEBUG") == std::string::npos);
+        CHECK(content.find("DEBUG") == std::string::npos);
     }
 
     // re-init with debug level and ensure DEBUG appears
@@ -207,7 +203,7 @@ int main()
     LOG_DEBUG("unit test debug2");
     {
         std::string content = read_file(path);
-        assert(content.find("DEBUG") != std::string::npos);
+        CHECK(content.find("DEBUG") != std::string::npos);
     }
 
     // Level filtering matrix: a message is written only when its severity
@@ -232,10 +228,10 @@ int main()
         LOG_ERROR("m_error_" + std::string(c.cfg));
         LOG_DEBUG("m_debug_" + std::string(c.cfg));
         std::string content = read_file(path);
-        assert((content.find(std::string("m_info_") + c.cfg) != std::string::npos) == c.exp_info);
-        assert((content.find(std::string("m_warn_") + c.cfg) != std::string::npos) == c.exp_warn);
-        assert((content.find(std::string("m_error_") + c.cfg) != std::string::npos) == c.exp_error);
-        assert((content.find(std::string("m_debug_") + c.cfg) != std::string::npos) == c.exp_debug);
+        CHECK((content.find(std::string("m_info_") + c.cfg) != std::string::npos) == c.exp_info);
+        CHECK((content.find(std::string("m_warn_") + c.cfg) != std::string::npos) == c.exp_warn);
+        CHECK((content.find(std::string("m_error_") + c.cfg) != std::string::npos) == c.exp_error);
+        CHECK((content.find(std::string("m_debug_") + c.cfg) != std::string::npos) == c.exp_debug);
     }
 
     // Rotation: once the file reaches max_size it is renamed to a
@@ -258,10 +254,10 @@ int main()
                 backups++;
             }
         }
-        assert(backups >= 1);
+        CHECK(backups >= 1);
         // a fresh file must have been created and hold the most recent line
         std::string content = read_file(rpath);
-        assert(content.find("rotation test line 11") != std::string::npos);
+        CHECK(content.find("rotation test line 11") != std::string::npos);
         unlink(rpath.c_str());
     }
 

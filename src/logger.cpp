@@ -1,5 +1,5 @@
 #include "logger.hpp"
-#include <fstream>
+#include <cstdio>
 #include <mutex>
 #include <ctime>
 #include <iomanip>
@@ -11,7 +11,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-static std::ofstream g_log_ofs;
+static int g_log_fd = -1;  // descriptor vetted once and kept open for all writes
 static std::mutex g_log_mutex;
 static Logger::Level g_log_level = Logger::INFO;
 static std::string g_log_filepath;
@@ -36,16 +36,18 @@ static int severity_rank(Logger::Level level) {
     return 1;
 }
 
-// Create (or fix up) the log file with safe permissions and no symlink
-// indirection. std::ofstream::open() alone creates a missing file as 0666 &
-// ~umask (world-writable when umask is 0) and follows symlinks, so a planted
-// run.log symlink can redirect a root daemon's writes to an arbitrary file.
-// Pre-create with O_NOFOLLOW, then strip only the group/other WRITE bits from
-// the resulting mode. Crucially we do NOT force 0644: a file created under a
-// strict umask (077) is 0600 and must stay 0600, not be widened to readable by
-// everyone. Permission tightening is best-effort: a failure only warns, it
-// never costs us the log file itself (see below).
-static bool ensure_log_file(const std::string &filepath) {
+// Open the log file ONCE and keep the returned descriptor open for all writes.
+// The old design vetted the path with open(O_NOFOLLOW), closed the fd, then let
+// std::ofstream re-open it BY PATH without O_NOFOLLOW. That left a TOCTOU window
+// in which a local attacker could replace the path with a symlink and redirect
+// a root daemon's writes. Writing through the already-vetted fd closes it.
+//
+// std::ofstream::open() alone also creates a missing file as 0666 & ~umask
+// (world-writable under umask 0) and follows symlinks. We pre-create with
+// O_NOFOLLOW and strip only the group/other WRITE bits -- never forcing 0644,
+// so a strict-umask 0600 stays 0600. Tightening is best-effort: a failure only
+// warns and never costs us the log file. Returns an open fd (>= 0) or -1.
+static int ensure_log_file(const std::string &filepath) {
     struct stat st{};
     // Reject symlinks and already-existing non-regular files BEFORE open(): a
     // blocking O_WRONLY open() on a FIFO with no reader would hang the daemon
@@ -53,82 +55,82 @@ static bool ensure_log_file(const std::string &filepath) {
     if (lstat(filepath.c_str(), &st) == 0) {
         if (S_ISLNK(st.st_mode)) {
             std::cerr << "Logger: refusing symlink log file '" << filepath << "'" << std::endl;
-            return false;
+            return -1;
         }
         if (!S_ISREG(st.st_mode)) {
             std::cerr << "Logger: refusing non-regular log file '" << filepath << "'" << std::endl;
-            return false;
+            return -1;
         }
     }
     // O_NONBLOCK is a belt-and-braces guard: even if the path is swapped for a
     // FIFO between lstat() and open(), open() returns ENXIO instead of hanging.
-    // It has no effect on regular files and is dropped when we close this fd;
-    // ofstream re-opens the path with normal blocking semantics afterwards.
+    // It has no effect on regular files and is cleared on the fd we keep below.
     int fd = ::open(filepath.c_str(),
                     O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0644);
     if (fd < 0) {
         std::cerr << "Logger: cannot open log file '" << filepath << "': "
                   << std::strerror(errno) << std::endl;
-        return false;
+        return -1;
     }
     // fstat is best-effort: lstat already vetted the type, and a failure here
     // must not make us abandon a file we can write to.
     if (fstat(fd, &st) != 0) {
         std::cerr << "Logger: cannot stat log file '" << filepath
                   << "'; continuing with current mode" << std::endl;
-        close(fd);
-        return true;
+    } else {
+        if (!S_ISREG(st.st_mode)) {
+            std::cerr << "Logger: refusing non-regular log file '" << filepath << "'" << std::endl;
+            close(fd);
+            return -1;
+        }
+        // Pure permission bits only: st_mode carries the S_IFREG type bit, so
+        // compare and fchmod on the same 07777 mask (otherwise the check is
+        // always true and type bits leak to the kernel).
+        const mode_t cur_mode = static_cast<mode_t>(st.st_mode & 07777);
+        const mode_t safe_mode = cur_mode & ~static_cast<mode_t>(S_IWGRP | S_IWOTH);
+        if (cur_mode != safe_mode && fchmod(fd, safe_mode) != 0) {
+            // Hardening is an enhancement, not a precondition for logging. If
+            // the file is not ours (EPERM) or lives on a FS without chmod
+            // (EOPNOTSUPP), failing here would send ALL logs to stderr. Warn and
+            // keep using the already-opened (non-symlink) file instead.
+            std::cerr << "Logger: cannot tighten mode of log file '" << filepath
+                      << "': " << std::strerror(errno) << "; continuing" << std::endl;
+        }
     }
-    if (!S_ISREG(st.st_mode)) {
-        std::cerr << "Logger: refusing non-regular log file '" << filepath << "'" << std::endl;
-        close(fd);
-        return false;
+    // O_NONBLOCK has no effect on regular files; clear it on the descriptor we
+    // keep so subsequent write() calls have normal semantics.
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
     }
-    // Pure permission bits only: st_mode carries the S_IFREG type bit, so
-    // compare and fchmod on the same 07777 mask (otherwise the check is always
-    // true and type bits leak to the kernel).
-    const mode_t cur_mode = static_cast<mode_t>(st.st_mode & 07777);
-    const mode_t safe_mode = cur_mode & ~static_cast<mode_t>(S_IWGRP | S_IWOTH);
-    if (cur_mode != safe_mode && fchmod(fd, safe_mode) != 0) {
-        // Hardening is an enhancement, not a precondition for logging. If the
-        // file is not ours (EPERM) or lives on a FS without chmod (EOPNOTSUPP),
-        // failing here sends ALL logs to stderr - the very loss this PR fixes.
-        // Warn and keep using the already-opened (non-symlink) file instead.
-        std::cerr << "Logger: cannot tighten mode of log file '" << filepath
-                  << "': " << std::strerror(errno) << "; continuing" << std::endl;
-    }
-    if (close(fd) != 0) {
-        std::cerr << "Logger: close failed for log file '" << filepath << "'" << std::endl;
-    }
-    return true;
+    return fd;
 }
 
 // Rotate the log file: rename current log to backup and create new one
 static void rotate_log_file() {
-    if (g_log_ofs.is_open()) {
-        g_log_ofs.close();
+    if (g_log_fd >= 0) {
+        close(g_log_fd);
+        g_log_fd = -1;
     }
-    
+
     // Create backup filename with timestamp
     time_t now = std::time(nullptr);
     struct tm tm_info{};
     localtime_r(&now, &tm_info);
-    
+
     std::ostringstream backup_name;
     backup_name << g_log_filepath << ".";
     backup_name << std::put_time(&tm_info, "%Y%m%d_%H%M%S");
-    
+
     // Rename current log file to backup
     if (std::rename(g_log_filepath.c_str(), backup_name.str().c_str()) != 0) {
-        std::cerr << "Logger: failed to rotate log file from '" << g_log_filepath 
+        std::cerr << "Logger: failed to rotate log file from '" << g_log_filepath
                   << "' to '" << backup_name.str() << "'" << std::endl;
     }
-    
+
     // Open new log file with the same safe, deterministic permissions.
-    if (ensure_log_file(g_log_filepath)) {
-        g_log_ofs.open(g_log_filepath, std::ios::app);
-    }
-    if (!g_log_ofs.is_open()) {
+    g_log_fd = ensure_log_file(g_log_filepath);
+    if (g_log_fd < 0) {
         std::cerr << "Logger: failed to create new log file '" << g_log_filepath << "'" << std::endl;
     }
 }
@@ -136,9 +138,9 @@ static void rotate_log_file() {
 // Check if log file needs rotation
 static bool should_rotate_log() {
     if (g_max_log_size == 0) {
-        return false; 
+        return false;
     }
-    
+
     struct stat st;
     if (stat(g_log_filepath.c_str(), &st) == 0) {
         return (size_t)st.st_size >= g_max_log_size;
@@ -215,7 +217,7 @@ void Logger::init(const std::string &filepath, const std::string &level, size_t 
     g_log_level = parse_level(level);
     g_log_filepath = filepath;
     g_max_log_size = max_size;
-    
+
     size_t pos = filepath.rfind('/');
     if (pos != std::string::npos && pos > 0) {
         // Always walk the chain: a bare stat(dir) short-circuits when an
@@ -228,19 +230,14 @@ void Logger::init(const std::string &filepath, const std::string &level, size_t 
                       << "', logging to stderr" << std::endl;
         }
     }
-    // Close before reopening: on libstdc++ calling open() on an already-open
-    // stream leaves failbit set, and every later write is silently dropped.
-    if (g_log_ofs.is_open()) {
-        g_log_ofs.close();
+    // Close the previous descriptor before reopening. From here on all writes
+    // go through this single vetted fd; we never re-open the path by name.
+    if (g_log_fd >= 0) {
+        close(g_log_fd);
+        g_log_fd = -1;
     }
-    // ofstream::open(app) creates a missing file as 0666 & ~umask and follows
-    // symlinks: umask 0 yields a world-writable file and a planted symlink can
-    // redirect writes. ensure_log_file() pre-creates with O_NOFOLLOW + 0644 and
-    // fchmod()s it; the open below then sees an existing file and keeps its mode.
-    if (ensure_log_file(filepath)) {
-        g_log_ofs.open(filepath, std::ios::app);
-    }
-    if (!g_log_ofs.is_open()) {
+    g_log_fd = ensure_log_file(filepath);
+    if (g_log_fd < 0) {
         std::cerr << "Logger: failed to open log file '" << filepath << "', logging to stderr" << std::endl;
     }
 }
@@ -271,15 +268,21 @@ void Logger::log(Logger::Level lvl, const std::string &msg, const char *file, in
        << basename_of_path(file) << ":" << line << " " << msg << "\n";
     std::string out = ss.str();
     std::lock_guard<std::mutex> lk(g_log_mutex);
-    
+
     // Check if rotation is needed before writing
     if (should_rotate_log()) {
         rotate_log_file();
     }
-    
-    if (g_log_ofs.is_open()) {
-        g_log_ofs << out;
-        g_log_ofs.flush();
+
+    if (g_log_fd >= 0) {
+        // Write through the descriptor vetted at init/rotation time; never
+        // re-open the path, which would reintroduce the symlink TOCTOU window.
+        size_t written = 0;
+        while (written < out.size()) {
+            ssize_t n = ::write(g_log_fd, out.data() + written, out.size() - written);
+            if (n <= 0) break;  // best-effort, like the old ofstream
+            written += static_cast<size_t>(n);
+        }
     } else {
         std::cerr << out;
     }
