@@ -8,8 +8,8 @@
 #include <sys/stat.h>
 #include <cstring>
 #include <cerrno>
-#include <filesystem>
-#include <system_error>
+#include <fcntl.h>
+#include <unistd.h>
 
 static std::ofstream g_log_ofs;
 static std::mutex g_log_mutex;
@@ -36,6 +36,27 @@ static int severity_rank(Logger::Level level) {
     return 1;
 }
 
+// Create (or fix up) the log file with deterministic, safe permissions.
+// std::ofstream::open() creates a missing file as 0666 & ~umask, which is
+// world-writable when a daemon runs with umask 0; it also follows symlinks, so
+// a planted run.log symlink can redirect a root daemon's writes. Pre-creating
+// with O_NOFOLLOW and an explicit 0644 mode, then fchmod()-ing the descriptor,
+// closes both holes. Returning false keeps ofstream from ever opening the path.
+static bool ensure_log_file(const std::string &filepath) {
+    struct stat st{};
+    if (lstat(filepath.c_str(), &st) == 0 && S_ISLNK(st.st_mode)) {
+        return false;  // refuse to follow a symlink planted at the log path
+    }
+    int fd = ::open(filepath.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        return false;
+    }
+    // Tighten the mode even when the file already existed with a loose one.
+    fchmod(fd, 0644);
+    close(fd);
+    return true;
+}
+
 // Rotate the log file: rename current log to backup and create new one
 static void rotate_log_file() {
     if (g_log_ofs.is_open()) {
@@ -57,8 +78,10 @@ static void rotate_log_file() {
                   << "' to '" << backup_name.str() << "'" << std::endl;
     }
     
-    // Open new log file
-    g_log_ofs.open(g_log_filepath, std::ios::app);
+    // Open new log file with the same safe, deterministic permissions.
+    if (ensure_log_file(g_log_filepath)) {
+        g_log_ofs.open(g_log_filepath, std::ios::app);
+    }
     if (!g_log_ofs.is_open()) {
         std::cerr << "Logger: failed to create new log file '" << g_log_filepath << "'" << std::endl;
     }
@@ -78,12 +101,10 @@ static bool should_rotate_log() {
 }
 
 // Create every missing component of dir, each with an explicit 0755 mode.
-// std::filesystem::create_directories() uses 0777 & ~umask; when a daemon runs
-// with a permissive umask (0/002) that makes the log directory world-writable.
-// Since the log file is later opened through a symlink-following open(), a
-// world-writable directory lets a local user plant a run.log symlink and have
-// a root daemon write to an arbitrary file. Preserve the original 0755
-// boundary explicitly instead of relying on the process umask.
+// mkdir(..., 0755) is used instead of std::filesystem::create_directories(),
+// which applies 0777 & ~umask: with a permissive umask (0/002) the log dir
+// would become world-writable, and a local user could plant a run.log symlink
+// for a root daemon to follow. Keep the original 0755 boundary explicitly.
 static void create_log_directories(const std::string &dir) {
     std::string current;
     size_t start = 0;
@@ -100,8 +121,20 @@ static void create_log_directories(const std::string &dir) {
                 current += '/';
             }
             current += part;
-            if (mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
-                return;  // open() below reports the failure
+            if (mkdir(current.c_str(), 0755) != 0) {
+                if (errno != EEXIST) {
+                    return;  // open() below reports the failure
+                }
+                // EEXIST is not necessarily a real directory: it can be a
+                // symlink. lstat() deliberately does not follow symlinks, so a
+                // planted symlink component is rejected instead of granting a
+                // path through the 0755 boundary. Do not chmod() an existing
+                // component: it may be a system dir (e.g. /var/log) whose mode
+                // is intentionally managed elsewhere.
+                struct stat comp_st{};
+                if (lstat(current.c_str(), &comp_st) != 0 || !S_ISDIR(comp_st.st_mode)) {
+                    return;
+                }
             }
         }
         if (slash == std::string::npos) {
@@ -134,7 +167,13 @@ void Logger::init(const std::string &filepath, const std::string &level, size_t 
     if (g_log_ofs.is_open()) {
         g_log_ofs.close();
     }
-    g_log_ofs.open(filepath, std::ios::app);
+    // ofstream::open(app) creates a missing file as 0666 & ~umask and follows
+    // symlinks: umask 0 yields a world-writable file and a planted symlink can
+    // redirect writes. ensure_log_file() pre-creates with O_NOFOLLOW + 0644 and
+    // fchmod()s it; the open below then sees an existing file and keeps its mode.
+    if (ensure_log_file(filepath)) {
+        g_log_ofs.open(filepath, std::ios::app);
+    }
     if (!g_log_ofs.is_open()) {
         std::cerr << "Logger: failed to open log file '" << filepath << "', logging to stderr" << std::endl;
     }

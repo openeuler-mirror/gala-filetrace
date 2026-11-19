@@ -40,7 +40,55 @@ int main()
             assert(stat(dir.c_str(), &st) == 0);
             assert((st.st_mode & S_IWOTH) == 0);
         }
+        // Hardening must cover the log file too, not just its directory.
+        // ofstream::open() would create it as 0666 & ~umask == 0666 here;
+        // the explicit 0644 creation must keep the "other write" bit clear.
+        {
+            struct stat st{};
+            assert(stat(nested.c_str(), &st) == 0);
+            assert((st.st_mode & S_IWOTH) == 0);
+        }
         std::filesystem::remove_all("/tmp/gala_ft_nested");
+    }
+
+    // A log file that already exists with a loose mode must be tightened on
+    // init, not only files created fresh by this process.
+    {
+        const std::string loose = "/tmp/gala_ft_loose.log";
+        std::filesystem::remove_all(loose);
+        {
+            std::ofstream ofs(loose);
+            ofs << "seed";
+        }
+        chmod(loose.c_str(), 0666);
+        struct stat before{};
+        assert(stat(loose.c_str(), &before) == 0);
+        assert((before.st_mode & S_IWOTH) != 0);
+        Logger::init(loose, "info", 0);
+        struct stat after{};
+        assert(stat(loose.c_str(), &after) == 0);
+        assert((after.st_mode & S_IWOTH) == 0);
+        std::filesystem::remove_all(loose);
+    }
+
+    // A symlink used as a directory component must be rejected. The old code
+    // let EEXIST through unconditionally, so mkdir()/open() followed the link
+    // and wrote the log under the link target -- reintroducing exactly the
+    // arbitrary-file-write path the 0755 hardening was meant to close.
+    {
+        const std::string root = "/tmp/gala_ft_symlink";
+        const std::string target = root + "_target";
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+        std::filesystem::create_directories(target);
+        assert(symlink(target.c_str(), root.c_str()) == 0);
+        const std::string logpath = root + "/sub/run.log";
+        Logger::init(logpath, "info", 0);
+        LOG_INFO("symlink component line");
+        assert(!std::ifstream(logpath).good());
+        assert(!std::ifstream(target + "/sub/run.log").good());
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
     }
 
     const std::string path = "/tmp/gala_test_logger.log";
