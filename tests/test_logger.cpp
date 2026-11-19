@@ -13,7 +13,7 @@
 #include <cstdlib>
 #include "logger.hpp"
 
-// Unlike CHECK(), CHECK stays active under -DNDEBUG. Several tests below have
+// Unlike assert(), CHECK stays active under -DNDEBUG. Several tests below have
 // side effects inside the check expression (e.g. symlink(...)==0); with assert
 // those would be compiled out entirely and the safety regression silently
 // disappear. Fail loudly instead.
@@ -477,8 +477,11 @@ static void test_open_failure_fallback_to_cerr()
     LOG_INFO("before open failure");
     const std::string before_content = read_file(prev_path);
 
-    // Multi-level missing parent guarantees mkdir and open() fail even as root.
-    const std::string bad_path = "/tmp/gala_missing_parent_" + std::to_string(getpid()) + "/nested/fail.log";
+    // Use an existing regular file (prev_path) as a parent directory component.
+    // Logger::init now creates missing parents recursively, so a missing path
+    // would succeed; but a regular file cannot be a directory, so both the
+    // directory walk and the final open() fail even as root.
+    const std::string bad_path = prev_path + "/nested/fail.log";
     std::string init_err;
     {
         CerrCapture cap;
