@@ -46,6 +46,7 @@ int main()
         {
             struct stat st{};
             assert(stat(nested.c_str(), &st) == 0);
+            assert(S_ISREG(st.st_mode));
             assert((st.st_mode & S_IWOTH) == 0);
         }
         std::filesystem::remove_all("/tmp/gala_ft_nested");
@@ -107,6 +108,29 @@ int main()
         Logger::init(logpath, "info", 0);
         LOG_INFO("bad symlink line");
         assert(!std::ifstream(logpath).good());
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+    }
+
+    // The log FILE path itself being a symlink must be refused even when its
+    // parent directory is perfectly safe. ensure_log_file() uses lstat +
+    // O_NOFOLLOW so a planted run.log -> /etc/passwd link cannot redirect a
+    // root daemon's writes. Assert the link target stays untouched.
+    {
+        const std::string root = "/tmp/gala_ft_filelink";
+        const std::string target = "/tmp/gala_ft_filelink_target";
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+        std::filesystem::create_directories(root);
+        {
+            std::ofstream ofs(target);
+            ofs << "sentinel";
+        }
+        const std::string logpath = root + "/run.log";
+        assert(symlink(target.c_str(), logpath.c_str()) == 0);
+        Logger::init(logpath, "info", 0);
+        LOG_INFO("must not land in symlink target");
+        assert(read_file(target) == "sentinel");
         std::filesystem::remove_all(root);
         std::filesystem::remove_all(target);
     }

@@ -62,8 +62,21 @@ static bool ensure_log_file(const std::string &filepath) {
         close(fd);
         return false;
     }
-    const mode_t safe_mode = st.st_mode & ~static_cast<mode_t>(S_IWGRP | S_IWOTH);
-    if ((st.st_mode & 07777) != safe_mode && fchmod(fd, safe_mode) != 0) {
+    // A log path must resolve to a regular file. chmod-ing a device node, FIFO
+    // or socket is wrong, and as root fchmod on e.g. /dev/null would rewrite a
+    // system device's permissions. Refuse anything that is not a regular file.
+    if (!S_ISREG(st.st_mode)) {
+        std::cerr << "Logger: refusing non-regular log file '" << filepath << "'" << std::endl;
+        close(fd);
+        return false;
+    }
+    // Work on pure permission bits only. st_mode also carries the file type
+    // (S_IFREG = 0100000); folding that into safe_mode made the comparison
+    // against (st_mode & 07777) always true, so fchmod ran every time and also
+    // passed type bits to the kernel. Keep both operands on the same 07777 mask.
+    const mode_t cur_mode = static_cast<mode_t>(st.st_mode & 07777);
+    const mode_t safe_mode = cur_mode & ~static_cast<mode_t>(S_IWGRP | S_IWOTH);
+    if (cur_mode != safe_mode && fchmod(fd, safe_mode) != 0) {
         std::cerr << "Logger: cannot tighten mode of log file '" << filepath << "'" << std::endl;
         close(fd);
         return false;
@@ -183,7 +196,10 @@ void Logger::init(const std::string &filepath, const std::string &level, size_t 
         // validation and leaving the log file unopenable. create_log_directories
         // is idempotent for components that already exist.
         std::string dir = filepath.substr(0, pos);
-        create_log_directories(dir);
+        if (!create_log_directories(dir)) {
+            std::cerr << "Logger: failed to prepare log directory '" << dir
+                      << "', logging to stderr" << std::endl;
+        }
     }
     // Close before reopening: on libstdc++ calling open() on an already-open
     // stream leaves failbit set, and every later write is silently dropped.
