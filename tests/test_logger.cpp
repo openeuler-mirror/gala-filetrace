@@ -10,7 +10,19 @@
 #include <vector>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <cstdlib>
 #include "logger.hpp"
+
+// Unlike assert(), CHECK stays active under -DNDEBUG. Several tests below have
+// side effects inside the check expression (e.g. symlink(...)==0); with assert
+// those would be compiled out entirely and the safety regression silently
+// disappear. Fail loudly instead.
+#define CHECK(cond) do { \
+    if (!(cond)) { \
+        std::cerr << "CHECK failed at line " << __LINE__ << ": " #cond << std::endl; \
+        std::abort(); \
+    } \
+} while (0)
 
 static std::string read_file(const std::string &path)
 {
@@ -91,10 +103,10 @@ static void verify_log_line(const std::string &line,
                             int expected_line,
                             const std::string &expected_msg)
 {
-    assert(has_valid_iso8601_prefix(line));
+    CHECK(has_valid_iso8601_prefix(line));
     const std::string expected_suffix =
         " [" + expected_level + "] " + expected_file + ":" + std::to_string(expected_line) + " " + expected_msg;
-    assert(line.substr(19) == expected_suffix);
+    CHECK(line.substr(19) == expected_suffix);
 }
 
 static void verify_log_line_structure(const std::string &line,
@@ -102,17 +114,17 @@ static void verify_log_line_structure(const std::string &line,
                                       const std::string &expected_file,
                                       const std::string &msg_prefix)
 {
-    assert(has_valid_iso8601_prefix(line));
+    CHECK(has_valid_iso8601_prefix(line));
     const std::string tag_prefix = " [" + expected_level + "] " + expected_file + ":";
-    assert(line.compare(19, tag_prefix.size(), tag_prefix) == 0);
+    CHECK(line.compare(19, tag_prefix.size(), tag_prefix) == 0);
     size_t pos = 19 + tag_prefix.size();
     size_t digit_start = pos;
     while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos]))) {
         ++pos;
     }
-    assert(pos > digit_start);
-    assert(pos < line.size() && line[pos] == ' ');
-    assert(line.compare(pos + 1, msg_prefix.size(), msg_prefix) == 0);
+    CHECK(pos > digit_start);
+    CHECK(pos < line.size() && line[pos] == ' ');
+    CHECK(line.compare(pos + 1, msg_prefix.size(), msg_prefix) == 0);
 }
 
 struct CerrCapture {
@@ -140,17 +152,171 @@ static void test_uninitialized_fallback_to_cerr()
     }
 
     auto lines = split_lines(captured);
-    assert(lines.size() == 3);
+    CHECK(lines.size() == 3);
     verify_log_line(lines[0], "INFO",  "test_logger.cpp", info_line,  "uninit info");
     verify_log_line(lines[1], "WARN",  "test_logger.cpp", warn_line,  "uninit warn");
     verify_log_line(lines[2], "ERROR", "test_logger.cpp", error_line, "uninit error");
-    assert(captured.find("uninit debug") == std::string::npos);
+    CHECK(captured.find("uninit debug") == std::string::npos);
 
     std::cout << "  PASS: uninitialized logger falls back to std::cerr" << std::endl;
 }
 
 static void test_basic_init_and_reinit()
 {
+    // A log path whose parent directories do not exist yet must be created
+    // recursively. A single mkdir() only handles one missing level and would
+    // leave the log file unopenable.
+    {
+        const std::string nested = "/tmp/gala_ft_nested/a/b/c/run.log";
+        std::filesystem::remove_all("/tmp/gala_ft_nested");
+        // Run creation under a permissive umask: create_directories() would then
+        // make 0777 dirs, but explicit-0755 creation must stay safe.
+        mode_t old_umask = umask(0);
+        Logger::init(nested, "info", 0);
+        umask(old_umask);
+        LOG_INFO("nested directory test line");
+        CHECK(std::ifstream(nested).good());
+        CHECK(read_file(nested).find("nested directory test line") != std::string::npos);
+        // Created directories must not be world-writable. create_directories()
+        // applies 0777 & ~umask, so under umask 0 the log dir becomes 0777 and a
+        // local user could plant a run.log symlink for a root daemon to follow.
+        // The explicit-0755 creation keeps the "other write" bit clear.
+        {
+            const std::string dir = "/tmp/gala_ft_nested/a/b/c";
+            struct stat st{};
+            CHECK(stat(dir.c_str(), &st) == 0);
+            CHECK((st.st_mode & S_IWOTH) == 0);
+        }
+        // Hardening must cover the log file too, not just its directory.
+        // ofstream::open() would create it as 0666 & ~umask == 0666 here;
+        // the explicit 0644 creation must keep the "other write" bit clear.
+        {
+            struct stat st{};
+            CHECK(stat(nested.c_str(), &st) == 0);
+            CHECK(S_ISREG(st.st_mode));
+            CHECK((st.st_mode & S_IWOTH) == 0);
+        }
+        std::filesystem::remove_all("/tmp/gala_ft_nested");
+    }
+
+    // A log file that already exists with a loose mode must be tightened on
+    // init, not only files created fresh by this process.
+    {
+        const std::string loose = "/tmp/gala_ft_loose.log";
+        std::filesystem::remove_all(loose);
+        {
+            std::ofstream ofs(loose);
+            ofs << "seed";
+        }
+        chmod(loose.c_str(), 0666);
+        struct stat before{};
+        CHECK(stat(loose.c_str(), &before) == 0);
+        CHECK((before.st_mode & S_IWOTH) != 0);
+        Logger::init(loose, "info", 0);
+        struct stat after{};
+        CHECK(stat(loose.c_str(), &after) == 0);
+        CHECK((after.st_mode & S_IWOTH) == 0);
+        std::filesystem::remove_all(loose);
+    }
+
+    // A symlink directory component that resolves to a real directory is
+    // legitimate (e.g. /var/run -> /run) and must keep working. The previous
+    // lstat-based check killed all symlinks and silently degraded logging to
+    // stderr; resolving with stat() must accept this case and still write.
+    {
+        const std::string root = "/tmp/gala_ft_symlink_ok";
+        const std::string target = root + "_target";
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+        std::filesystem::create_directories(target);
+        CHECK(symlink(target.c_str(), root.c_str()) == 0);
+        const std::string logpath = root + "/run.log";
+        Logger::init(logpath, "info", 0);
+        LOG_INFO("symlink component line");
+        CHECK(std::ifstream(target + "/run.log").good());
+        CHECK(read_file(target + "/run.log").find("symlink component line") != std::string::npos);
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+    }
+
+    // NOTE: a previous test asserted that a symlink-to-regular-file directory
+    // component is refused by checking "!ifstream(logpath).good()". That is a
+    // tautology: the kernel returns ENOTDIR for "<link-to-file>/run.log" no
+    // matter what our code does, so the assertion passes even if every symlink
+    // check is deleted. It was removed rather than kept as false coverage. The
+    // two cases that genuinely distinguish the implementation are kept below:
+    //   (a) symlink_ok  - a link to a REAL directory must be followed and the
+    //                     log must appear at the target (a lstat-based blanket
+    //                     rejection would fail this), and
+    //   (b) filelink    - a symlink AT the log path itself must be refused and
+    //                     its target left byte-for-byte unchanged (a follow-
+    //                     through open would fail this).
+    // Together they pin both directions of the symlink policy.
+
+    // A FIFO at the log path must be rejected WITHOUT BLOCKING. The previous
+    // code called open(O_WRONLY) directly; on a FIFO with no reader that blocks
+    // forever (the S_ISREG check came too late, after open returned). The
+    // lstat pre-check must reject it before open. An alarm() guard turns a
+    // blocking-open regression into a hard test failure instead of a hang.
+    {
+        const std::string fifo = "/tmp/gala_ft_fifo.log";
+        unlink(fifo.c_str());
+        CHECK(mkfifo(fifo.c_str(), 0644) == 0);
+        alarm(3);
+        Logger::init(fifo, "info", 0);
+        LOG_INFO("fifo line");
+        alarm(0);
+        // The FIFO must still be a FIFO: it was refused, not replaced by a
+        // regular log file (SIGALRM default action kills us if init blocked).
+        struct stat st{};
+        CHECK(lstat(fifo.c_str(), &st) == 0);
+        CHECK(S_ISFIFO(st.st_mode));
+        unlink(fifo.c_str());
+    }
+
+    // The log FILE path itself being a symlink must be refused even when its
+    // parent directory is perfectly safe. ensure_log_file() uses lstat +
+    // O_NOFOLLOW so a planted run.log -> /etc/passwd link cannot redirect a
+    // root daemon's writes. Assert the link target stays untouched.
+    {
+        const std::string root = "/tmp/gala_ft_filelink";
+        const std::string target = "/tmp/gala_ft_filelink_target";
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+        std::filesystem::create_directories(root);
+        {
+            std::ofstream ofs(target);
+            ofs << "sentinel";
+        }
+        const std::string logpath = root + "/run.log";
+        CHECK(symlink(target.c_str(), logpath.c_str()) == 0);
+        Logger::init(logpath, "info", 0);
+        LOG_INFO("must not land in symlink target");
+        CHECK(read_file(target) == "sentinel");
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(target);
+    }
+
+    // Hardening must never WIDEN a stricter mode. A file created under umask
+    // 077 is 0600; a blind fchmod(0644) would make it world-readable. The fix
+    // strips only group/other write bits, leaving 0600 intact.
+    {
+        const std::string strict = "/tmp/gala_ft_strict.log";
+        std::filesystem::remove_all(strict);
+        mode_t old_umask = umask(077);
+        Logger::init(strict, "info", 0);
+        umask(old_umask);
+        LOG_INFO("strict umask line");
+        struct stat st{};
+        CHECK(stat(strict.c_str(), &st) == 0);
+        CHECK((st.st_mode & S_IRGRP) == 0);
+        CHECK((st.st_mode & S_IROTH) == 0);
+        CHECK((st.st_mode & S_IWGRP) == 0);
+        CHECK((st.st_mode & S_IWOTH) == 0);
+        CHECK(read_file(strict).find("strict umask line") != std::string::npos);
+        std::filesystem::remove_all(strict);
+    }
+
     const std::string path = "/tmp/gala_test_logger.log";
     unlink(path.c_str());
 
@@ -161,9 +327,9 @@ static void test_basic_init_and_reinit()
 
     {
         std::string content = read_file(path);
-        assert(content.find("INFO") != std::string::npos);
+        CHECK(content.find("INFO") != std::string::npos);
         // debug should be filtered at info level
-        assert(content.find("DEBUG") == std::string::npos);
+        CHECK(content.find("DEBUG") == std::string::npos);
     }
 
     // re-init with debug level and ensure DEBUG appears
@@ -171,7 +337,7 @@ static void test_basic_init_and_reinit()
     LOG_DEBUG("unit test debug2");
     {
         std::string content = read_file(path);
-        assert(content.find("DEBUG") != std::string::npos);
+        CHECK(content.find("DEBUG") != std::string::npos);
     }
 
     unlink(path.c_str());
@@ -214,10 +380,10 @@ static void test_level_parsing_matrix()
         LOG_ERROR("m_error_" + std::string(c.tag));
         LOG_DEBUG("m_debug_" + std::string(c.tag));
         std::string content = read_file(path);
-        assert((content.find(std::string("m_info_")  + c.tag) != std::string::npos) == c.exp_info);
-        assert((content.find(std::string("m_warn_")  + c.tag) != std::string::npos) == c.exp_warn);
-        assert((content.find(std::string("m_error_") + c.tag) != std::string::npos) == c.exp_error);
-        assert((content.find(std::string("m_debug_") + c.tag) != std::string::npos) == c.exp_debug);
+        CHECK((content.find(std::string("m_info_") + c.tag) != std::string::npos) == c.exp_info);
+        CHECK((content.find(std::string("m_warn_") + c.tag) != std::string::npos) == c.exp_warn);
+        CHECK((content.find(std::string("m_error_") + c.tag) != std::string::npos) == c.exp_error);
+        CHECK((content.find(std::string("m_debug_") + c.tag) != std::string::npos) == c.exp_debug);
     }
 
     unlink(path.c_str());
@@ -241,7 +407,7 @@ static void test_direct_methods_basename_and_format()
     Logger::error("nested path msg", "/a/b/c/deep_caller.cpp", 99);
 
     auto lines = split_lines(read_file(path));
-    assert(lines.size() == 7);
+    CHECK(lines.size() == 7);
     verify_log_line(lines[0], "INFO",  "test_logger.cpp",  l_info,  "direct info msg");
     verify_log_line(lines[1], "WARN",  "test_logger.cpp",  l_warn,  "direct warn msg");
     verify_log_line(lines[2], "ERROR", "test_logger.cpp",  l_error, "direct error msg");
@@ -259,7 +425,7 @@ static void test_direct_methods_basename_and_format()
     int l_kept_error = __LINE__; Logger::error("kept error", __FILE__, __LINE__);
 
     lines = split_lines(read_file(path));
-    assert(lines.size() == 2);
+    CHECK(lines.size() == 2);
     verify_log_line(lines[0], "WARN",  "test_logger.cpp", l_kept_warn,  "kept warn");
     verify_log_line(lines[1], "ERROR", "test_logger.cpp", l_kept_error, "kept error");
 
@@ -272,14 +438,14 @@ static void test_init_creates_single_level_dir()
     const std::string dir = "/tmp/gala_test_logger_dir_" + std::to_string(getpid());
     const std::string path = dir + "/sub.log";
     std::filesystem::remove_all(dir);
-    assert(!std::filesystem::exists(dir));
+    CHECK(!std::filesystem::exists(dir));
 
     Logger::init(path, "info", 0);
-    assert(std::filesystem::is_directory(dir));
+    CHECK(std::filesystem::is_directory(dir));
 
     LOG_INFO("created dir msg"); int line_no = __LINE__;
     auto lines = split_lines(read_file(path));
-    assert(lines.size() == 1);
+    CHECK(lines.size() == 1);
     verify_log_line(lines[0], "INFO", "test_logger.cpp", line_no, "created dir msg");
 
     std::filesystem::remove_all(dir);
@@ -295,7 +461,7 @@ static void test_init_no_slash_path()
     LOG_INFO("no slash path msg"); int line_no = __LINE__;
 
     auto lines = split_lines(read_file(rel_path));
-    assert(lines.size() == 1);
+    CHECK(lines.size() == 1);
     verify_log_line(lines[0], "INFO", "test_logger.cpp", line_no, "no slash path msg");
 
     unlink(rel_path.c_str());
@@ -311,15 +477,18 @@ static void test_open_failure_fallback_to_cerr()
     LOG_INFO("before open failure");
     const std::string before_content = read_file(prev_path);
 
-    // Multi-level missing parent guarantees mkdir and open() fail even as root.
-    const std::string bad_path = "/tmp/gala_missing_parent_" + std::to_string(getpid()) + "/nested/fail.log";
+    // Use an existing regular file (prev_path) as a parent directory component.
+    // Logger::init now creates missing parents recursively, so a missing path
+    // would succeed; but a regular file cannot be a directory, so both the
+    // directory walk and the final open() fail even as root.
+    const std::string bad_path = prev_path + "/nested/fail.log";
     std::string init_err;
     {
         CerrCapture cap;
         Logger::init(bad_path, "info", 0);
         init_err = cap.str();
     }
-    assert(init_err.find("failed to open log file") != std::string::npos);
+    CHECK(init_err.find("failed to open log file") != std::string::npos);
 
     // Previous log file must be closed and untouched; logs fall back to std::cerr.
     std::string log_err;
@@ -331,22 +500,22 @@ static void test_open_failure_fallback_to_cerr()
         log_err = cap.str();
     }
     auto lines = split_lines(log_err);
-    assert(lines.size() == 1);
+    CHECK(lines.size() == 1);
     verify_log_line(lines[0], "INFO", "test_logger.cpp", fallback_line, "open fail fallback info");
-    assert(read_file(prev_path) == before_content);
+    CHECK(read_file(prev_path) == before_content);
 
     // Opening an existing directory as filepath also fails open() even as root.
     {
         CerrCapture cap;
         Logger::init("/tmp", "warn", 0);
-        assert(cap.str().find("failed to open log file") != std::string::npos);
+        CHECK(cap.str().find("failed to open log file") != std::string::npos);
     }
     {
         CerrCapture cap;
         LOG_WARN("dir open fail warn"); int warn_line = __LINE__;
         LOG_INFO("dir open fail info"); // filtered by warn level
         auto dir_lines = split_lines(cap.str());
-        assert(dir_lines.size() == 1);
+        CHECK(dir_lines.size() == 1);
         verify_log_line(dir_lines[0], "WARN", "test_logger.cpp", warn_line, "dir open fail warn");
     }
 
@@ -370,10 +539,10 @@ static void test_rotation_and_cleanup()
     // Each rotation must produce its own backup. With many small writes
     // several rotations land in the same second; a second-only timestamp
     // would overwrite earlier backups and lose log history.
-    assert(backups >= 2);
+    CHECK(backups >= 2);
     // a fresh file must have been created and hold the most recent line
     std::string content = read_file(rpath);
-    assert(content.find("rotation test line 11") != std::string::npos);
+    CHECK(content.find("rotation test line 11") != std::string::npos);
 
     unlink(rpath.c_str());
     remove_files_with_prefix("/tmp", "gala_test_rotate.log.");
@@ -392,11 +561,11 @@ static void test_max_size_zero_disables_rotation()
         LOG_INFO("no rotate line " + std::to_string(i) + " " + padding);
     }
 
-    assert(count_files_with_prefix("/tmp", "gala_test_norotate.log.") == 0);
+    CHECK(count_files_with_prefix("/tmp", "gala_test_norotate.log.") == 0);
     auto lines = split_lines(read_file(nrpath));
-    assert(lines.size() == 60);
-    assert(lines.front().find("no rotate line 0 ") != std::string::npos);
-    assert(lines.back().find("no rotate line 59 ") != std::string::npos);
+    CHECK(lines.size() == 60);
+    CHECK(lines.front().find("no rotate line 0 ") != std::string::npos);
+    CHECK(lines.back().find("no rotate line 59 ") != std::string::npos);
 
     unlink(nrpath.c_str());
     std::cout << "  PASS: max_size == 0 disables log rotation" << std::endl;
@@ -427,14 +596,14 @@ static void test_multithreaded_concurrent_writes_and_rotation()
 
     std::string all_content = read_file(mt_path);
     auto lines = split_lines(all_content);
-    assert(lines.size() == static_cast<size_t>(num_threads * msgs_per_thread));
+    CHECK(lines.size() == static_cast<size_t>(num_threads * msgs_per_thread));
     for (const auto &line : lines) {
         verify_log_line_structure(line, "INFO", "test_logger.cpp", "mt_write_t");
     }
     for (int t = 0; t < num_threads; ++t) {
         for (int i = 0; i < msgs_per_thread; ++i) {
             const std::string marker = "mt_write_t" + std::to_string(t) + "_i" + std::to_string(i) + "\n";
-            assert(all_content.find(marker) != std::string::npos);
+            CHECK(all_content.find(marker) != std::string::npos);
         }
     }
     unlink(mt_path.c_str());
@@ -460,10 +629,10 @@ static void test_multithreaded_concurrent_writes_and_rotation()
         w.join();
     }
 
-    assert(count_files_with_prefix("/tmp", "gala_test_mt_rotate.log.") >= 1);
+    CHECK(count_files_with_prefix("/tmp", "gala_test_mt_rotate.log.") >= 1);
     auto check_file_lines = [](const std::string &fpath) {
         auto flines = split_lines(read_file(fpath));
-        assert(!flines.empty());
+        CHECK(!flines.empty());
         for (const auto &line : flines) {
             verify_log_line_structure(line, "DEBUG", "test_logger.cpp", "mt_rot_t");
         }
