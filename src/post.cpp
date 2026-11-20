@@ -1,5 +1,6 @@
 #include  "post.hpp"
 #include "logger.hpp"
+#include <algorithm>
 #include <cstring>
 #include <unistd.h>
 
@@ -31,6 +32,10 @@ unsigned long long ticks_to_nsec(unsigned long long ticks)
 }
 
 } // namespace
+
+// Defined near update_config(); declared here so load_config() can apply the
+// same trailing-slash normalization to paths read from the config file.
+static std::string normalize_monitor_path(const std::string &path);
 
 
 // Replace invalid UTF-8 sequences with the Unicode replacement character (U+FFFD)
@@ -224,6 +229,15 @@ int PostData::load_config(const std::string& configFile)
         file >> config_json_obj;
         file.close();
         conf_list = config_json_obj["config_list"].get<std::vector<std::string>>();
+        // Normalize paths loaded from disk exactly as update_config() does.
+        // Otherwise an existing "/etc/hosts/" entry (accepted by the level
+        // check, which strips one trailing slash) could never be removed: the
+        // remove API normalizes the request to "/etc/hosts", which would not
+        // match the raw stored string. Normalizing on both sides keeps add,
+        // remove and de-duplication consistent for pre-existing config files.
+        for (std::string &conf : conf_list) {
+            conf = normalize_monitor_path(conf);
+        }
         if (conf_list.empty()) 
         {
             LOG_ERROR("Configuration list is empty, please check your config file.");
@@ -1069,6 +1083,18 @@ std::string PostData::get_loginip_by_username(const std::string& username)
     endutxent();
     return clientip;
 }
+// Event-side paths are rebuilt as absolute paths without a trailing slash, so
+// a configured path with a trailing slash would be persisted yet never match.
+// Normalize it (keeping root "/") before validation, de-duplication and store.
+static std::string normalize_monitor_path(const std::string &path)
+{
+    std::string result = path;
+    while (result.size() > 1 && result.back() == '/') {
+        result.pop_back();
+    }
+    return result;
+}
+
 int PostData::update_config(const json &j)
 {
     LOG_INFO("Updating configuration with JSON: " + j.dump());
@@ -1079,10 +1105,29 @@ int PostData::update_config(const json &j)
         return -1;
     }
 
-    const std::string conf = j["conf"].get<std::string>();
+    const std::string conf = normalize_monitor_path(j["conf"].get<std::string>());
     const std::string action = j["action"].get<std::string>();
+    // The runtime API must enforce the same path rules as load_config():
+    // otherwise a relative path, an empty string or a path deeper than the
+    // configured limit enters conf_list and can never be matched by any
+    // event (all rebuilt event paths are absolute). Reject it here instead
+    // of silently persisting an unusable entry. is_valid_monitor_path() is the
+    // single shared rule used by load_config and the HTTP handler as well.
+    if (!is_valid_monitor_path(conf)) {
+        LOG_ERROR("Invalid monitor path in config update: " + conf);
+        return -1;
+    }
     if (action == "add") {
-        conf_list.push_back(conf);
+        // Adding the same path twice only duplicates a devices_/match entry
+        // in consumers and wastes a config_list slot; keep the list a set.
+        // Do NOT return early here: the write-back below must still run so a
+        // retried request can repair a config file left stale by a failed
+        // write/rename, and so a duplicate add keeps the file in sync.
+        if (std::find(conf_list.begin(), conf_list.end(), conf) != conf_list.end()) {
+            LOG_WARN("Monitor path already configured, ignoring: " + conf);
+        } else {
+            conf_list.push_back(conf);
+        }
     } else if (action == "remove") {
         conf_list.erase(std::remove(conf_list.begin(), conf_list.end(), conf), conf_list.end());
     } else {
@@ -1124,6 +1169,16 @@ void PostData::handle_update_config_request(const std::string &body, httplib::Re
         if (action != "add" && action != "remove") {
             res.status = 400;
             res.set_content("'action' must be 'add' or 'remove'", "text/plain");
+            return;
+        }
+
+        // A malformed monitor path is a client error, not a server failure.
+        // Validate it here so it maps to 400 instead of the 500 that update_config
+        // returns for genuine persistence failures. Use the same helper as
+        // update_config/load_config, calling get_dir_level() only once.
+        if (!is_valid_monitor_path(j["conf"].get<std::string>())) {
+            res.status = 400;
+            res.set_content("Invalid monitor path", "text/plain");
             return;
         }
 
@@ -1205,6 +1260,15 @@ int PostData::get_dir_level(const std::string &path)
        tmp_path = tmp_path.substr(0, tmp_path.size() - 1);
     }
     return std::count(tmp_path.begin(), tmp_path.end(), '/'); 
+}
+
+bool PostData::is_valid_monitor_path(const std::string &path)
+{
+    // Normalize once here (not at each caller) so the check and the value
+    // ultimately stored stay identical. get_dir_level() is called exactly once.
+    const std::string normalized = normalize_monitor_path(path);
+    const int level = get_dir_level(normalized);
+    return level >= 0 && level <= max_dir_level;
 }
 json PostData::get_events_from_queue(int count)
 {

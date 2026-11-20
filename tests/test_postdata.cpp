@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <fstream>
 #include <iostream>
@@ -466,6 +467,83 @@ int main()
             assert(saved.value("host_id", std::string()) == "1");
         }
 
+        // Invalid monitor paths must be rejected without touching the file:
+        // empty, relative, and deeper than max_dir_level can never be matched.
+        json bad_empty;
+        bad_empty["conf"] = "";
+        bad_empty["action"] = "add";
+        assert(p2.update_config(bad_empty) == -1);
+        json bad_relative;
+        bad_relative["conf"] = "etc/profile";
+        bad_relative["action"] = "add";
+        assert(p2.update_config(bad_relative) == -1);
+        json bad_deep;
+        bad_deep["conf"] = "/a/b/c/d/e/f";
+        bad_deep["action"] = "add";
+        assert(p2.update_config(bad_deep) == -1);
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 1);
+            assert(saved["config_list"][0] == "/etc/hosts");
+        }
+
+        // Adding a path already configured is a no-op, not a duplicate.
+        json dup;
+        dup["conf"] = "/etc/hosts";
+        dup["action"] = "add";
+        assert(p2.update_config(dup) == 0);
+        assert(p2.conf_list.size() == 1);
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 1);
+        }
+
+        // A duplicate add must STILL persist the whole object: if a previous
+        // add updated memory but its write-back failed, a retry must repair the
+        // stale on-disk file rather than silently returning success.
+        {
+            std::ofstream out(cfg_path, std::ios::trunc);
+            out << "{\"host_id\":\"1\",\"config_list\":[]}";
+        }
+        json dup_retry;
+        dup_retry["conf"] = "/etc/hosts";
+        dup_retry["action"] = "add";
+        assert(p2.update_config(dup_retry) == 0);
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 1);
+            assert(saved["config_list"][0] == "/etc/hosts");
+            assert(saved.value("host_id", std::string()) == "1");
+        }
+
+        // A trailing slash is normalized before store: "/etc/hosts/" is the
+        // same entry as "/etc/hosts" and never becomes an unmatchable path.
+        json trail;
+        trail["conf"] = "/etc/profile/";
+        trail["action"] = "add";
+        assert(p2.update_config(trail) == 0);
+        assert(std::find(p2.conf_list.begin(), p2.conf_list.end(), "/etc/profile") !=
+               p2.conf_list.end());
+        assert(std::find(p2.conf_list.begin(), p2.conf_list.end(), "/etc/profile/") ==
+               p2.conf_list.end());
+        {
+            std::ifstream in(cfg_path);
+            json saved;
+            in >> saved;
+            assert(saved["config_list"].size() == 2);
+        }
+        json trail_dup;
+        trail_dup["conf"] = "/etc/profile";
+        trail_dup["action"] = "add";
+        assert(p2.update_config(trail_dup) == 0);
+        assert(p2.conf_list.size() == 2);  // normalized duplicate is a no-op
+
         // The HTTP request contract uses conf/action. It must not try to read a
         // non-existent "key", and client-side JSON errors must return 400.
         httplib::Response response;
@@ -486,6 +564,16 @@ int main()
         response = httplib::Response();
         p2.handle_update_config_request(
             R"({"conf":"/etc/profile"})", response);
+        assert(response.status == 400);
+
+        // An invalid monitor path is a client error (400), not a server failure.
+        response = httplib::Response();
+        p2.handle_update_config_request(
+            R"({"conf":"relative/path","action":"add"})", response);
+        assert(response.status == 400);
+        response = httplib::Response();
+        p2.handle_update_config_request(
+            R"({"conf":"/a/b/c/d/e/f","action":"add"})", response);
         assert(response.status == 400);
 
         unlink(cfg_path.c_str());
@@ -522,6 +610,23 @@ int main()
         assert(pc.port == 8080);
         assert(pc.max_dir_level == 4);
         assert(pc.log_level == "debug");
+
+        // A config file that already contains a trailing-slash entry must be
+        // normalized on load, otherwise the runtime remove API (which normalizes
+        // its request) can never match it: remove would report success while the
+        // entry stays in memory and on disk. Normalizing on load also keeps
+        // duplicate detection consistent between "/etc/hosts" and "/etc/hosts/".
+        const std::string slash_cfg = "/tmp/gala_test_loadcfg_slash.json";
+        {
+            std::ofstream out(slash_cfg);
+            out << R"({"host_id":"h","domain_name":"d","ragdoll_api":"u",)"
+                   R"("config_list":["/etc/hosts/"],"skip_processes_list":[],)"
+                   R"("server":"127.0.0.1"})";
+        }
+        PostData pc_slash;
+        assert(pc_slash.load_config(slash_cfg) == 0);
+        assert(pc_slash.conf_list.size() == 1);
+        assert(pc_slash.conf_list[0] == "/etc/hosts");
 
         PostData pc2;
         assert(pc2.load_config("/tmp/gala_test_loadcfg_missing.json") == -1);
