@@ -39,7 +39,12 @@ static void rotate_log_file() {
         g_log_ofs.close();
     }
     
-    // Create backup filename with timestamp
+    // Create backup filename with a timestamp. A single rotation appends to
+    // an already-open full file, so several rotations can happen within one
+    // second; a second-only name would make each rename overwrite the prior
+    // backup and silently lose history. A monotonic counter is appended so
+    // every backup name is unique even under a burst of rotations.
+    static unsigned long rotation_seq = 0;
     time_t now = std::time(nullptr);
     struct tm tm_info{};
     localtime_r(&now, &tm_info);
@@ -47,11 +52,27 @@ static void rotate_log_file() {
     std::ostringstream backup_name;
     backup_name << g_log_filepath << ".";
     backup_name << std::put_time(&tm_info, "%Y%m%d_%H%M%S");
+    backup_name << "_" << ++rotation_seq;
+
+    const std::string candidate = backup_name.str();
+    // As a final guard (e.g. after a process restart reuses the counter with
+    // the same timestamp), append further numeric suffixes until the name is
+    // unused. Use stat() rather than ifstream::good(): an existing backup that
+    // is merely unreadable (chmod 0200, different owner) would still be opened
+    // by rename() and overwritten, which is the data loss this fix prevents.
+    auto path_exists = [](const std::string &p) {
+        struct stat st{};
+        return stat(p.c_str(), &st) == 0;
+    };
+    std::string target = candidate;
+    for (unsigned long extra = 1; path_exists(target); ++extra) {
+        target = candidate + "_" + std::to_string(extra);
+    }
     
     // Rename current log file to backup
-    if (std::rename(g_log_filepath.c_str(), backup_name.str().c_str()) != 0) {
+    if (std::rename(g_log_filepath.c_str(), target.c_str()) != 0) {
         std::cerr << "Logger: failed to rotate log file from '" << g_log_filepath 
-                  << "' to '" << backup_name.str() << "'" << std::endl;
+                  << "' to '" << target << "'" << std::endl;
     }
     
     // Open new log file

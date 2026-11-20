@@ -367,7 +367,10 @@ static void test_rotation_and_cleanup()
         LOG_INFO("rotation test line " + std::to_string(i) + " padding padding");
     }
     size_t backups = count_files_with_prefix("/tmp", "gala_test_rotate.log.");
-    assert(backups >= 1);
+    // Each rotation must produce its own backup. With many small writes
+    // several rotations land in the same second; a second-only timestamp
+    // would overwrite earlier backups and lose log history.
+    assert(backups >= 2);
     // a fresh file must have been created and hold the most recent line
     std::string content = read_file(rpath);
     assert(content.find("rotation test line 11") != std::string::npos);
